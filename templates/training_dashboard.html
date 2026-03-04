@@ -772,7 +772,8 @@ async function pollStatus() {
       const log = document.getElementById('log-output');
       const lines = d.output.slice(-40);
       const newHtml = lines.map(l => l.replace(/</g, '&lt;')).join('<br>');
-      if (newHtml !== lastLogHtml) {
+      const hasSelection = window.getSelection().toString().length > 0;
+      if (newHtml !== lastLogHtml && !hasSelection) {
         logUpdating = true;
         lastLogHtml = newHtml;
         log.innerHTML = newHtml;

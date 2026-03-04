@@ -517,6 +517,7 @@ const MIN_IMAGES = {{ min_images }};
 let activeTab = 'capture';
 let pipelineMode = 'default';
 let reviewDone = false;
+let lastLogHtml = '';
 
 // ── Tab switching ──────────────────────────────────────────
 function switchTab(tab) {
@@ -581,11 +582,24 @@ function startPreviewLoop() {
 function copyPipelineLog() {
   const log = document.getElementById('inf-log');
   const text = log.innerText;
-  navigator.clipboard.writeText(text).then(() => {
-    const btn = document.querySelector('.log-copy-btn');
+  const btn = document.querySelector('.log-copy-btn');
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => {
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1000);
+    });
+  } else {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
     btn.textContent = 'Copied!';
     setTimeout(() => { btn.textContent = 'Copy'; }, 1000);
-  });
+  }
 }
 
 async function switchDetectionMode(mode) {
@@ -952,12 +966,17 @@ async function pollStatus() {
       pipelineMode = d.pipeline.mode || 'default';
       if (wasMode !== pipelineMode) updateModeUI();
 
-      // Log output
+      // Log output — skip DOM update if user has text selected (preserves copy ability)
       if (d.pipeline.output) {
         const log = document.getElementById('inf-log');
         const logWrap = document.getElementById('inf-log-wrap');
-        log.innerHTML = d.pipeline.output.slice(-20).map(l => l.replace(/</g,'&lt;')).join('<br>');
-        log.scrollTop = log.scrollHeight;
+        const newHtml = d.pipeline.output.slice(-20).map(l => l.replace(/</g,'&lt;')).join('<br>');
+        const hasSelection = window.getSelection().toString().length > 0;
+        if (newHtml !== lastLogHtml && !hasSelection) {
+          lastLogHtml = newHtml;
+          log.innerHTML = newHtml;
+          log.scrollTop = log.scrollHeight;
+        }
         logWrap.classList.toggle('visible', d.pipeline.output.length > 0);
       }
 

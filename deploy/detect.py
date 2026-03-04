@@ -283,6 +283,10 @@ if HAILO_AVAILABLE:
         roi = hailo.get_roi_from_buffer(buffer)
         detections = roi.get_objects_typed(hailo.HAILO_DETECTION)
 
+        # Diagnostic: log raw detection count before filtering
+        if user_data.get_count() % 30 == 0:
+            print_info(f"Frame {user_data.get_count()}: {len(detections)} raw detections (before filter)")
+
         # Collect detected cat names and tracker IDs this frame
         detected_cats: set[str] = set()
         detected_cats_with_ids: dict[str, set[int | None]] = {}
@@ -472,21 +476,27 @@ def main():
     labels_path = str(resolve_path(deploy_cfg["labels_json"], PROJECT_ROOT))
     camera_device = camera_cfg.get("device", "/dev/video0")
 
-    sys.argv = [sys.argv[0], "--input", camera_device]
-
     if Path(hef_path).exists():
+        # Custom model: we control input, model, and labels
+        sys.argv = [sys.argv[0], "--input", camera_device]
         sys.argv += ["--hef-path", hef_path]
         print_info(f"Model: {hef_path}")
+        if Path(labels_path).exists():
+            sys.argv += ["--labels-json", labels_path]
+            print_info(f"Labels: {labels_path}")
+        else:
+            print_warning(f"Labels not found: {labels_path}")
     else:
-        print_warning(f"Model not found: {hef_path} — using hailo-apps default")
-
-    if Path(labels_path).exists():
-        sys.argv += ["--labels-json", labels_path]
-        print_info(f"Labels: {labels_path}")
-    else:
-        print_warning(f"Labels not found: {labels_path} — using hailo-apps default")
+        # Default model: pass input + labels, let hailo-apps handle model
+        sys.argv = [sys.argv[0], "--input", camera_device]
+        if Path(labels_path).exists():
+            sys.argv += ["--labels-json", labels_path]
+            print_info(f"Labels: {labels_path}")
+        print_warning(f"Model not found: {hef_path} — using hailo-apps defaults")
 
     sys.argv += remaining_argv
+    print_info(f"sys.argv for hailo-apps: {sys.argv}")
+    print_info(f"Working directory: {os.getcwd()}")
 
     # Setup callback
     user_data = CatDetectionCallback()
@@ -529,30 +539,39 @@ def main():
     # Create the detection app (Hailo parses sys.argv for --hef-path, --input, etc.)
     app = GStreamerDetectionApp(app_callback, user_data)
 
-    # Modify pipeline elements AFTER construction but BEFORE app.run()
-    tracker = app.pipeline.get_by_name("hailo_tracker")
-    if tracker:
-        tracker.set_property("class-id", tracker_class_id)
-        print_info(f"Tracker configured: class-id={tracker_class_id}")
-    else:
-        print_warning("hailo_tracker element not found in pipeline")
-
-    # Configure queue elements to drop old frames instead of accumulating them.
-    # Without this, if the callback is occasionally slow (frame extraction),
-    # frames pile up and the preview falls increasingly behind real-time.
+    # Diagnostic: log what model hailo-apps resolved to
     try:
-        it = app.pipeline.iterate_elements()
-        while True:
-            result, elem = it.next()
-            if result != Gst.IteratorResult.OK:
-                break
-            factory = elem.get_factory()
-            if factory and factory.get_name() == "queue":
-                elem.set_property("leaky", 2)            # downstream = drop oldest
-                elem.set_property("max-size-buffers", 3)
-                print_info(f"Queue '{elem.get_name()}': leaky=downstream, max-buffers=3")
+        print_info(f"Hailo resolved HEF: {getattr(app, 'hef_path', 'unknown')}")
+    except Exception:
+        pass
+    try:
+        print_info(f"Hailo options: {vars(app.options_menu)}")
+    except Exception:
+        pass
+
+    # Configure only the queue feeding the user callback to drop old frames.
+    # IMPORTANT: Do NOT modify all queues — that breaks inference pipeline
+    # buffering and causes 0 detections.
+    try:
+        identity = app.pipeline.get_by_name("identity_callback")
+        if identity:
+            # Walk upstream from the identity element to find its queue
+            pad = identity.get_static_pad("sink")
+            if pad:
+                peer = pad.get_peer()
+                if peer:
+                    upstream = peer.get_parent_element()
+                    factory = upstream.get_factory() if upstream else None
+                    if factory and factory.get_name() == "queue":
+                        upstream.set_property("leaky", 2)  # drop newest when full
+                        upstream.set_property("max-size-buffers", 3)
+                        print_info(f"Queue '{upstream.get_name()}': leaky=downstream, max-buffers=3")
+                    else:
+                        print_info(f"Upstream of callback is '{factory.get_name() if factory else 'unknown'}', not a queue — skipping")
+        else:
+            print_warning("identity_callback not found in pipeline")
     except Exception as exc:
-        print_warning(f"Could not configure queue elements: {exc}")
+        print_warning(f"Could not configure callback queue: {exc}")
 
     # Setup feeding tracker if enabled
     if feeding_cfg.get("enabled", False):

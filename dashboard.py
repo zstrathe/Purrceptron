@@ -145,17 +145,21 @@ class DetectionPipelineManager:
 
         self.mode = mode
 
-        # Build the detect.py argument string
-        detect_args = "deploy/detect.py --enable-preview --enable-stdin-commands"
+        # Build the detect.py command with absolute paths.
+        # IMPORTANT: cwd must stay at hailo-apps dir — hailo-apps resolves
+        # post-processing resources relative to its install directory.
+        detect_script = self.project_root / "deploy" / "detect.py"
+        detect_flags = "--enable-preview --enable-stdin-commands"
         if self.config_path:
-            detect_args += f" --config {self.config_path}"
+            config_abs = self.config_path if self.config_path.is_absolute() else self.project_root / self.config_path
+            detect_flags += f" --config {config_abs}"
 
         # Launch inside hailo-apps environment (provides gi, hailo, hailo_apps)
-        # setup_env.sh expects cwd to be the hailo-apps dir, so cd there first.
+        # Stay in hailo-apps dir so resource lookups work correctly.
         if self.hailo_apps_dir:
             shell_cmd = (
                 f"cd {self.hailo_apps_dir} && source setup_env.sh && "
-                f"cd {self.project_root} && python {detect_args}"
+                f"python {detect_script} {detect_flags}"
             )
             cmd = ["bash", "-c", shell_cmd]
         else:
@@ -229,7 +233,7 @@ class DetectionPipelineManager:
                 yaml_cfg["deployment"]["labels_json"] = deploy_cfg.get(
                     "default_labels_json", "deploy/coco_labels.json"
                 )
-                yaml_cfg["deployment"]["filter_classes"] = ["cat"]
+                yaml_cfg["deployment"]["filter_classes"] = []
             else:  # "inference"
                 yaml_cfg["deployment"]["hef_path"] = deploy_cfg.get(
                     "hef_path", "models/cat_detector.hef"
