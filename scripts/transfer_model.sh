@@ -3,13 +3,15 @@ set -euo pipefail
 
 # ═══════════════════════════════════════════════════════════════
 # Transfer trained model to Raspberry Pi
-# Usage: ./scripts/transfer_model.sh <pi_user@pi_host> [hef_path]
+# Usage: ./scripts/transfer_model.sh [pi_user@pi_host] [hef_path]
+#
+# Reads defaults from .env (PI_USER, PI_HOST, PI_REMOTE_DIR).
+# CLI arguments override .env values.
 # ═══════════════════════════════════════════════════════════════
 
-PI_TARGET="${1:?Usage: $0 <pi_user@pi_host> [hef_path]}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PI_TARGET="${1:-${PI_USER:?Set PI_USER in .env}@${PI_HOST:?Set PI_HOST in .env}}"
 
 HEF_PATH="${2:-$PROJECT_ROOT/models/cat_detector.hef}"
 
@@ -26,21 +28,23 @@ if [ ! -f "$LABELS_PATH" ]; then
     exit 1
 fi
 
-echo "[INFO] Transferring model to $PI_TARGET..."
+REMOTE_DIR="${PI_REMOTE_DIR:-~/Repos/cat_detection}"
+
+echo "[INFO] Transferring model to $PI_TARGET:$REMOTE_DIR ..."
 echo "  HEF:    $HEF_PATH"
 echo "  Labels: $LABELS_PATH"
 
 # Create remote directories
-ssh "$PI_TARGET" "mkdir -p ~/cat-detector/models ~/cat-detector/deploy"
+ssh "$PI_TARGET" "mkdir -p $REMOTE_DIR/models $REMOTE_DIR/deploy"
 
 # Transfer files
-scp "$HEF_PATH" "$PI_TARGET:~/cat-detector/models/cat_detector.hef"
-scp "$LABELS_PATH" "$PI_TARGET:~/cat-detector/deploy/labels.json"
+scp "$HEF_PATH" "$PI_TARGET:$REMOTE_DIR/models/cat_detector.hef"
+scp "$LABELS_PATH" "$PI_TARGET:$REMOTE_DIR/deploy/labels.json"
 
 echo ""
 echo "[OK] Model transferred!"
 echo ""
 echo "On the Pi, run:"
 echo "  source ~/hailo-apps/venv_hailo_apps/bin/activate"
-echo "  cd ~/cat-detector"
-echo "  python deploy/detect.py --hef-path models/cat_detector.hef --labels-json deploy/labels.json --input /dev/video0 --track-all"
+echo "  cd $REMOTE_DIR"
+echo "  python deploy/detect.py"

@@ -14,8 +14,11 @@
 
   /* Top bar */
   .top-bar {
+    background: #16213e; border-bottom: 1px solid #0f3460;
+  }
+  .top-bar-inner {
     display: flex; justify-content: space-between; align-items: center;
-    padding: 8px 16px; background: #16213e; border-bottom: 1px solid #0f3460;
+    padding: 8px 12px; max-width: 1096px; margin: 0 auto;
   }
   .tab-bar { display: flex; gap: 4px; }
   .tab-btn {
@@ -32,8 +35,8 @@
   .top-counts span { margin-left: 12px; }
 
   /* Main layout */
-  .main { display: flex; gap: 12px; padding: 12px; }
-  .content-col { flex: 1; min-width: 0; }
+  .main { display: flex; gap: 12px; padding: 12px; justify-content: center; }
+  .content-col { flex: 1; min-width: 0; max-width: 800px; }
   .sidebar { width: 260px; flex-shrink: 0; }
 
   /* Tab content */
@@ -53,10 +56,8 @@
   .btn-nav { background: #16213e; color: #8892b0; border: 1px solid #0f3460; }
   .btn-delete { background: #3d0000; color: #e63946; }
   .btn-unlabeled { background: #5a3600; color: #ffb347; }
-  .btn-toggle { background: #533483; color: #e0e0e0; }
-  .btn-toggle.auto-on { background: #5a3600; color: #ffb347; }
 
-  /* ── Inference Panel ── */
+  /* ── Detection Mode Panel ── */
   .inference-panel {
     background: #16213e; border-radius: 6px; padding: 14px;
     margin-bottom: 12px; border: 1px solid #0f3460;
@@ -80,9 +81,6 @@
   .inference-row select { min-width: 200px; }
   .inference-row input[type="number"] { width: 80px; }
   .inference-row input[type="text"] { min-width: 120px; }
-  .inference-row select:disabled, .inference-row input:disabled {
-    opacity: 0.35; cursor: not-allowed;
-  }
 
   .toggle-switch {
     position: relative; display: inline-block; width: 48px; height: 24px;
@@ -100,7 +98,6 @@
   }
   .toggle-switch input:checked + .toggle-slider { background: #1b4332; border-color: #52b788; }
   .toggle-switch input:checked + .toggle-slider::before { transform: translateX(24px); background: #52b788; }
-  .toggle-switch input:disabled + .toggle-slider { opacity: 0.35; cursor: not-allowed; }
 
   .settings-group {
     background: #0a0a1a; border-radius: 4px; padding: 10px;
@@ -123,22 +120,62 @@
   .status-dot.running { background: #52b788; animation: pulse 1.5s infinite; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
+  .inference-log-wrap {
+    position: relative; margin-top: 8px; display: none;
+  }
+  .inference-log-wrap.visible { display: block; }
   .inference-log {
-    max-height: 120px; overflow-y: auto; margin-top: 8px;
+    max-height: 120px; overflow-y: auto;
     background: #0a0a1a; border-radius: 4px; padding: 6px;
     font-family: monospace; font-size: 0.7rem; color: #555;
-    display: none;
   }
-  .inference-log.visible { display: block; }
+  .log-copy-btn {
+    position: absolute; top: 4px; right: 4px;
+    background: #1a1a2e; border: 1px solid #333; color: #8892b0;
+    font-size: 0.65rem; padding: 2px 8px; border-radius: 3px;
+    cursor: pointer; opacity: 0.7; z-index: 1;
+  }
+  .log-copy-btn:hover { opacity: 1; background: #0f3460; }
+
+  /* ── Mode Switcher ── */
+  .mode-switcher {
+    display: flex; gap: 6px; margin-bottom: 10px;
+  }
+  .mode-btn {
+    padding: 6px 16px; border: 1px solid #0f3460;
+    background: #0a0a1a; color: #8892b0; cursor: pointer;
+    border-radius: 4px; font-size: 0.85rem; font-family: monospace;
+    font-weight: 600; transition: background 0.2s, color 0.2s;
+  }
+  .mode-btn.active { background: #1b4332; color: #52b788; border-color: #52b788; }
+  .mode-btn:hover:not(.active) { color: #e0e0e0; }
+
+  /* ── Auto-Capture ── */
+  .auto-row {
+    display: flex; align-items: center; gap: 10px; margin-top: 10px;
+  }
+  .auto-row label { font-size: 0.85rem; color: #8892b0; font-family: monospace; }
+  .auto-row select {
+    background: #0a0a1a; color: #e0e0e0; border: 1px solid #0f3460;
+    padding: 6px 10px; border-radius: 4px; font-size: 0.85rem; font-family: monospace;
+  }
+  .btn-toggle {
+    padding: 8px 16px; border: 1px solid #0f3460;
+    background: #16213e; color: #8892b0; cursor: pointer;
+    border-radius: 6px; font-size: 0.9rem; font-weight: 600;
+    font-family: monospace; transition: background 0.2s, color 0.2s;
+  }
+  .btn-toggle:hover { color: #e0e0e0; }
+  .btn-toggle.auto-on { background: #5a3600; color: #ffb347; border-color: #ffb347; }
 
   /* ── Camera / Capture ── */
   .stream-wrapper {
     position: relative; background: #000; border-radius: 6px; overflow: hidden;
-    min-height: 300px; max-width: 800px;
+    min-height: 300px;
     display: flex; align-items: center; justify-content: center;
   }
   .stream-wrapper img { display: block; width: 100%; height: auto; }
-  .no-camera-msg {
+  .no-feed-msg {
     color: #555; font-family: monospace; text-align: center;
     padding: 40px;
   }
@@ -153,15 +190,6 @@
 
   .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
   .nav-row { display: flex; gap: 8px; margin-top: 8px; }
-
-  .auto-row {
-    display: flex; align-items: center; gap: 8px; margin-top: 8px;
-  }
-  .auto-row label { font-size: 0.85rem; color: #8892b0; }
-  .auto-row select {
-    background: #16213e; color: #e0e0e0; border: 1px solid #0f3460;
-    padding: 6px 10px; border-radius: 4px; font-size: 0.9rem;
-  }
 
   /* ── Review ── */
   .image-wrapper {
@@ -182,11 +210,64 @@
     font-family: monospace; font-size: 0.7rem; color: #555;
     margin-top: 4px; word-break: break-all;
   }
+
+  /* ── No Review Images ── */
+  .no-review-msg {
+    display: none; flex-direction: column; align-items: center;
+    justify-content: center; min-height: 300px; text-align: center;
+    color: #52b788; font-family: monospace;
+  }
+  .no-review-msg h2 { margin-bottom: 10px; }
+
   .done-screen {
     display: none; flex-direction: column; align-items: center;
     justify-content: center; min-height: 300px; text-align: center;
   }
   .done-screen h2 { color: #52b788; margin-bottom: 16px; }
+
+  /* ── Thumbnail Grid ── */
+  .thumb-sort-row {
+    display: flex; gap: 8px; align-items: center; margin-top: 10px;
+  }
+  .thumb-sort-row span {
+    font-size: 0.8rem; color: #8892b0; font-family: monospace;
+  }
+  .sort-btn {
+    padding: 4px 12px; border: 1px solid #0f3460;
+    background: #0a0a1a; color: #8892b0; cursor: pointer;
+    border-radius: 4px; font-size: 0.8rem; font-family: monospace;
+    font-weight: 600; transition: background 0.2s, color 0.2s;
+  }
+  .sort-btn.active { background: #1b4332; color: #52b788; border-color: #52b788; }
+  .sort-btn:hover:not(.active) { color: #e0e0e0; }
+  .thumbnail-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: 4px; padding: 8px 0; margin-top: 4px;
+    max-height: 50vh; overflow-y: auto;
+    scrollbar-width: thin; scrollbar-color: #0f3460 #0a0a1a;
+  }
+  .thumbnail-grid::-webkit-scrollbar { width: 6px; }
+  .thumbnail-grid::-webkit-scrollbar-track { background: #0a0a1a; }
+  .thumbnail-grid::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 3px; }
+  .thumb-item {
+    height: 100px;
+    border-radius: 4px; overflow: hidden; cursor: pointer;
+    border: 2px solid transparent;
+    transition: border-color 0.2s, opacity 0.2s;
+    position: relative;
+  }
+  .thumb-item img { width: 100%; height: 100%; object-fit: cover; }
+  .thumb-item.active { border-color: #52b788; }
+  .thumb-item.reviewed { opacity: 0.5; }
+  .thumb-item.reviewed:hover { opacity: 0.8; }
+  .thumb-label {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    background: rgba(0,0,0,0.7); font-size: 0.6rem;
+    font-family: monospace; color: #e0e0e0;
+    padding: 1px 4px; text-align: center;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
 
   /* ── Sidebar ── */
   .sidebar-card {
@@ -233,11 +314,13 @@
 
 <!-- Top Bar -->
 <div class="top-bar">
-  <div class="tab-bar">
-    <button class="tab-btn active" data-tab="capture" onclick="switchTab('capture')">Capture</button>
-    <button class="tab-btn" data-tab="review" onclick="switchTab('review')">Review</button>
+  <div class="top-bar-inner">
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="capture" onclick="switchTab('capture')">Capture</button>
+      <button class="tab-btn" data-tab="review" onclick="switchTab('review')">Review</button>
+    </div>
+    <div class="top-counts" id="top-counts"></div>
   </div>
-  <div class="top-counts" id="top-counts"></div>
 </div>
 
 <div class="main">
@@ -246,74 +329,87 @@
     <!-- ════ CAPTURE TAB ════ -->
     <div class="tab-content active" id="tab-capture">
 
-      <!-- Inference Controls -->
+      <!-- Detection Mode Panel -->
       <div class="inference-panel">
-        <h3>Inference</h3>
-        <div class="inference-row">
-          <label>Model:</label>
-          <select id="inf-model" onchange="onModelChange()" disabled>
-            <option value="">No models found</option>
-          </select>
-          <label style="min-width:auto">Enable:</label>
-          <label class="toggle-switch">
-            <input type="checkbox" id="inf-enable" onchange="toggleInference()" disabled>
-            <span class="toggle-slider"></span>
-          </label>
+        <h3>Detection Mode</h3>
+        <div class="mode-switcher">
+          <button class="mode-btn active" id="mode-default" onclick="switchDetectionMode('default')">
+            COCO (cat detection)
+          </button>
+          <button class="mode-btn" id="mode-inference" onclick="switchDetectionMode('inference')">
+            Fine-tuned (individual cats)
+          </button>
         </div>
 
-        <div class="settings-group" id="inf-settings">
-          <h4>Capture Settings</h4>
+        <!-- Inference settings (shown only in inference mode) -->
+        <div class="settings-group" id="inf-settings" style="display:none">
+          <h4>Inference Settings</h4>
           <div class="inference-row">
-            <label>Interval:</label>
-            <input type="number" id="inf-interval" value="15" min="1" disabled> <span style="font-size:0.8rem;color:#555">sec</span>
+            <label>Model:</label>
+            <select id="inf-model">
+              <option value="">No models found</option>
+            </select>
           </div>
           <div class="inference-row">
-            <label>Unlabeled:</label>
-            <input type="text" id="inf-unlabeled" value="cat" placeholder="e.g. cat" disabled>
-          </div>
-          <div class="inference-row">
-            <label>Track eating times:</label>
+            <label>Track eating:</label>
             <label class="toggle-switch">
-              <input type="checkbox" id="inf-feeding" disabled>
+              <input type="checkbox" id="inf-feeding">
               <span class="toggle-slider"></span>
             </label>
           </div>
         </div>
 
         <div class="status-indicator">
-          <span class="status-dot stopped" id="inf-status-dot"></span>
-          <span id="inf-status-text">Stopped</span>
+          <span class="status-dot running" id="inf-status-dot"></span>
+          <span id="inf-status-text">Running (COCO)</span>
         </div>
 
-        <div class="inference-log" id="inf-log"></div>
+        <div class="inference-log-wrap" id="inf-log-wrap">
+          <button class="log-copy-btn" onclick="copyPipelineLog()">Copy</button>
+          <div class="inference-log" id="inf-log"></div>
+        </div>
       </div>
 
-      <!-- Manual Capture (hidden when inference running) -->
-      <div id="manual-capture">
-        <div class="stream-wrapper">
-          {% if camera_available %}
-          <img id="camera-feed" src="" alt="Camera Feed">
-          {% else %}
-          <div class="no-camera-msg">No camera available<br>Review-only mode</div>
-          {% endif %}
-          <div class="flash" id="capture-flash"></div>
+      <!-- Detection Capture Settings (visible in both modes) -->
+      <div class="settings-group" id="capture-settings">
+        <h4>Detection Capture</h4>
+        <div class="inference-row">
+          <label>Auto-save detections:</label>
+          <label class="toggle-switch">
+            <input type="checkbox" id="cap-enabled" onchange="saveCaptureSettings()">
+            <span class="toggle-slider"></span>
+          </label>
         </div>
+        <div class="inference-row">
+          <label>Interval:</label>
+          <input type="number" id="cap-interval" value="15" min="1" onchange="saveCaptureSettings()">
+          <span style="font-size:0.8rem;color:#555">sec</span>
+        </div>
+      </div>
 
-        <div class="controls">
+      <!-- Live Video Feed (always visible — reads from detect.py preview) -->
+      <div class="stream-wrapper">
+        <img id="camera-feed" src="" alt="Detection Feed" style="display:none">
+        <div class="no-feed-msg" id="no-feed-msg">Waiting for camera...</div>
+        <div class="flash" id="capture-flash"></div>
+      </div>
+
+      <!-- Manual Capture Buttons -->
+      <div class="controls">
+        {% for i, cat in cats %}
+        <button class="btn btn-cat" onclick="captureAs('{{ cat }}')">{{ i }}: {{ cat }}</button>
+        {% endfor %}
+      </div>
+
+      <!-- Auto-Capture Controls -->
+      <div class="auto-row">
+        <button class="btn-toggle" id="btn-auto" onclick="toggleAutoCapture()">Auto: OFF</button>
+        <label>Target:</label>
+        <select id="auto-target" onchange="setAutoTarget(this.value)">
           {% for i, cat in cats %}
-          <button class="btn btn-cat" onclick="captureAs('{{ cat }}')" {% if not camera_available %}disabled{% endif %}>{{ i }}: {{ cat }}</button>
+          <option value="{{ cat }}">{{ cat }}</option>
           {% endfor %}
-          <button class="btn btn-toggle" id="btn-toggle" onclick="toggleCaptureMode()" {% if not camera_available %}disabled{% endif %}>Toggle Auto [a]</button>
-        </div>
-
-        <div class="auto-row">
-          <label>Auto target:</label>
-          <select id="auto-target" onchange="setAutoTarget(this.value)">
-            {% for i, cat in cats %}
-            <option value="{{ cat }}">{{ cat }}</option>
-            {% endfor %}
-          </select>
-        </div>
+        </select>
       </div>
     </div>
 
@@ -322,6 +418,15 @@
       <div class="image-wrapper" id="review-image-wrapper">
         <img id="review-image" src="" alt="Loading...">
         <div class="flash" id="review-flash"></div>
+      </div>
+
+      <!-- No unreviewed images message -->
+      <div class="no-review-msg" id="no-review-msg">
+        <h2>No images to review!</h2>
+        <p>All images have been reviewed. New captures will appear here.</p>
+        <button class="btn btn-nav" onclick="reviewRescan()" style="margin-top:12px">
+          Rescan for new images
+        </button>
       </div>
 
       <div class="done-screen" id="done-screen">
@@ -347,6 +452,14 @@
         <button class="btn btn-nav" onclick="reviewPrev()">&larr; Prev (p)</button>
         <button class="btn btn-nav" onclick="reviewSkip()">Skip &rarr; (n)</button>
       </div>
+
+      <!-- Thumbnail Grid -->
+      <div class="thumb-sort-row">
+        <span>Sort:</span>
+        <button class="sort-btn active" id="sort-time" onclick="sortThumbnails('time')">By time</button>
+        <button class="sort-btn" id="sort-name" onclick="sortThumbnails('name')">By name</button>
+      </div>
+      <div class="thumbnail-grid" id="thumbnail-grid"></div>
     </div>
 
   </div>
@@ -371,8 +484,8 @@
 
     <div class="sidebar-card">
       <h3>Session</h3>
-      <div class="stat-row"><span class="label">Mode:</span><span id="sidebar-mode">--</span></div>
-      <div class="stat-row"><span class="label">FPS:</span><span id="sidebar-fps">--</span></div>
+      <div class="stat-row"><span class="label">Mode:</span><span id="sidebar-mode">DETECTION</span></div>
+      <div class="stat-row"><span class="label">Pipeline:</span><span id="sidebar-pipeline">--</span></div>
       <hr style="border-color:#0f3460; margin:6px 0;">
       <div class="stat-row"><span class="label">Labeled:</span><span id="sidebar-labeled">0</span></div>
       <div class="stat-row"><span class="label">Deleted:</span><span id="sidebar-deleted">0</span></div>
@@ -383,7 +496,7 @@
       {% for i, cat in cats %}
       <kbd>{{ i }}</kbd> {{ cat }}<br>
       {% endfor %}
-      <kbd>a</kbd> Toggle auto/manual
+      <kbd>a</kbd> Toggle auto-capture
     </div>
     <div class="sidebar-card hints" id="hints-review" style="display:none">
       <h3>Review Shortcuts</h3>
@@ -400,10 +513,9 @@
 <script>
 const CATS = [{% for i, cat in cats %}"{{ cat }}"{% if not loop.last %}, {% endif %}{% endfor %}];
 const MIN_IMAGES = {{ min_images }};
-const CAMERA_AVAILABLE = {{ 'true' if camera_available else 'false' }};
 
 let activeTab = 'capture';
-let inferenceRunning = false;
+let pipelineMode = 'default';
 let reviewDone = false;
 
 // ── Tab switching ──────────────────────────────────────────
@@ -414,19 +526,17 @@ function switchTab(tab) {
   document.getElementById('hints-capture').style.display = tab === 'capture' ? 'block' : 'none';
   document.getElementById('hints-review').style.display = tab === 'review' ? 'block' : 'none';
 
-  // Start camera feed when switching to capture tab
-  if (tab === 'capture' && CAMERA_AVAILABLE && !inferenceRunning) {
-    const feed = document.getElementById('camera-feed');
-    if (feed && !feed.src.includes('/video_feed')) feed.src = '/video_feed';
+  // Start preview polling when entering capture tab
+  if (tab === 'capture') {
+    startPreviewLoop();
   }
-  // Stop camera feed when leaving capture tab
-  if (tab !== 'capture') {
-    const feed = document.getElementById('camera-feed');
-    if (feed) feed.src = '';
-  }
-  // Rescan when entering review
+
+  // Load thumbnails + rescan when entering review
   if (tab === 'review') {
-    fetch('/api/review/rescan', {method:'POST'}).then(() => loadReviewCurrent());
+    fetch('/api/review/rescan', {method:'POST'}).then(() => {
+      loadReviewCurrent();
+      loadThumbnails();
+    });
   }
 }
 
@@ -438,9 +548,87 @@ function triggerFlash(id, cls) {
   el.classList.add('active');
 }
 
+// ── Live preview polling ──────────────────────────────────
+let previewTimer = null;
+let lastBlobUrl = null;
+
+async function pollPreview() {
+  if (activeTab !== 'capture') return;
+  try {
+    const resp = await fetch('/api/preview');
+    if (resp.ok && activeTab === 'capture') {
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      const feed = document.getElementById('camera-feed');
+      feed.src = url;
+      feed.style.display = 'block';
+      document.getElementById('no-feed-msg').style.display = 'none';
+      if (lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
+      lastBlobUrl = url;
+    }
+  } catch(e) {}
+  if (activeTab === 'capture') {
+    previewTimer = setTimeout(pollPreview, 67);
+  }
+}
+
+function startPreviewLoop() {
+  if (previewTimer) clearTimeout(previewTimer);
+  pollPreview();
+}
+
+// ── Detection Mode Switching ───────────────────────────────
+function copyPipelineLog() {
+  const log = document.getElementById('inf-log');
+  const text = log.innerText;
+  navigator.clipboard.writeText(text).then(() => {
+    const btn = document.querySelector('.log-copy-btn');
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 1000);
+  });
+}
+
+async function switchDetectionMode(mode) {
+  if (mode === pipelineMode) return;
+
+  document.getElementById('inf-status-text').textContent = 'Switching...';
+  document.getElementById('inf-status-dot').className = 'status-dot stopped';
+
+  try {
+    let endpoint;
+    if (mode === 'inference') {
+      await saveInferenceSettings();
+      endpoint = '/api/inference/start';
+    } else {
+      endpoint = '/api/inference/stop';
+    }
+
+    const r = await fetch(endpoint, {method: 'POST'});
+    const d = await r.json();
+    if (d.status === 'ok') {
+      pipelineMode = mode;
+    } else {
+      alert('Mode switch failed: ' + (d.message || 'unknown'));
+    }
+  } catch(e) {
+    console.error(e);
+  }
+  updateModeUI();
+}
+
+function updateModeUI() {
+  document.getElementById('mode-default').classList.toggle('active', pipelineMode === 'default');
+  document.getElementById('mode-inference').classList.toggle('active', pipelineMode === 'inference');
+  document.getElementById('inf-settings').style.display = pipelineMode === 'inference' ? 'block' : 'none';
+
+  const dot = document.getElementById('inf-status-dot');
+  const text = document.getElementById('inf-status-text');
+  dot.className = 'status-dot running';
+  text.textContent = pipelineMode === 'inference' ? 'Running (Fine-tuned)' : 'Running (COCO)';
+}
+
 // ── Capture functions ──────────────────────────────────────
 async function captureAs(cat) {
-  if (inferenceRunning) return;
   try {
     const r = await fetch('/api/capture/' + encodeURIComponent(cat), {method:'POST'});
     const d = await r.json();
@@ -448,8 +636,13 @@ async function captureAs(cat) {
   } catch(e) { console.error(e); }
 }
 
-async function toggleCaptureMode() {
-  try { await fetch('/api/mode', {method:'POST'}); } catch(e) {}
+// ── Auto-Capture ──────────────────────────────────────────
+async function toggleAutoCapture() {
+  try {
+    const r = await fetch('/api/mode', {method:'POST'});
+    const d = await r.json();
+    updateAutoUI(d.mode, d.auto_target);
+  } catch(e) { console.error(e); }
 }
 
 async function setAutoTarget(cat) {
@@ -458,7 +651,21 @@ async function setAutoTarget(cat) {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({cat})
     });
-  } catch(e) {}
+  } catch(e) { console.error(e); }
+}
+
+function updateAutoUI(mode, target) {
+  const btn = document.getElementById('btn-auto');
+  if (mode === 'auto') {
+    btn.textContent = 'Auto: ON (' + target + ')';
+    btn.classList.add('auto-on');
+  } else {
+    btn.textContent = 'Auto: OFF';
+    btn.classList.remove('auto-on');
+  }
+  // Sync dropdown
+  const sel = document.getElementById('auto-target');
+  if (sel && target) sel.value = target;
 }
 
 // ── Review functions ───────────────────────────────────────
@@ -476,26 +683,25 @@ function updateReviewUI(data) {
     document.getElementById('sidebar-labeled').textContent = data.stats.labeled;
     document.getElementById('sidebar-deleted').textContent = data.stats.deleted;
   }
+
   if (data.done || current === null) {
     reviewDone = true;
     document.getElementById('review-image-wrapper').style.display = 'none';
     document.getElementById('review-controls').style.display = 'none';
     document.getElementById('review-nav').style.display = 'none';
     document.getElementById('review-info').style.display = 'none';
-    const ds = document.getElementById('done-screen');
-    ds.style.display = 'flex';
-    if (data.stats) {
-      document.getElementById('done-stats').innerHTML =
-        'Labeled: ' + (data.stats.labeled||0) + '<br>Deleted: ' + (data.stats.deleted||0);
-    }
+    document.getElementById('done-screen').style.display = 'none';
+    document.getElementById('no-review-msg').style.display = 'flex';
     return;
   }
+
   reviewDone = false;
   document.getElementById('review-image-wrapper').style.display = 'flex';
   document.getElementById('review-controls').style.display = 'flex';
   document.getElementById('review-nav').style.display = 'flex';
   document.getElementById('review-info').style.display = 'flex';
   document.getElementById('done-screen').style.display = 'none';
+  document.getElementById('no-review-msg').style.display = 'none';
 
   document.getElementById('review-progress').textContent = (current.index+1) + '/' + current.total;
   const badge = document.getElementById('review-label-badge');
@@ -503,6 +709,17 @@ function updateReviewUI(data) {
   badge.className = 'label-badge ' + (current.label === 'unlabeled' ? 'unlabeled' : 'labeled');
   document.getElementById('review-filename').textContent = current.filename;
   document.getElementById('review-image').src = '/api/review/image?' + Date.now();
+
+  // Update active thumbnail in grid (match by original server index)
+  if (current.all_index !== undefined && current.all_index >= 0) {
+    document.querySelectorAll('.thumb-item').forEach(el => {
+      el.classList.toggle('active', parseInt(el.dataset.originalIndex) === current.all_index);
+    });
+    const activeThumb = document.querySelector('.thumb-item.active');
+    if (activeThumb) {
+      activeThumb.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+    }
+  }
 }
 
 async function labelAs(label) {
@@ -515,6 +732,7 @@ async function labelAs(label) {
     const d = await r.json();
     if (d.status === 'ok') triggerFlash('review-flash', 'label-flash');
     updateReviewUI(d);
+    loadThumbnails(); // Refresh thumbnails to update reviewed state
   } catch(e) { console.error(e); }
 }
 
@@ -525,6 +743,7 @@ async function reviewDelete() {
     const d = await r.json();
     if (d.status === 'ok') triggerFlash('review-flash', 'delete-flash');
     updateReviewUI(d);
+    loadThumbnails(); // Refresh thumbnails
   } catch(e) { console.error(e); }
 }
 
@@ -532,27 +751,109 @@ async function reviewSkip() {
   if (reviewDone || activeTab !== 'review') return;
   try {
     const r = await fetch('/api/review/skip', {method:'POST'});
-    updateReviewUI(await r.json());
+    const d = await r.json();
+    updateReviewUI(d);
+    loadThumbnails(); // Refresh thumbnails to update reviewed state
   } catch(e) { console.error(e); }
 }
 
 async function reviewPrev() {
-  if (reviewDone || activeTab !== 'review') return;
+  if (activeTab !== 'review') return;
   try {
     const r = await fetch('/api/review/prev', {method:'POST'});
     updateReviewUI(await r.json());
   } catch(e) { console.error(e); }
 }
 
-// ── Inference functions ────────────────────────────────────
-async function loadInferenceState() {
+async function reviewRescan() {
+  await fetch('/api/review/rescan', {method:'POST'});
+  loadReviewCurrent();
+  loadThumbnails();
+}
+
+// ── Thumbnail Grid ─────────────────────────────────────────
+let thumbnailImages = [];
+let currentSort = 'time';
+
+async function loadThumbnails() {
   try {
-    const [statusResp, modelsResp, settingsResp] = await Promise.all([
-      fetch('/api/inference/status'),
+    const r = await fetch('/api/review/thumbnails');
+    const d = await r.json();
+    thumbnailImages = d.images;
+    applySortOrder(currentSort);
+    renderThumbnails();
+  } catch(e) { console.error(e); }
+}
+
+function applySortOrder(mode) {
+  if (mode === 'time') {
+    // Sort by timestamp part of filename (after first underscore), newest first
+    thumbnailImages.sort((a, b) => {
+      const ta = a.filename.substring(a.filename.indexOf('_') + 1);
+      const tb = b.filename.substring(b.filename.indexOf('_') + 1);
+      return tb.localeCompare(ta);
+    });
+  } else if (mode === 'name') {
+    // Sort by label (cat name), then by filename within each label
+    thumbnailImages.sort((a, b) => {
+      if (a.label !== b.label) return a.label.localeCompare(b.label);
+      return a.filename.localeCompare(b.filename);
+    });
+  }
+}
+
+function sortThumbnails(mode) {
+  currentSort = mode;
+  document.getElementById('sort-time').classList.toggle('active', mode === 'time');
+  document.getElementById('sort-name').classList.toggle('active', mode === 'name');
+  applySortOrder(mode);
+  renderThumbnails();
+}
+
+function renderThumbnails() {
+  const grid = document.getElementById('thumbnail-grid');
+  grid.innerHTML = '';
+
+  thumbnailImages.forEach((img) => {
+    const div = document.createElement('div');
+    div.className = 'thumb-item';
+    div.dataset.originalIndex = img.index;
+    if (img.reviewed) div.classList.add('reviewed');
+
+    const imgEl = document.createElement('img');
+    imgEl.src = '/api/review/thumbnail/' + encodeURIComponent(img.relative_path);
+    imgEl.loading = 'lazy';
+    div.appendChild(imgEl);
+
+    const label = document.createElement('div');
+    label.className = 'thumb-label';
+    label.textContent = img.label;
+    div.appendChild(label);
+
+    div.onclick = () => gotoThumbnail(img.index);
+    grid.appendChild(div);
+  });
+}
+
+async function gotoThumbnail(originalIndex) {
+  try {
+    const r = await fetch('/api/review/goto', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({index: originalIndex})
+    });
+    const d = await r.json();
+    updateReviewUI(d);
+  } catch(e) { console.error(e); }
+}
+
+// ── Inference Settings ─────────────────────────────────────
+async function loadInferenceSettings() {
+  try {
+    const [modelsResp, settingsResp] = await Promise.all([
       fetch('/api/inference/models'),
       fetch('/api/inference/settings'),
     ]);
-    const status = await statusResp.json();
     const models = await modelsResp.json();
     const settings = await settingsResp.json();
 
@@ -561,7 +862,6 @@ async function loadInferenceState() {
     sel.innerHTML = '';
     if (models.models.length === 0) {
       sel.innerHTML = '<option value="">No models found</option>';
-      sel.disabled = true;
     } else {
       sel.innerHTML = '<option value="">-- select model --</option>';
       models.models.forEach(m => {
@@ -570,112 +870,55 @@ async function loadInferenceState() {
         if (m === settings.deployment.hef_path) opt.selected = true;
         sel.appendChild(opt);
       });
-      sel.disabled = false;
     }
 
     // Populate settings
-    const dc = settings.detection_capture || {};
-    document.getElementById('inf-interval').value = dc.min_interval_seconds || 15;
-    const ul = dc.unlabeled_classes || [];
-    document.getElementById('inf-unlabeled').value = ul.join(', ');
     document.getElementById('inf-feeding').checked = (settings.feeding || {}).enabled || false;
-
-    // Restore running state
-    inferenceRunning = status.running;
-    updateInferenceUI();
-
-    if (status.running) {
-      // Select the running model
-      if (settings.deployment.hef_path) {
-        sel.value = settings.deployment.hef_path;
-      }
-    }
-
-    onModelChange();
   } catch(e) { console.error(e); }
-}
-
-function onModelChange() {
-  const model = document.getElementById('inf-model').value;
-  const hasModel = model !== '';
-  const enableBox = document.getElementById('inf-enable');
-
-  // Enable/disable settings based on model selection
-  enableBox.disabled = !hasModel && !inferenceRunning;
-  document.getElementById('inf-interval').disabled = !hasModel || inferenceRunning;
-  document.getElementById('inf-unlabeled').disabled = !hasModel || inferenceRunning;
-  document.getElementById('inf-feeding').disabled = !hasModel || inferenceRunning;
-}
-
-async function toggleInference() {
-  const enabled = document.getElementById('inf-enable').checked;
-  if (enabled) {
-    // Save settings first
-    await saveInferenceSettings();
-    const r = await fetch('/api/inference/start', {method:'POST'});
-    const d = await r.json();
-    if (d.status === 'ok') {
-      inferenceRunning = true;
-    } else {
-      document.getElementById('inf-enable').checked = false;
-      alert('Failed to start: ' + (d.message || 'unknown error'));
-    }
-  } else {
-    const r = await fetch('/api/inference/stop', {method:'POST'});
-    await r.json();
-    inferenceRunning = false;
-  }
-  updateInferenceUI();
 }
 
 async function saveInferenceSettings() {
   const model = document.getElementById('inf-model').value;
-  const interval = parseInt(document.getElementById('inf-interval').value) || 15;
-  const unlabeledStr = document.getElementById('inf-unlabeled').value.trim();
-  const unlabeled = unlabeledStr ? unlabeledStr.split(',').map(s => s.trim()).filter(Boolean) : [];
   const feedingEnabled = document.getElementById('inf-feeding').checked;
 
-  await fetch('/api/inference/settings', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({
-      deployment: { hef_path: model },
-      detection_capture: {
-        enabled: true,
-        min_interval_seconds: interval,
-        unlabeled_classes: unlabeled,
-      },
-      feeding: { enabled: feedingEnabled },
-    })
-  });
+  if (model) {
+    await fetch('/api/inference/settings', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        deployment: { hef_path: model },
+        feeding: { enabled: feedingEnabled },
+      })
+    });
+  }
 }
 
-function updateInferenceUI() {
-  const dot = document.getElementById('inf-status-dot');
-  const text = document.getElementById('inf-status-text');
-  const log = document.getElementById('inf-log');
-  const manual = document.getElementById('manual-capture');
-  const feed = document.getElementById('camera-feed');
+// ── Detection Capture Settings ─────────────────────────────
+async function loadCaptureSettings() {
+  try {
+    const resp = await fetch('/api/inference/settings');
+    const settings = await resp.json();
+    const dc = settings.detection_capture || {};
+    document.getElementById('cap-enabled').checked = dc.enabled || false;
+    document.getElementById('cap-interval').value = dc.min_interval_seconds || 15;
+  } catch(e) { console.error(e); }
+}
 
-  if (inferenceRunning) {
-    dot.className = 'status-dot running';
-    text.textContent = 'Running';
-    log.classList.add('visible');
-    manual.style.display = 'none';
-    if (feed) feed.src = '';
-    // Lock settings
-    document.getElementById('inf-model').disabled = true;
-    document.getElementById('inf-interval').disabled = true;
-    document.getElementById('inf-unlabeled').disabled = true;
-    document.getElementById('inf-feeding').disabled = true;
-  } else {
-    dot.className = 'status-dot stopped';
-    text.textContent = 'Stopped';
-    log.classList.remove('visible');
-    manual.style.display = 'block';
-    if (feed && CAMERA_AVAILABLE && activeTab === 'capture') feed.src = '/video_feed';
-    onModelChange(); // Restore enable/disable based on model selection
-  }
+async function saveCaptureSettings() {
+  const enabled = document.getElementById('cap-enabled').checked;
+  const interval = parseInt(document.getElementById('cap-interval').value) || 15;
+  try {
+    await fetch('/api/inference/settings', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        detection_capture: {
+          enabled: enabled,
+          min_interval_seconds: interval,
+        }
+      })
+    });
+  } catch(e) { console.error(e); }
 }
 
 // ── Status polling ─────────────────────────────────────────
@@ -703,33 +946,42 @@ async function pollStatus() {
     topParts.push('unlabeled:' + uc);
     document.getElementById('top-counts').innerHTML = topParts.map(s => '<span>' + s + '</span>').join('');
 
-    // Capture mode
-    if (d.mode) {
-      const modeText = inferenceRunning ? 'INFERENCE' : (d.mode === 'auto' ? 'AUTO' : 'MANUAL');
-      document.getElementById('sidebar-mode').textContent = modeText;
-    }
-    if (d.fps != null) {
-      document.getElementById('sidebar-fps').textContent = d.fps.toFixed(1);
-    }
+    // Pipeline status
+    if (d.pipeline) {
+      const wasMode = pipelineMode;
+      pipelineMode = d.pipeline.mode || 'default';
+      if (wasMode !== pipelineMode) updateModeUI();
 
-    // Toggle button style
-    const btn = document.getElementById('btn-toggle');
-    if (btn && d.mode) btn.classList.toggle('auto-on', d.mode === 'auto');
-
-    // Inference log
-    if (d.inference && d.inference.output) {
-      const log = document.getElementById('inf-log');
-      log.innerHTML = d.inference.output.slice(-20).map(l => l.replace(/</g,'&lt;')).join('<br>');
-      log.scrollTop = log.scrollHeight;
-    }
-    // Sync inference state
-    if (d.inference) {
-      const wasRunning = inferenceRunning;
-      inferenceRunning = d.inference.running;
-      if (wasRunning !== inferenceRunning) {
-        document.getElementById('inf-enable').checked = inferenceRunning;
-        updateInferenceUI();
+      // Log output
+      if (d.pipeline.output) {
+        const log = document.getElementById('inf-log');
+        const logWrap = document.getElementById('inf-log-wrap');
+        log.innerHTML = d.pipeline.output.slice(-20).map(l => l.replace(/</g,'&lt;')).join('<br>');
+        log.scrollTop = log.scrollHeight;
+        logWrap.classList.toggle('visible', d.pipeline.output.length > 0);
       }
+
+      // Update status indicators
+      const dot = document.getElementById('inf-status-dot');
+      const text = document.getElementById('inf-status-text');
+      if (d.pipeline.running) {
+        dot.className = 'status-dot running';
+        text.textContent = pipelineMode === 'inference' ? 'Running (Fine-tuned)' : 'Running (COCO)';
+      } else {
+        dot.className = 'status-dot stopped';
+        text.textContent = 'Pipeline stopped';
+      }
+
+      // Sidebar
+      document.getElementById('sidebar-mode').textContent =
+        pipelineMode === 'inference' ? 'INFERENCE' : 'DETECTION';
+      document.getElementById('sidebar-pipeline').textContent =
+        d.pipeline.running ? 'Running' : 'Stopped';
+    }
+
+    // Auto-capture state
+    if (d.capture_mode !== undefined) {
+      updateAutoUI(d.capture_mode, d.auto_target);
     }
   } catch(e) {}
 }
@@ -746,8 +998,10 @@ document.addEventListener('keydown', (e) => {
   }
 
   if (activeTab === 'capture') {
-    if (e.key === 'a') toggleCaptureMode();
-  } else if (activeTab === 'review') {
+    if (e.key === 'a') { toggleAutoCapture(); return; }
+  }
+
+  if (activeTab === 'review') {
     switch (e.key) {
       case 'u': labelAs('unlabeled'); break;
       case 'd': reviewDelete(); break;
@@ -758,11 +1012,9 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ── Init ───────────────────────────────────────────────────
-loadInferenceState();
-if (CAMERA_AVAILABLE) {
-  const feed = document.getElementById('camera-feed');
-  if (feed) feed.src = '/video_feed';
-}
+startPreviewLoop();
+loadInferenceSettings();
+loadCaptureSettings();
 setInterval(pollStatus, 1000);
 </script>
 </body>

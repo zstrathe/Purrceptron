@@ -5,19 +5,22 @@ set -euo pipefail
 # Pull training dataset from Raspberry Pi
 # Runs export.py on the Pi via SSH, then downloads the archive.
 #
-# Usage: ./scripts/pull_dataset.sh <pi_user@pi_host> [remote_dir]
+# Usage: ./scripts/pull_dataset.sh [pi_user@pi_host] [remote_dir]
+#
+# Reads defaults from .env (PI_USER, PI_HOST, PI_REMOTE_DIR).
+# CLI arguments override .env values.
 #
 # Examples:
+#   ./scripts/pull_dataset.sh                              # uses .env
 #   ./scripts/pull_dataset.sh pi@raspberrypi.local
 #   ./scripts/pull_dataset.sh pi@192.168.1.50 ~/projects/cat_detection
 # ═══════════════════════════════════════════════════════════════
 
-PI_TARGET="${1:?Usage: $0 <pi_user@pi_host> [remote_dir]}"
-REMOTE_DIR="${2:-~/Repos/cat_detection}"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-LOCAL_EXPORT_DIR="$PROJECT_ROOT/data/export"
+PI_TARGET="${1:-${PI_USER:?Set PI_USER in .env}@${PI_HOST:?Set PI_HOST in .env}}"
+REMOTE_DIR="${2:-${PI_REMOTE_DIR:-~/Repos/cat_detection}}"
+LOCAL_RAW_DIR="${3:-$PROJECT_ROOT/data/raw}"
 
 echo "[INFO] Running export on $PI_TARGET ..."
 
@@ -42,18 +45,19 @@ fi
 REMOTE_ARCHIVE="$REMOTE_DIR/data/export/$ARCHIVE_NAME"
 
 # Download the archive
-mkdir -p "$LOCAL_EXPORT_DIR"
+mkdir -p "$LOCAL_RAW_DIR"
 echo ""
 echo "[INFO] Downloading $ARCHIVE_NAME ..."
-scp "$PI_TARGET:$REMOTE_ARCHIVE" "$LOCAL_EXPORT_DIR/$ARCHIVE_NAME"
+scp "$PI_TARGET:$REMOTE_ARCHIVE" "$PROJECT_ROOT/$ARCHIVE_NAME"
 
-# Extract
-echo "[INFO] Extracting to $LOCAL_EXPORT_DIR ..."
-tar -xzf "$LOCAL_EXPORT_DIR/$ARCHIVE_NAME" -C "$LOCAL_EXPORT_DIR"
+# Extract into data/raw/ where prepare_dataset.py expects it ({cat_name}/image.jpg)
+echo "[INFO] Extracting to $LOCAL_RAW_DIR ..."
+tar -xzf "$PROJECT_ROOT/$ARCHIVE_NAME" -C "$LOCAL_RAW_DIR"
+rm "$PROJECT_ROOT/$ARCHIVE_NAME"
 
 echo ""
-echo "[OK] Dataset pulled successfully!"
-echo "  Archive: $LOCAL_EXPORT_DIR/$ARCHIVE_NAME"
+echo "[OK] Dataset pulled and extracted to $LOCAL_RAW_DIR"
 echo ""
 echo "Next step — prepare for training:"
+echo "  source venv_train/bin/activate"
 echo "  python train/prepare_dataset.py"

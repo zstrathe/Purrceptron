@@ -4,3 +4,4 @@ numpy>=1.24
 opencv-python>=4.8
 onnx>=1.14
 onnxruntime>=1.15
+flask>=3.0

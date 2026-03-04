@@ -22,7 +22,7 @@ python3 -c "
 import torch
 if torch.cuda.is_available():
     gpu = torch.cuda.get_device_name(0)
-    vram = torch.cuda.get_device_properties(0).total_mem / 1024**3
+    vram = torch.cuda.get_device_properties(0).total_memory / 1024**3
     print(f'[OK] GPU: {gpu} ({vram:.1f} GB VRAM)')
 else:
     print('[WARN] No CUDA GPU detected. Training will use CPU (much slower).')

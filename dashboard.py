@@ -2,8 +2,8 @@
 """Unified collection dashboard — capture, label review, and inference control.
 
 Single-page tabbed web UI for the full data collection workflow:
-- Capture tab: live camera feed + manual capture, inference controls
-- Review tab: iterate images, assign labels, delete bad captures
+- Capture tab: live detection feed with bounding boxes, mode switching, manual capture
+- Review tab: iterate images, assign labels, delete bad captures, thumbnail navigation
 
 Usage:
     python dashboard.py                   # reads configs/project.yaml
@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import argparse
 import collections
-import glob as globmod
+import json
+import os
 import signal
 import subprocess
 import sys
@@ -21,7 +22,6 @@ import threading
 import time
 from pathlib import Path
 
-import cv2
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
 # ---------------------------------------------------------------------------
@@ -32,26 +32,90 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils import PROJECT_ROOT, add_common_args, get_config_with_args, load_config, resolve_path
 from utils.display import print_info, print_success, print_error, print_warning, print_header
 
-from collect.capture import CameraThread, SaveWorker, CaptureApp
 from collect.label_review import LabelReviewApp
 
 import yaml
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Inference Manager
+# Auto-Capture State
 # ═══════════════════════════════════════════════════════════════════════════
 
-class InferenceManager:
-    """Start/stop detect.py as a managed subprocess."""
+class AutoCaptureState:
+    """Tracks auto-capture mode: enabled, target cat, and interval."""
 
-    def __init__(self, project_root: Path, config_path: Path | None = None):
+    def __init__(self, cats: list[str], interval: float = 3.0):
+        self.enabled = False
+        self.target_cat = cats[0] if cats else ""
+        self.interval = interval
+        self.last_capture_time = 0.0
+        self._lock = threading.Lock()
+
+    def toggle(self) -> tuple[bool, str]:
+        """Toggle enabled state. Returns (new_enabled, target_cat)."""
+        with self._lock:
+            self.enabled = not self.enabled
+            if self.enabled:
+                self.last_capture_time = time.time()
+            return self.enabled, self.target_cat
+
+    def set_target(self, cat: str) -> None:
+        with self._lock:
+            self.target_cat = cat
+
+    def get_state(self) -> dict:
+        with self._lock:
+            return {
+                "capture_mode": "auto" if self.enabled else "manual",
+                "auto_target": self.target_cat,
+            }
+
+
+def _auto_capture_loop(state: AutoCaptureState, pipeline_mgr: 'DetectionPipelineManager') -> None:
+    """Background thread that sends periodic capture commands when auto mode is on."""
+    while True:
+        time.sleep(0.25)
+        with state._lock:
+            if not state.enabled:
+                continue
+            now = time.time()
+            if now - state.last_capture_time < state.interval:
+                continue
+            cat = state.target_cat
+            state.last_capture_time = now
+
+        if pipeline_mgr.is_running():
+            pipeline_mgr.send_command({"cmd": "capture", "cat": cat})
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Detection Pipeline Manager
+# ═══════════════════════════════════════════════════════════════════════════
+
+class DetectionPipelineManager:
+    """Manages the always-running detect.py subprocess.
+
+    Two modes:
+    - "default": COCO yolov8m HEF, filter_classes=["cat"], labels=coco_labels.json
+    - "inference": fine-tuned cat_detector.hef, filter_classes=[], labels=labels.json
+    """
+
+    PREVIEW_PATH = "/tmp/cat_detection_preview.jpg"
+
+    def __init__(self, project_root: Path, config_path: Path | None = None,
+                 hailo_apps_dir: Path | None = None):
         self.project_root = project_root
         self.config_path = config_path
+        self.hailo_apps_dir = hailo_apps_dir
         self.process: subprocess.Popen | None = None
         self._output_lines: collections.deque[str] = collections.deque(maxlen=100)
         self._reader_thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self.mode: str = "default"  # "default" or "inference"
+        self._config: dict | None = None
+
+    def set_config(self, config: dict) -> None:
+        self._config = config
 
     def scan_models(self) -> list[str]:
         """Scan models/ for .hef files, return relative paths."""
@@ -69,19 +133,43 @@ class InferenceManager:
                 return False
             return self.process.poll() is None
 
-    def start(self) -> dict:
-        """Start detect.py subprocess."""
+    def start(self, mode: str = "default") -> dict:
+        """Start detect.py subprocess in the given mode.
+
+        Launches detect.py inside the hailo-apps environment by sourcing
+        setup_env.sh first, which activates the hailo-apps venv and sets
+        GStreamer plugin paths.
+        """
         if self.is_running():
             return {"status": "error", "message": "Already running"}
 
-        cmd = [sys.executable, "deploy/detect.py"]
+        self.mode = mode
+
+        # Build the detect.py argument string
+        detect_args = "deploy/detect.py --enable-preview --enable-stdin-commands"
         if self.config_path:
-            cmd += ["--config", str(self.config_path)]
+            detect_args += f" --config {self.config_path}"
+
+        # Launch inside hailo-apps environment (provides gi, hailo, hailo_apps)
+        # setup_env.sh expects cwd to be the hailo-apps dir, so cd there first.
+        if self.hailo_apps_dir:
+            shell_cmd = (
+                f"cd {self.hailo_apps_dir} && source setup_env.sh && "
+                f"cd {self.project_root} && python {detect_args}"
+            )
+            cmd = ["bash", "-c", shell_cmd]
+        else:
+            # Fallback: try sys.executable directly (for dev/testing without Hailo)
+            cmd = [sys.executable, "deploy/detect.py",
+                   "--enable-preview", "--enable-stdin-commands"]
+            if self.config_path:
+                cmd += ["--config", str(self.config_path)]
 
         try:
             self.process = subprocess.Popen(
                 cmd,
                 cwd=str(self.project_root),
+                stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
@@ -96,7 +184,7 @@ class InferenceManager:
         )
         self._reader_thread.start()
 
-        return {"status": "ok", "pid": self.process.pid}
+        return {"status": "ok", "pid": self.process.pid, "mode": mode}
 
     def stop(self) -> dict:
         """Stop the detect.py subprocess."""
@@ -104,6 +192,13 @@ class InferenceManager:
             if self.process is None or self.process.poll() is not None:
                 self.process = None
                 return {"status": "ok", "message": "Not running"}
+
+            # Close stdin first to signal graceful shutdown
+            if self.process.stdin:
+                try:
+                    self.process.stdin.close()
+                except Exception:
+                    pass
 
             self.process.terminate()
             try:
@@ -115,6 +210,57 @@ class InferenceManager:
             self.process = None
             return {"status": "ok"}
 
+    def switch_mode(self, new_mode: str) -> dict:
+        """Stop detect.py, update config for new mode, restart."""
+        self.stop()
+
+        yaml_path = self.config_path or (self.project_root / "configs" / "project.yaml")
+
+        if self._config:
+            deploy_cfg = self._config.get("deployment", {})
+
+            with open(yaml_path) as f:
+                yaml_cfg = yaml.safe_load(f)
+
+            if new_mode == "default":
+                yaml_cfg["deployment"]["hef_path"] = deploy_cfg.get(
+                    "default_hef_path", "models/yolov8m.hef"
+                )
+                yaml_cfg["deployment"]["labels_json"] = deploy_cfg.get(
+                    "default_labels_json", "deploy/coco_labels.json"
+                )
+                yaml_cfg["deployment"]["filter_classes"] = ["cat"]
+            else:  # "inference"
+                yaml_cfg["deployment"]["hef_path"] = deploy_cfg.get(
+                    "hef_path", "models/cat_detector.hef"
+                )
+                yaml_cfg["deployment"]["labels_json"] = deploy_cfg.get(
+                    "labels_json", "deploy/labels.json"
+                )
+                yaml_cfg["deployment"]["filter_classes"] = []
+
+            with open(yaml_path, "w") as f:
+                yaml.dump(yaml_cfg, f, default_flow_style=False, sort_keys=False)
+
+        # Brief pause for camera release
+        time.sleep(1)
+
+        return self.start(mode=new_mode)
+
+    def send_command(self, cmd: dict) -> bool:
+        """Send a JSON command to detect.py via stdin pipe."""
+        with self._lock:
+            if self.process is None or self.process.poll() is not None:
+                return False
+            if self.process.stdin is None:
+                return False
+            try:
+                self.process.stdin.write(json.dumps(cmd) + "\n")
+                self.process.stdin.flush()
+                return True
+            except (BrokenPipeError, OSError):
+                return False
+
     def get_output(self) -> list[str]:
         with self._lock:
             return list(self._output_lines)
@@ -122,13 +268,13 @@ class InferenceManager:
     def get_status(self) -> dict:
         return {
             "running": self.is_running(),
+            "mode": self.mode,
             "pid": self.process.pid if self.process and self.is_running() else None,
             "output": self.get_output(),
             "models": self.scan_models(),
         }
 
     def _read_output(self) -> None:
-        """Background thread: read subprocess stdout line by line."""
         if self.process is None or self.process.stdout is None:
             return
         try:
@@ -194,28 +340,14 @@ class ConfigManager:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Auto-capture ticker
-# ═══════════════════════════════════════════════════════════════════════════
-
-def _auto_capture_loop(capture_app: CaptureApp) -> None:
-    """Run in a daemon thread: periodically trigger auto-captures."""
-    while True:
-        try:
-            capture_app.auto_capture_tick()
-        except Exception:
-            pass
-        time.sleep(0.1)
-
-
-# ═══════════════════════════════════════════════════════════════════════════
 # Flask application factory
 # ═══════════════════════════════════════════════════════════════════════════
 
 def create_app(
-    capture_app: CaptureApp | None,
     reviewer: LabelReviewApp,
-    inference_mgr: InferenceManager,
+    pipeline_mgr: DetectionPipelineManager,
     config_mgr: ConfigManager,
+    auto_state: AutoCaptureState,
     cats: list[str],
     min_images: int,
 ) -> Flask:
@@ -231,60 +363,67 @@ def create_app(
             cats=cats_indexed,
             cat_names=cats,
             min_images=min_images,
-            camera_available=capture_app is not None,
         )
 
-    # ── Capture API ───────────────────────────────────────────────
-    @flask_app.route("/video_feed")
-    def video_feed():
-        if capture_app is None or capture_app.camera is None:
-            return "No camera", 503
+    # ── Preview Frame (latest JPEG from detect.py) ───────────────
+    @flask_app.route("/api/preview")
+    def api_preview():
+        """Return the latest preview frame as a single JPEG image.
 
-        def generate():
-            while True:
-                frame = capture_app.camera.get_display_frame()
-                if frame is None:
-                    time.sleep(0.03)
-                    continue
-                ret, jpeg = cv2.imencode(
-                    ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70]
-                )
-                if not ret:
-                    continue
-                yield (b"--frame\r\n"
-                       b"Content-Type: image/jpeg\r\n\r\n"
-                       + jpeg.tobytes() + b"\r\n")
+        The client polls this endpoint to display live video.
+        This avoids MJPEG streaming buffering issues that cause
+        multi-second delay on the Raspberry Pi.
+        """
+        preview_path = DetectionPipelineManager.PREVIEW_PATH
+        try:
+            with open(preview_path, "rb") as f:
+                jpeg_bytes = f.read()
+            if not jpeg_bytes:
+                return '', 204
+            return Response(jpeg_bytes, mimetype="image/jpeg",
+                            headers={'Cache-Control': 'no-cache, no-store, must-revalidate'})
+        except (FileNotFoundError, OSError):
+            return '', 204
 
-        return Response(generate(),
-                        mimetype="multipart/x-mixed-replace; boundary=frame")
-
+    # ── Capture API (sends command to detect.py via stdin) ───────
     @flask_app.route("/api/capture/<cat_name>", methods=["POST"])
     def api_capture(cat_name):
-        if capture_app is None:
-            return jsonify({"status": "error", "message": "No camera"}), 503
-        if inference_mgr.is_running():
-            return jsonify({"status": "error", "message": "Camera in use by inference"}), 409
-        return jsonify(capture_app.capture(cat_name))
+        if cat_name not in cats and cat_name != "unlabeled":
+            return jsonify({"status": "error", "message": f"Unknown cat: {cat_name}"}), 400
+        if not pipeline_mgr.is_running():
+            return jsonify({"status": "error", "message": "Detection pipeline not running"}), 503
 
+        sent = pipeline_mgr.send_command({"cmd": "capture", "cat": cat_name})
+        if sent:
+            return jsonify({"status": "ok", "cat": cat_name})
+        else:
+            return jsonify({"status": "error", "message": "Failed to send capture command"}), 500
+
+    # ── Auto-Capture API ─────────────────────────────────────────
     @flask_app.route("/api/mode", methods=["POST"])
     def api_mode():
-        if capture_app is None:
-            return jsonify({"status": "error", "message": "No camera"}), 503
-        return jsonify(capture_app.toggle_mode())
+        enabled, target = auto_state.toggle()
+        return jsonify({
+            "status": "ok",
+            "mode": "auto" if enabled else "manual",
+            "auto_target": target,
+        })
 
     @flask_app.route("/api/auto_target", methods=["POST"])
     def api_auto_target():
-        if capture_app is None:
-            return jsonify({"status": "error", "message": "No camera"}), 503
-        data = request.get_json(silent=True) or {}
-        return jsonify(capture_app.set_auto_target(data.get("cat", "")))
+        data = request.get_json()
+        cat = data.get("cat", "").strip() if data else ""
+        if cat not in cats:
+            return jsonify({"status": "error", "message": f"Unknown cat: {cat}"}), 400
+        auto_state.set_target(cat)
+        return jsonify({"status": "ok", "auto_target": cat})
 
+    # ── Status API ───────────────────────────────────────────────
     @flask_app.route("/api/status")
     def api_status():
         result = {}
-        if capture_app:
-            result.update(capture_app.get_status())
-        result["inference"] = inference_mgr.get_status()
+        result["pipeline"] = pipeline_mgr.get_status()
+        result.update(auto_state.get_state())
 
         # Per-cat image counts (filesystem)
         data_dir = reviewer.data_dir
@@ -295,6 +434,12 @@ def create_app(
         unlabeled_dir = data_dir / "unlabeled"
         counts["unlabeled"] = len(list(unlabeled_dir.glob("*.jpg"))) if unlabeled_dir.is_dir() else 0
         result["image_counts"] = counts
+
+        # Review state
+        result["review"] = {
+            "unreviewed_count": reviewer.unreviewed_count(),
+            "total": reviewer.total(),
+        }
 
         return jsonify(result)
 
@@ -351,14 +496,48 @@ def create_app(
         reviewer.index = 0
         return jsonify({"status": "ok", "total": reviewer.total()})
 
-    # ── Inference API ─────────────────────────────────────────────
+    # ── Review Thumbnails API ─────────────────────────────────────
+    @flask_app.route("/api/review/thumbnails")
+    def api_review_thumbnails():
+        all_images = reviewer.get_all_images()
+        return jsonify({
+            "images": [
+                {
+                    "index": i,
+                    "filename": img["filename"],
+                    "label": img["label"],
+                    "relative_path": img["relative_path"],
+                    "reviewed": img["reviewed"],
+                }
+                for i, img in enumerate(all_images)
+            ],
+            "current_index": reviewer.index,
+        })
+
+    @flask_app.route("/api/review/thumbnail/<path:relative_path>")
+    def api_review_thumbnail(relative_path):
+        thumb_path = reviewer.get_or_create_thumbnail(relative_path)
+        if thumb_path is None:
+            return "Not found", 404
+        return send_file(str(thumb_path), mimetype="image/jpeg")
+
+    @flask_app.route("/api/review/goto", methods=["POST"])
+    def api_review_goto():
+        data = request.get_json()
+        index = data.get("index", 0)
+        result = reviewer.goto(index)
+        result["stats"] = reviewer.get_stats()
+        result["current"] = reviewer.get_current()
+        return jsonify(result)
+
+    # ── Inference API (mode switching) ────────────────────────────
     @flask_app.route("/api/inference/status")
     def api_inference_status():
-        return jsonify(inference_mgr.get_status())
+        return jsonify(pipeline_mgr.get_status())
 
     @flask_app.route("/api/inference/models")
     def api_inference_models():
-        return jsonify({"models": inference_mgr.scan_models()})
+        return jsonify({"models": pipeline_mgr.scan_models()})
 
     @flask_app.route("/api/inference/settings", methods=["GET"])
     def api_inference_settings_get():
@@ -374,21 +553,14 @@ def create_app(
 
     @flask_app.route("/api/inference/start", methods=["POST"])
     def api_inference_start():
-        # Stop camera if running (inference needs exclusive access)
-        if capture_app and capture_app.camera:
-            capture_app.camera.stop()
-
-        result = inference_mgr.start()
+        """Switch to inference mode (fine-tuned model)."""
+        result = pipeline_mgr.switch_mode("inference")
         return jsonify(result)
 
     @flask_app.route("/api/inference/stop", methods=["POST"])
     def api_inference_stop():
-        result = inference_mgr.stop()
-
-        # Restart camera for manual capture
-        if capture_app and capture_app.camera:
-            capture_app.camera.start()
-
+        """Switch back to default mode (COCO model)."""
+        result = pipeline_mgr.switch_mode("default")
         return jsonify(result)
 
     return flask_app
@@ -408,7 +580,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--port", type=int, default=None,
                         help="Web UI port (default: from config)")
     parser.add_argument("--no-camera", action="store_true",
-                        help="Skip camera initialization (review-only mode)")
+                        help="Skip detection pipeline (review-only mode)")
     return parser.parse_args()
 
 
@@ -417,7 +589,6 @@ def main() -> None:
     config = get_config_with_args(args)
 
     cats: list[str] = config["cats"]
-    cam_cfg = config["camera"]
     web_cfg = config["web_ui"]
     collection_cfg = config["collection"]
     review_cfg = config.get("label_review", {})
@@ -431,33 +602,7 @@ def main() -> None:
     print_header("Cat Collection Dashboard")
     print_info(f"Cats: {', '.join(cats)}")
 
-    # Camera (optional)
-    capture_app = None
-    if not args.no_camera:
-        try:
-            camera = CameraThread(
-                device=cam_cfg["device"],
-                width=cam_cfg["width"],
-                height=cam_cfg["height"],
-                fps=cam_cfg["fps"],
-                fourcc=cam_cfg["format"],
-                preview_w=web_cfg["preview_width"],
-                preview_h=web_cfg["preview_height"],
-            )
-            camera.start()
-            time.sleep(1)
-            if camera.get_frame() is not None:
-                saver = SaveWorker()
-                saver.start()
-                capture_app = CaptureApp(config, camera, saver)
-                print_success(f"Camera: {cam_cfg['device']}")
-            else:
-                camera.stop()
-                print_warning("Camera not available — capture disabled, review-only mode")
-        except Exception as exc:
-            print_warning(f"Camera init failed: {exc} — review-only mode")
-
-    # Label reviewer
+    # Label reviewer (with review state tracking and thumbnail cache)
     reviewer = LabelReviewApp(
         data_dir=data_dir,
         trash_dir=trash_dir,
@@ -465,44 +610,60 @@ def main() -> None:
         scope="all",
     )
 
-    # Inference manager
+    # Detection pipeline manager (replaces InferenceManager + CameraThread)
     config_path = args.config if args.config else None
-    inference_mgr = InferenceManager(PROJECT_ROOT, config_path)
+    deploy_cfg = config.get("deployment", {})
+
+    # Resolve hailo-apps directory (expand ~ to home dir)
+    hailo_apps_dir_str = deploy_cfg.get("hailo_apps_dir", "~/hailo-apps")
+    hailo_apps_dir = Path(os.path.expanduser(hailo_apps_dir_str))
+    if not (hailo_apps_dir / "setup_env.sh").exists():
+        print_warning(f"hailo-apps setup_env.sh not found at {hailo_apps_dir}/setup_env.sh")
+        print_warning("Detection pipeline may fail. Install hailo-apps or set deployment.hailo_apps_dir in project.yaml")
+        hailo_apps_dir = None  # Will fall back to sys.executable
+
+    pipeline_mgr = DetectionPipelineManager(PROJECT_ROOT, config_path, hailo_apps_dir)
+    pipeline_mgr.set_config(config)
+
+    # Auto-capture state + timer
+    auto_interval = collection_cfg.get("auto_capture_interval_sec", 3.0)
+    auto_state = AutoCaptureState(cats, interval=auto_interval)
+    auto_thread = threading.Thread(
+        target=_auto_capture_loop, args=(auto_state, pipeline_mgr), daemon=True
+    )
+    auto_thread.start()
 
     # Config manager
     yaml_path = args.config if args.config else PROJECT_ROOT / "configs" / "project.yaml"
     config_mgr = ConfigManager(yaml_path)
 
-    # Auto-capture ticker (only if camera available)
-    if capture_app:
-        ticker = threading.Thread(
-            target=_auto_capture_loop, args=(capture_app,), daemon=True
-        )
-        ticker.start()
+    # Start detection pipeline in default mode (unless --no-camera)
+    if not args.no_camera:
+        result = pipeline_mgr.switch_mode("default")
+        if result["status"] == "ok":
+            print_success(f"Detection pipeline started (default/COCO mode), PID: {result['pid']}")
+        else:
+            print_warning(f"Failed to start detection pipeline: {result.get('message', '?')}")
+            print_warning("Running in review-only mode")
 
     # Graceful shutdown
     def shutdown(*_args):
         print_info("\nShutting down...")
-        inference_mgr.stop()
-        if capture_app:
-            capture_app.camera.stop()
-            capture_app.saver.drain()
-            capture_app.print_summary()
-            capture_app.close()
+        pipeline_mgr.stop()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown)
 
-    models = inference_mgr.scan_models()
+    models = pipeline_mgr.scan_models()
     print_info(f"Models found: {len(models)}" + (f" ({', '.join(models)})" if models else ""))
-    print_info(f"Review images: {reviewer.total()}")
+    print_info(f"Review images: {reviewer.total()} ({reviewer.unreviewed_count()} unreviewed)")
     print_success(f"Dashboard: http://{host}:{port}")
 
     flask_app = create_app(
-        capture_app=capture_app,
         reviewer=reviewer,
-        inference_mgr=inference_mgr,
+        pipeline_mgr=pipeline_mgr,
         config_mgr=config_mgr,
+        auto_state=auto_state,
         cats=cats,
         min_images=min_images,
     )

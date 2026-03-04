@@ -79,9 +79,9 @@ scp deploy/labels.json <user>@<pi-hostname>:~/cat-detector/deploy/
 
 # === Back on the Raspberry Pi ===
 
-# 11. Run inference via the dashboard
+# 11. Switch to fine-tuned model via the dashboard
 #     The dashboard auto-detects models in models/*.hef
-#     Select a model, configure settings, and enable inference from the Capture tab
+#     Click "Fine-tuned (individual cats)" in the Capture tab to use your trained model
 
 # Or run inference standalone:
 source ~/hailo-apps/venv_hailo_apps/bin/activate
@@ -111,8 +111,8 @@ Open `http://<pi-ip>:5003` in your browser. The dashboard has two tabs:
 - **Live camera preview** via MJPEG streaming
 - **Cat selection buttons** (keyboard shortcuts 1-9) to capture and label images
 - **Auto-capture mode** that takes images at a regular interval
-- **Inference controls** — select a model, configure settings, start/stop inference
-  (grayed out until a `.hef` model is available in `models/`)
+- **Detection mode switcher** — toggle between "COCO (cat detection)" for general cat
+  detection and "Fine-tuned (individual cats)" when a trained `.hef` model is in `models/`
 
 **Review tab:**
 - **Image viewer** to iterate through captured images
@@ -240,10 +240,11 @@ Replace `<user>@<pi-hostname>` with your Pi's username and hostname (e.g., `zack
 
 ### Running Inference
 
-**Via the dashboard** (recommended): The Capture tab auto-detects `.hef` models in
-`models/`. Select a model, configure capture settings, and click "Enable Inference".
-The dashboard starts `detect.py` as a managed subprocess and shows its status. When
-inference is running, detected frames are auto-saved to `data/raw/` for review.
+**Via the dashboard** (recommended): The dashboard always runs `detect.py` as a managed
+subprocess in the background. By default it uses a COCO YOLOv8 model for general cat
+detection. Once you have a trained `.hef` model in `models/`, click
+"Fine-tuned (individual cats)" in the Capture tab to switch to your custom model, which
+identifies cats by name.
 
 **Standalone** (requires the hailo-apps venv):
 
@@ -418,5 +419,5 @@ cat_detection/
 - **More augmentation** — adjust for your specific lighting and camera setup
 - **Edge cases** — cats in unusual positions, multiple cats together, partial views
 - **Night images** — include IR/grayscale captures if you need nighttime detection
-- **Iterate** — use inference auto-capture to collect more data, review and label it,
-  then retrain with the expanded dataset
+- **Iterate** — use auto-capture mode to collect more labeled data, review it in the
+  Review tab, then retrain with the expanded dataset

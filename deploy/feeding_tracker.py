@@ -29,12 +29,16 @@ class CatSession:
     start_time: float | None = None
     last_seen: float = 0.0
     detection_count: int = 0
+    track_ids: set[int] = field(default_factory=set)  # hailo tracker IDs seen during session
 
 
 class FeedingTracker:
     """Track feeding sessions per cat using a state machine.
 
-    Call update() once per frame with the set of detected cat names.
+    Call update() once per frame with detected cat names and their hailo
+    tracker IDs.  Tracker IDs are stored per-session for more precise
+    session identity and logged to SQLite.
+
     Completed sessions are automatically written to SQLite.
     Call shutdown() on exit to finalize any active sessions.
     """
@@ -69,17 +73,32 @@ class FeedingTracker:
                     start_time TEXT NOT NULL,
                     end_time TEXT NOT NULL,
                     duration_seconds REAL NOT NULL,
-                    detection_count INTEGER NOT NULL
+                    detection_count INTEGER NOT NULL,
+                    track_ids TEXT DEFAULT ''
                 )
                 """
             )
+            # Add track_ids column to existing databases
+            try:
+                conn.execute(
+                    "ALTER TABLE feeding_sessions ADD COLUMN track_ids TEXT DEFAULT ''"
+                )
+            except sqlite3.OperationalError:
+                pass  # Column already exists
 
-    def update(self, detected_cats: set[str]) -> None:
-        """Called once per frame with the set of cat names currently detected."""
+    def update(self, detected_cats: dict[str, set[int | None]]) -> None:
+        """Called once per frame with detected cat names and their tracker IDs.
+
+        Args:
+            detected_cats: mapping of cat name → set of hailo tracker IDs
+                           (may include None if tracker is not active)
+        """
         now = time.time()
         with self._lock:
             for cat, session in self._sessions.items():
                 if cat in detected_cats:
+                    ids = detected_cats[cat]
+                    session.track_ids.update(id_ for id_ in ids if id_ is not None)
                     self._handle_detection(cat, session, now)
                 else:
                     self._handle_no_detection(cat, session, now)
@@ -125,29 +144,33 @@ class FeedingTracker:
         """Log completed session to SQLite and reset state."""
         end_time = s.last_seen
         duration = end_time - s.start_time
+        track_ids_str = ",".join(str(x) for x in sorted(s.track_ids))
 
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 "INSERT INTO feeding_sessions "
-                "(cat_name, start_time, end_time, duration_seconds, detection_count) "
-                "VALUES (?, ?, ?, ?, ?)",
+                "(cat_name, start_time, end_time, duration_seconds, detection_count, track_ids) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     cat,
                     datetime.fromtimestamp(s.start_time).isoformat(),
                     datetime.fromtimestamp(end_time).isoformat(),
                     duration,
                     s.detection_count,
+                    track_ids_str,
                 ),
             )
 
         self._total_logged += 1
-        print_success(f"Feeding ended: {cat} — {duration:.0f}s ({s.detection_count} frames)")
+        ids_info = f" tracks=[{track_ids_str}]" if s.track_ids else ""
+        print_success(f"Feeding ended: {cat} — {duration:.0f}s ({s.detection_count} frames){ids_info}")
 
         # Reset
         s.state = CatState.IDLE
         s.detection_streak = 0
         s.start_time = None
         s.detection_count = 0
+        s.track_ids = set()
 
     def _print_status(self, now: float) -> None:
         """Print periodic status of active sessions."""
@@ -159,9 +182,10 @@ class FeedingTracker:
         if active:
             for cat, s in active:
                 elapsed = now - s.start_time
+                ids_info = f" tracks={sorted(s.track_ids)}" if s.track_ids else ""
                 print_info(
                     f"Active: {cat} eating for {elapsed:.0f}s "
-                    f"({s.detection_count} frames)"
+                    f"({s.detection_count} frames){ids_info}"
                 )
 
     def get_cat_state(self, cat_name: str) -> CatState:

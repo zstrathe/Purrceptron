@@ -43,6 +43,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batch-size", type=int, default=None, help="Override batch size"
     )
+    parser.add_argument(
+        "--run-name", type=str, default="v1", help="Training run name for versioning"
+    )
+    parser.add_argument(
+        "--project",
+        type=Path,
+        default=None,
+        help="Override project directory for training output (default: runs/)",
+    )
     return parser.parse_args()
 
 
@@ -72,8 +81,13 @@ def main() -> None:
 
     from ultralytics import YOLO
 
+    run_name = args.run_name
+    project_dir = args.project or (PROJECT_ROOT / "runs")
+    print_info(f"Run: {run_name}")
+    print_info(f"Project: {project_dir}")
+
     if args.resume:
-        last_pt = PROJECT_ROOT / "runs" / "cat_detect" / "train" / "weights" / "last.pt"
+        last_pt = project_dir / run_name / "weights" / "last.pt"
         if not last_pt.exists():
             print_error(f"No checkpoint found at {last_pt}")
             sys.exit(1)
@@ -90,8 +104,9 @@ def main() -> None:
         batch=batch_size,
         patience=patience,
         device=0,
-        project=str(PROJECT_ROOT / "runs"),
-        name="cat_detect",
+        workers=0,  # WSL2: pin_memory thread causes CUDA OOM with workers>0
+        project=str(project_dir),
+        name=run_name,
         exist_ok=True,
         # Fixed-camera augmentation
         hsv_h=0.015,

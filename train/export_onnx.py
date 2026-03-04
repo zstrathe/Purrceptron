@@ -24,7 +24,10 @@ def parse_args() -> argparse.Namespace:
         "--model",
         type=Path,
         default=None,
-        help="Path to best.pt (default: runs/cat_detect/train/weights/best.pt)",
+        help="Path to best.pt (default: runs/<run-name>/weights/best.pt)",
+    )
+    parser.add_argument(
+        "--run-name", type=str, default="v1", help="Training run name for versioning"
     )
     return parser.parse_args()
 
@@ -34,7 +37,7 @@ def main() -> None:
     cfg = get_config_with_args(args)
 
     model_path = args.model or resolve_path(
-        "runs/cat_detect/train/weights/best.pt", PROJECT_ROOT
+        f"runs/{args.run_name}/weights/best.pt", PROJECT_ROOT
     )
 
     if not model_path.exists():

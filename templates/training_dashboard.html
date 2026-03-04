@@ -1,0 +1,1054 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Training Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #1a1a2e; color: #e0e0e0;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  }
+
+  /* Top bar */
+  .top-bar {
+    background: #16213e; border-bottom: 1px solid #0f3460;
+  }
+  .top-bar-inner {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 12px; max-width: 1096px; margin: 0 auto;
+  }
+  .tab-bar { display: flex; gap: 4px; }
+  .tab-btn {
+    padding: 6px 18px; border: 1px solid #0f3460; border-bottom: none;
+    background: #0a0a1a; color: #8892b0; cursor: pointer;
+    border-radius: 6px 6px 0 0; font-size: 0.9rem; font-weight: 600;
+    font-family: monospace;
+  }
+  .tab-btn.active { background: #1a1a2e; color: #e0e0e0; border-color: #0f3460; }
+  .tab-btn:hover { color: #e0e0e0; }
+  .top-status {
+    font-family: monospace; font-size: 0.85rem; color: #8892b0;
+  }
+
+  /* Main layout */
+  .main { display: flex; gap: 12px; padding: 12px; justify-content: center; flex: 1; min-height: 0; }
+  .content-col { flex: 1; min-width: 0; max-width: 800px; display: flex; flex-direction: column; min-height: 0; }
+  .sidebar { width: 260px; flex-shrink: 0; overflow-y: auto; }
+
+  /* Tab content */
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+  #tab-pipeline.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  #tab-metrics.active { flex: 1; overflow-y: auto; min-height: 0; }
+
+  /* Pipeline top section (scrollable when viewport is short) */
+  .pipeline-top { flex: 0 1 auto; overflow-y: auto; min-height: 0; }
+
+  /* Buttons */
+  .btn {
+    padding: 10px 20px; border: none; border-radius: 6px;
+    font-size: 1rem; font-weight: 600; cursor: pointer;
+    transition: transform 0.1s, filter 0.1s; font-family: monospace;
+  }
+  .btn:active { transform: scale(0.96); }
+  .btn:hover:not(:disabled) { filter: brightness(1.15); }
+  .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .btn-primary { background: #1b4332; color: #52b788; }
+  .btn-danger { background: #3d0000; color: #e63946; }
+  .btn-nav { background: #16213e; color: #8892b0; border: 1px solid #0f3460; }
+  .btn-sm { padding: 6px 14px; font-size: 0.85rem; }
+
+  /* ── Version Bar ── */
+  .version-bar {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 10px; font-family: monospace; font-size: 0.9rem;
+  }
+  .version-bar label { color: #8892b0; font-weight: 600; }
+  .version-bar select {
+    background: #0a0a1a; color: #e0e0e0; border: 1px solid #0f3460;
+    padding: 6px 10px; border-radius: 4px; font-family: monospace;
+  }
+
+  /* ── Step Cards ── */
+  .pipeline-controls {
+    display: flex; gap: 8px; margin-bottom: 12px;
+  }
+  .step-card {
+    background: #16213e; border-radius: 6px; padding: 12px 16px;
+    margin-bottom: 6px; border: 1px solid #0f3460;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .step-card.active { border-color: #52b788; }
+  .step-card.done { border-color: #1b4332; }
+  .step-card.error { border-color: #3d0000; }
+  .step-card.ready { border-left: 3px solid #52b788; }
+  .step-card.completed { border-left: 3px solid #1b4332; }
+  .step-card.blocked { opacity: 0.45; }
+  .step-hint {
+    font-family: monospace; font-size: 0.7rem; color: #555; margin-top: 2px;
+    display: none;
+  }
+  .step-card.ready .step-hint { display: block; color: #52b788; }
+  .step-card.completed .step-hint { display: block; color: #1b4332; }
+  .step-card.blocked .step-hint { display: block; }
+  .step-num {
+    font-family: monospace; font-size: 1.1rem; font-weight: 700;
+    color: #555; width: 24px; text-align: center;
+  }
+  .step-card.done .step-num { color: #52b788; }
+  .step-card.active .step-num { color: #52b788; }
+  .step-card.error .step-num { color: #e63946; }
+  .step-info { flex: 1; }
+  .step-name { font-weight: 600; font-size: 0.95rem; }
+  .step-elapsed {
+    font-family: monospace; font-size: 0.75rem; color: #555; margin-top: 2px;
+  }
+  .step-status {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-family: monospace; font-size: 0.8rem;
+  }
+  .step-dot {
+    width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+  }
+  .step-dot.idle { background: #555; }
+  .step-dot.running { background: #52b788; animation: pulse 1.5s infinite; }
+  .step-dot.done { background: #52b788; }
+  .step-dot.error { background: #e63946; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+  /* ── Settings Panel ── */
+  .settings-panel {
+    background: #16213e; border-radius: 6px; padding: 14px;
+    margin-top: 12px; border: 1px solid #0f3460;
+  }
+  .settings-panel h3 {
+    font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
+    margin-bottom: 10px; letter-spacing: 1px;
+  }
+  .settings-row {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+    flex-wrap: wrap;
+  }
+  .settings-row label {
+    font-size: 0.85rem; color: #8892b0; min-width: 80px; font-family: monospace;
+  }
+  .settings-row select, .settings-row input[type="number"] {
+    background: #0a0a1a; color: #e0e0e0; border: 1px solid #0f3460;
+    padding: 6px 10px; border-radius: 4px; font-size: 0.85rem;
+    font-family: monospace;
+  }
+  .settings-row select { min-width: 140px; }
+  .settings-row input[type="number"] { width: 80px; }
+
+  /* ── Output Log ── */
+  .log-section {
+    position: relative; margin-top: 12px;
+    flex: 1; min-height: 150px; display: flex; flex-direction: column;
+  }
+  .log-section h3 {
+    font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
+    margin-bottom: 6px; letter-spacing: 1px; flex-shrink: 0;
+  }
+  .log-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .log-output {
+    overflow-y: auto;
+    background: #0a0a1a; border-radius: 4px; padding: 8px;
+    font-family: monospace; font-size: 0.72rem; color: #8892b0;
+    line-height: 1.5;
+    flex: 1; min-height: 0;
+  }
+  .log-copy-btn {
+    position: absolute; top: 4px; right: 4px;
+    background: #1a1a2e; border: 1px solid #333; color: #8892b0;
+    font-size: 0.65rem; padding: 2px 8px; border-radius: 3px;
+    cursor: pointer; opacity: 0.7; z-index: 1;
+  }
+  .log-copy-btn:hover { opacity: 1; background: #0f3460; }
+
+  /* ── Charts ── */
+  .charts-row {
+    display: flex; gap: 12px; margin-bottom: 16px;
+  }
+  .chart-box {
+    flex: 1; background: #16213e; border-radius: 6px; padding: 14px;
+    border: 1px solid #0f3460; min-width: 0;
+  }
+  .chart-box h3 {
+    font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
+    margin-bottom: 8px; letter-spacing: 1px;
+  }
+  .chart-box canvas { max-height: 250px; }
+
+  .no-metrics {
+    text-align: center; color: #555; font-family: monospace;
+    padding: 40px 20px;
+  }
+
+  /* ── Summary Stats ── */
+  .metrics-summary {
+    background: #16213e; border-radius: 6px; padding: 14px;
+    margin-bottom: 12px; border: 1px solid #0f3460;
+  }
+  .metrics-summary h3 {
+    font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
+    margin-bottom: 10px; letter-spacing: 1px;
+  }
+  .metric-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 10px;
+  }
+  .metric-item {
+    background: #0a0a1a; border-radius: 4px; padding: 10px;
+    text-align: center;
+  }
+  .metric-value {
+    font-family: monospace; font-size: 1.3rem; font-weight: 700;
+    color: #52b788;
+  }
+  .metric-value.warn { color: #f4a261; }
+  .metric-value.bad { color: #e63946; }
+  .metric-label {
+    font-size: 0.75rem; color: #8892b0; margin-top: 2px;
+    font-family: monospace;
+  }
+
+  /* ── Dataset Stats ── */
+  .dataset-panel {
+    background: #16213e; border-radius: 6px; padding: 14px;
+    border: 1px solid #0f3460;
+  }
+  .dataset-panel h3 {
+    font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
+    margin-bottom: 10px; letter-spacing: 1px;
+  }
+
+  /* ── Sidebar ── */
+  .sidebar-card {
+    background: #16213e; border-radius: 6px; padding: 14px;
+    margin-bottom: 10px;
+  }
+  .sidebar-card h3 {
+    font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
+    margin-bottom: 10px; letter-spacing: 1px;
+  }
+  .cat-stat { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .cat-stat .name { width: 70px; font-weight: 600; font-size: 0.85rem; }
+  .cat-stat .bar-bg {
+    flex: 1; height: 14px; background: #0a0a1a; border-radius: 7px; overflow: hidden;
+  }
+  .cat-stat .bar-fill { height: 100%; border-radius: 7px; transition: width 0.3s ease; }
+  .cat-stat .count {
+    width: 50px; text-align: right; font-family: monospace; font-size: 0.85rem;
+  }
+  .bar-low { background: #e63946; }
+  .bar-mid { background: #f4a261; }
+  .bar-good { background: #52b788; }
+
+  .stat-row {
+    display: flex; justify-content: space-between; padding: 3px 0;
+    font-family: monospace; font-size: 0.85rem;
+  }
+  .stat-row .label { color: #8892b0; }
+
+  .output-file {
+    display: flex; align-items: center; gap: 8px; padding: 3px 0;
+    font-family: monospace; font-size: 0.8rem;
+  }
+  .file-check { color: #52b788; }
+  .file-missing { color: #555; }
+
+  .hints {
+    font-size: 0.75rem; color: #555; font-family: monospace; line-height: 1.6;
+  }
+  .hints kbd {
+    background: #0f3460; padding: 1px 5px; border-radius: 3px; color: #8892b0;
+  }
+
+  @media (max-width: 900px) {
+    body { height: auto; display: block; overflow: auto; }
+    .main { flex-direction: column; flex: unset; min-height: unset; }
+    .content-col { display: block; }
+    #tab-pipeline.active { display: block; }
+    #tab-metrics.active { overflow-y: visible; }
+    .pipeline-top { overflow-y: visible; }
+    .log-section { display: block; min-height: unset; }
+    .log-wrap { display: block; }
+    .log-output { max-height: 400px; }
+    .sidebar { width: 100%; overflow-y: visible; }
+    .charts-row { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Top Bar -->
+<div class="top-bar">
+  <div class="top-bar-inner">
+    <div class="tab-bar">
+      <button class="tab-btn active" data-tab="pipeline" onclick="switchTab('pipeline')">Pipeline</button>
+      <button class="tab-btn" data-tab="metrics" onclick="switchTab('metrics')">Metrics</button>
+    </div>
+    <div class="top-status" id="top-status">Pipeline idle</div>
+  </div>
+</div>
+
+<div class="main">
+  <div class="content-col">
+
+    <!-- ════ PIPELINE TAB ════ -->
+    <div class="tab-content active" id="tab-pipeline">
+      <div class="pipeline-top">
+
+      <div class="version-bar">
+        <label>Version:</label>
+        <select id="version-select" onchange="switchVersion(this.value)"></select>
+        <button class="btn btn-nav btn-sm" onclick="newVersion()">+ New</button>
+      </div>
+
+      <div class="pipeline-controls">
+        <button class="btn btn-primary" id="btn-run-all" onclick="runAll()">Run All</button>
+        <button class="btn btn-danger btn-sm" id="btn-stop" onclick="stopPipeline()" style="display:none">Stop</button>
+      </div>
+
+      <!-- Step Cards -->
+      <div id="step-cards">
+        <div class="step-card" id="step-pull" data-step="pull">
+          <span class="step-num">1</span>
+          <div class="step-info">
+            <div class="step-name">Pull Data from Pi</div>
+            <div class="step-hint" id="hint-pull"></div>
+            <div class="step-elapsed" id="elapsed-pull"></div>
+          </div>
+          <div class="step-status">
+            <span class="step-dot idle" id="dot-pull"></span>
+            <span id="state-pull">idle</span>
+          </div>
+          <button class="btn btn-nav btn-sm" onclick="runStep('pull')">Run</button>
+        </div>
+        <div class="step-card" id="step-prepare" data-step="prepare">
+          <span class="step-num">2</span>
+          <div class="step-info">
+            <div class="step-name">Prepare Dataset</div>
+            <div class="step-hint" id="hint-prepare"></div>
+            <div class="step-elapsed" id="elapsed-prepare"></div>
+          </div>
+          <div class="step-status">
+            <span class="step-dot idle" id="dot-prepare"></span>
+            <span id="state-prepare">idle</span>
+          </div>
+          <button class="btn btn-nav btn-sm" onclick="runStep('prepare')">Run</button>
+        </div>
+        <div class="step-card" id="step-train" data-step="train">
+          <span class="step-num">3</span>
+          <div class="step-info">
+            <div class="step-name">Train Model</div>
+            <div class="step-hint" id="hint-train"></div>
+            <div class="step-elapsed" id="elapsed-train"></div>
+          </div>
+          <div class="step-status">
+            <span class="step-dot idle" id="dot-train"></span>
+            <span id="state-train">idle</span>
+          </div>
+          <button class="btn btn-nav btn-sm" onclick="runStep('train')">Run</button>
+        </div>
+        <div class="step-card" id="step-export" data-step="export">
+          <span class="step-num">4</span>
+          <div class="step-info">
+            <div class="step-name">Export ONNX</div>
+            <div class="step-hint" id="hint-export"></div>
+            <div class="step-elapsed" id="elapsed-export"></div>
+          </div>
+          <div class="step-status">
+            <span class="step-dot idle" id="dot-export"></span>
+            <span id="state-export">idle</span>
+          </div>
+          <button class="btn btn-nav btn-sm" onclick="runStep('export')">Run</button>
+        </div>
+        <div class="step-card" id="step-convert" data-step="convert">
+          <span class="step-num">5</span>
+          <div class="step-info">
+            <div class="step-name">Convert HEF</div>
+            <div class="step-hint" id="hint-convert"></div>
+            <div class="step-elapsed" id="elapsed-convert"></div>
+          </div>
+          <div class="step-status">
+            <span class="step-dot idle" id="dot-convert"></span>
+            <span id="state-convert">idle</span>
+          </div>
+          <button class="btn btn-nav btn-sm" onclick="runStep('convert')">Run</button>
+        </div>
+        <div class="step-card" id="step-deploy" data-step="deploy">
+          <span class="step-num">6</span>
+          <div class="step-info">
+            <div class="step-name">Deploy to Pi</div>
+            <div class="step-hint" id="hint-deploy"></div>
+            <div class="step-elapsed" id="elapsed-deploy"></div>
+          </div>
+          <div class="step-status">
+            <span class="step-dot idle" id="dot-deploy"></span>
+            <span id="state-deploy">idle</span>
+          </div>
+          <button class="btn btn-nav btn-sm" onclick="runStep('deploy')">Run</button>
+        </div>
+      </div>
+
+      <!-- Settings Panel -->
+      <div class="settings-panel">
+        <h3>Training Settings</h3>
+        <div class="settings-row">
+          <label>Model:</label>
+          <select id="set-model">
+            <option value="yolov8n">yolov8n (fast)</option>
+            <option value="yolov8s">yolov8s (balanced)</option>
+            <option value="yolov8m" selected>yolov8m (accurate)</option>
+          </select>
+        </div>
+        <div class="settings-row">
+          <label>Epochs:</label>
+          <input type="number" id="set-epochs" value="150" min="1" max="1000">
+          <label>Batch:</label>
+          <input type="number" id="set-batch" value="16" min="1" max="128">
+          <input type="checkbox" id="set-batch-auto" onchange="toggleAutoBatch()">
+          <label for="set-batch-auto" style="min-width:auto;cursor:pointer">Auto</label>
+        </div>
+        <div class="settings-row">
+          <label>Image size:</label>
+          <input type="number" id="set-imgsz" value="640" min="320" max="1280" step="32">
+          <label>Patience:</label>
+          <input type="number" id="set-patience" value="30" min="1" max="200">
+        </div>
+        <div style="margin-top:8px">
+          <button class="btn btn-nav btn-sm" onclick="saveSettings()">Save Settings</button>
+        </div>
+      </div>
+      </div>
+
+      <!-- Output Log -->
+      <div class="log-section">
+        <h3>Output</h3>
+        <div class="log-wrap">
+          <button class="log-copy-btn" onclick="copyLog()">Copy</button>
+          <div class="log-output" id="log-output">Waiting for pipeline...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════ METRICS TAB ════ -->
+    <div class="tab-content" id="tab-metrics">
+      <div id="metrics-content" style="display:none">
+        <!-- Summary Stats -->
+        <div class="metrics-summary">
+          <h3>Training Summary</h3>
+          <div class="metric-grid">
+            <div class="metric-item">
+              <div class="metric-value" id="m-epoch">--</div>
+              <div class="metric-label">Epochs</div>
+            </div>
+            <div class="metric-item">
+              <div class="metric-value" id="m-best-map">--</div>
+              <div class="metric-label">Best mAP50</div>
+            </div>
+            <div class="metric-item">
+              <div class="metric-value" id="m-best-epoch">--</div>
+              <div class="metric-label">Best Epoch</div>
+            </div>
+            <div class="metric-item">
+              <div class="metric-value" id="m-train-loss">--</div>
+              <div class="metric-label">Train Loss</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Charts -->
+        <div class="charts-row">
+          <div class="chart-box">
+            <h3>Loss</h3>
+            <canvas id="chart-loss"></canvas>
+          </div>
+          <div class="chart-box">
+            <h3>mAP</h3>
+            <canvas id="chart-map"></canvas>
+          </div>
+        </div>
+
+        <!-- Dataset Stats -->
+        <div class="dataset-panel" id="dataset-panel">
+          <h3>Dataset</h3>
+          <div id="dataset-stats-content"></div>
+        </div>
+      </div>
+      <div class="no-metrics" id="no-metrics">
+        No training metrics available yet.<br>
+        Run training to see loss curves and mAP charts.
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ════ SIDEBAR ════ -->
+  <div class="sidebar">
+    <div class="sidebar-card">
+      <h3>Pipeline Status</h3>
+      <div class="stat-row">
+        <span class="label">Step:</span>
+        <span id="sidebar-step">--</span>
+      </div>
+      <div class="stat-row">
+        <span class="label">Mode:</span>
+        <span id="sidebar-mode">Idle</span>
+      </div>
+      <div class="stat-row">
+        <span class="label">Elapsed:</span>
+        <span id="sidebar-elapsed">--</span>
+      </div>
+    </div>
+
+    <div class="sidebar-card">
+      <h3>Output Files</h3>
+      <div id="output-files">
+        <div class="output-file"><span class="file-missing">-</span> dataset.yaml</div>
+        <div class="output-file"><span class="file-missing">-</span> best.pt</div>
+        <div class="output-file"><span class="file-missing">-</span> best.onnx</div>
+        <div class="output-file"><span class="file-missing">-</span> cat_detector.hef</div>
+        <div class="output-file"><span class="file-missing">-</span> labels.json</div>
+      </div>
+    </div>
+
+    <div class="sidebar-card">
+      <h3>Raw Images</h3>
+      <div id="raw-counts"></div>
+    </div>
+
+    <div class="sidebar-card hints">
+      <h3>Shortcuts</h3>
+      <kbd>1</kbd>-<kbd>5</kbd> Run step<br>
+      <kbd>r</kbd> Run All<br>
+      <kbd>s</kbd> Stop
+    </div>
+  </div>
+</div>
+
+<script>
+const CATS = {{ cat_names | tojson }};
+const STEPS = ['pull', 'prepare', 'train', 'export', 'convert', 'deploy'];
+let activeTab = 'pipeline';
+let lossChart = null;
+let mapChart = null;
+let metricsLoaded = false;
+let latestOutputs = {};
+let latestDatasetStats = {};
+let latestStepStates = {};
+let lastLogHtml = '';
+let logAutoScroll = true;
+let logUpdating = false;
+
+// ── Tab switching ──────────────────────────────────────────
+function switchTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + tab));
+  if (tab === 'metrics') pollMetrics();
+}
+
+// ── Version management ─────────────────────────────────────
+async function loadVersions() {
+  try {
+    const r = await fetch('/api/versions');
+    const d = await r.json();
+    const sel = document.getElementById('version-select');
+    const current = sel.value;
+    if (d.versions.length === 0) {
+      sel.innerHTML = '<option value="v1" selected>v1</option>';
+    } else {
+      sel.innerHTML = d.versions.map(v =>
+        '<option value="' + v.name + '"' + (v.name === d.active ? ' selected' : '') + '>' +
+        v.name + (v.has_model ? ' \u2713' : '') + '</option>'
+      ).join('');
+    }
+  } catch(e) { console.error(e); }
+}
+
+async function switchVersion(name) {
+  await fetch('/api/versions', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ name })
+  });
+  pollStatus();
+  pollDatasetStats();
+  if (activeTab === 'metrics') pollMetrics();
+}
+
+function newVersion() {
+  const name = prompt('Version name:');
+  if (!name || !name.trim()) return;
+  const clean = name.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+  const sel = document.getElementById('version-select');
+  if (![...sel.options].some(o => o.value === clean)) {
+    sel.add(new Option(clean, clean));
+  }
+  sel.value = clean;
+  switchVersion(clean);
+}
+
+// ── Pipeline controls ──────────────────────────────────────
+async function runStep(name) {
+  try {
+    const r = await fetch('/api/run/' + name, {method: 'POST'});
+    const d = await r.json();
+    if (d.status !== 'ok') alert('Error: ' + (d.message || 'unknown'));
+  } catch(e) { console.error(e); }
+}
+
+async function runAll() {
+  try {
+    const r = await fetch('/api/run_all', {method: 'POST'});
+    const d = await r.json();
+    if (d.status !== 'ok') alert('Error: ' + (d.message || 'unknown'));
+  } catch(e) { console.error(e); }
+}
+
+async function stopPipeline() {
+  try {
+    await fetch('/api/stop', {method: 'POST'});
+  } catch(e) { console.error(e); }
+}
+
+// ── Settings ───────────────────────────────────────────────
+function toggleAutoBatch() {
+  const auto = document.getElementById('set-batch-auto').checked;
+  const input = document.getElementById('set-batch');
+  input.disabled = auto;
+  input.style.opacity = auto ? '0.35' : '1';
+}
+
+async function loadSettings() {
+  try {
+    const r = await fetch('/api/settings');
+    const d = await r.json();
+    const t = d.training || {};
+    document.getElementById('set-model').value = t.model_size || 'yolov8m';
+    document.getElementById('set-epochs').value = t.epochs || 150;
+    const batchSize = t.batch_size || 16;
+    if (batchSize === -1) {
+      document.getElementById('set-batch-auto').checked = true;
+      document.getElementById('set-batch').value = 16;
+      toggleAutoBatch();
+    } else {
+      document.getElementById('set-batch').value = batchSize;
+    }
+    document.getElementById('set-imgsz').value = t.image_size || 640;
+    document.getElementById('set-patience').value = t.patience || 30;
+  } catch(e) { console.error(e); }
+}
+
+async function saveSettings() {
+  try {
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        training: {
+          model_size: document.getElementById('set-model').value,
+          epochs: parseInt(document.getElementById('set-epochs').value),
+          batch_size: document.getElementById('set-batch-auto').checked ? -1 : parseInt(document.getElementById('set-batch').value),
+          image_size: parseInt(document.getElementById('set-imgsz').value),
+          patience: parseInt(document.getElementById('set-patience').value),
+        }
+      })
+    });
+    // Visual feedback
+    const btn = event.target;
+    btn.textContent = 'Saved!';
+    setTimeout(() => { btn.textContent = 'Save Settings'; }, 1000);
+  } catch(e) { console.error(e); }
+}
+
+// ── Copy log ───────────────────────────────────────────────
+function copyLog() {
+  const log = document.getElementById('log-output');
+  const text = log.innerText;
+  const btn = document.querySelector('.log-copy-btn');
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => {
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1000);
+    });
+  } else {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = 'Copy'; }, 1000);
+  }
+}
+
+// ── Time formatting ────────────────────────────────────────
+function fmtTime(seconds) {
+  if (!seconds || seconds < 0) return '--';
+  if (seconds < 60) return Math.round(seconds) + 's';
+  if (seconds < 3600) return Math.floor(seconds / 60) + 'm ' + Math.round(seconds % 60) + 's';
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  return h + 'h ' + m + 'm';
+}
+
+// ── Status polling ─────────────────────────────────────────
+async function pollStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+
+    const steps = d.steps || {};
+    let isRunning = false;
+    let currentLabel = '--';
+
+    STEPS.forEach(name => {
+      const s = steps[name] || {};
+      const state = s.state || 'idle';
+      const card = document.getElementById('step-' + name);
+      const dot = document.getElementById('dot-' + name);
+      const stateEl = document.getElementById('state-' + name);
+      const elapsedEl = document.getElementById('elapsed-' + name);
+
+      // Card styling
+      card.className = 'step-card';
+      if (state === 'running') { card.classList.add('active'); isRunning = true; currentLabel = s.label; }
+      else if (state === 'done') card.classList.add('done');
+      else if (state === 'error') card.classList.add('error');
+
+      // Dot + text
+      dot.className = 'step-dot ' + state;
+      stateEl.textContent = state;
+
+      // Elapsed
+      elapsedEl.textContent = s.elapsed ? fmtTime(s.elapsed) : '';
+    });
+
+    // Show/hide stop button
+    document.getElementById('btn-stop').style.display = isRunning ? 'inline-block' : 'none';
+    document.getElementById('btn-run-all').disabled = isRunning;
+
+    // Disable run buttons on steps while something is running
+    document.querySelectorAll('.step-card .btn').forEach(btn => {
+      btn.disabled = isRunning;
+    });
+
+    // Top status
+    const ver = d.active_version || '?';
+    if (isRunning) {
+      document.getElementById('top-status').textContent = '[' + ver + '] Running: ' + currentLabel +
+        (d.auto_pipeline ? ' (auto-pipeline)' : '');
+    } else {
+      const doneCount = STEPS.filter(n => (steps[n] || {}).state === 'done').length;
+      document.getElementById('top-status').textContent = '[' + ver + '] ' + (doneCount > 0
+        ? doneCount + '/5 steps complete' : 'Pipeline idle');
+    }
+
+    // Sidebar
+    document.getElementById('sidebar-step').textContent = d.current_step
+      ? (steps[d.current_step] || {}).label || d.current_step : '--';
+    document.getElementById('sidebar-mode').textContent = d.auto_pipeline
+      ? 'Auto-pipeline' : (isRunning ? 'Single step' : 'Idle');
+
+    if (d.current_step && steps[d.current_step]) {
+      document.getElementById('sidebar-elapsed').textContent =
+        fmtTime(steps[d.current_step].elapsed);
+    } else {
+      document.getElementById('sidebar-elapsed').textContent = '--';
+    }
+
+    // Output log — only update DOM if content changed (preserves text selection)
+    if (d.output && d.output.length > 0) {
+      const log = document.getElementById('log-output');
+      const lines = d.output.slice(-40);
+      const newHtml = lines.map(l => l.replace(/</g, '&lt;')).join('<br>');
+      if (newHtml !== lastLogHtml) {
+        logUpdating = true;
+        lastLogHtml = newHtml;
+        log.innerHTML = newHtml;
+        if (logAutoScroll) {
+          log.scrollTop = log.scrollHeight;
+          requestAnimationFrame(() => { log.scrollTop = log.scrollHeight; });
+        }
+        requestAnimationFrame(() => { logUpdating = false; });
+      }
+    }
+
+    // Output files
+    if (d.outputs) {
+      updateOutputFiles(d.outputs);
+      latestOutputs = d.outputs;
+    }
+
+    // Track step states for readiness
+    STEPS.forEach(name => { latestStepStates[name] = (steps[name] || {}).state || 'idle'; });
+    updateReadiness();
+
+  } catch(e) {}
+}
+
+function updateOutputFiles(outputs) {
+  const map = {
+    dataset_yaml: 'dataset.yaml',
+    best_pt: 'best.pt',
+    best_onnx: 'best.onnx',
+    cat_detector_hef: 'cat_detector.hef',
+    labels_json: 'labels.json',
+  };
+  const container = document.getElementById('output-files');
+  container.innerHTML = '';
+  for (const [key, label] of Object.entries(map)) {
+    const info = outputs[key] || {};
+    const icon = info.exists ? '<span class="file-check">&#10003;</span>' : '<span class="file-missing">-</span>';
+    const size = info.exists ? ' (' + info.size_mb + ' MB)' : '';
+    container.innerHTML += '<div class="output-file">' + icon + ' ' + label + size + '</div>';
+  }
+}
+
+// ── Metrics polling ────────────────────────────────────────
+async function pollMetrics() {
+  try {
+    const r = await fetch('/api/metrics');
+    const d = await r.json();
+
+    if (!d.available) {
+      document.getElementById('no-metrics').style.display = 'block';
+      document.getElementById('metrics-content').style.display = 'none';
+      return;
+    }
+
+    document.getElementById('no-metrics').style.display = 'none';
+    document.getElementById('metrics-content').style.display = 'block';
+
+    // Summary stats
+    document.getElementById('m-epoch').textContent = d.total_epochs;
+    const bestMap = d.best_map50;
+    const mapEl = document.getElementById('m-best-map');
+    mapEl.textContent = bestMap.toFixed(3);
+    mapEl.className = 'metric-value' + (bestMap >= 0.7 ? '' : bestMap >= 0.5 ? ' warn' : ' bad');
+    document.getElementById('m-best-epoch').textContent = d.best_epoch;
+
+    const lastLoss = d.train_box_loss.length > 0
+      ? d.train_box_loss[d.train_box_loss.length - 1] : 0;
+    document.getElementById('m-train-loss').textContent = lastLoss.toFixed(3);
+
+    // Charts
+    updateCharts(d);
+
+    metricsLoaded = true;
+  } catch(e) { console.error(e); }
+}
+
+function updateCharts(data) {
+  const labels = data.epochs;
+  const chartOpts = {
+    responsive: true,
+    maintainAspectRatio: true,
+    animation: { duration: 0 },
+    scales: {
+      x: {
+        title: { display: true, text: 'Epoch', color: '#8892b0' },
+        ticks: { color: '#555' }, grid: { color: '#1a1a2e' },
+      },
+      y: {
+        ticks: { color: '#555' }, grid: { color: '#0f3460' },
+      },
+    },
+    plugins: {
+      legend: { labels: { color: '#8892b0', font: { family: 'monospace', size: 11 } } },
+    },
+  };
+
+  // Loss chart
+  if (lossChart) {
+    lossChart.data.labels = labels;
+    lossChart.data.datasets[0].data = data.train_box_loss;
+    lossChart.data.datasets[1].data = data.val_box_loss;
+    lossChart.update();
+  } else {
+    const ctx = document.getElementById('chart-loss').getContext('2d');
+    lossChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Train Box Loss',
+            data: data.train_box_loss,
+            borderColor: '#52b788', backgroundColor: 'transparent',
+            borderWidth: 1.5, pointRadius: 0, tension: 0.3,
+          },
+          {
+            label: 'Val Box Loss',
+            data: data.val_box_loss,
+            borderColor: '#e63946', backgroundColor: 'transparent',
+            borderWidth: 1.5, pointRadius: 0, tension: 0.3,
+          },
+        ],
+      },
+      options: chartOpts,
+    });
+  }
+
+  // mAP chart
+  if (mapChart) {
+    mapChart.data.labels = labels;
+    mapChart.data.datasets[0].data = data.map50;
+    mapChart.data.datasets[1].data = data.map50_95;
+    mapChart.update();
+  } else {
+    const ctx2 = document.getElementById('chart-map').getContext('2d');
+    mapChart = new Chart(ctx2, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'mAP50',
+            data: data.map50,
+            borderColor: '#52b788', backgroundColor: 'transparent',
+            borderWidth: 1.5, pointRadius: 0, tension: 0.3,
+          },
+          {
+            label: 'mAP50-95',
+            data: data.map50_95,
+            borderColor: '#f4a261', backgroundColor: 'transparent',
+            borderWidth: 1.5, pointRadius: 0, tension: 0.3,
+          },
+        ],
+      },
+      options: chartOpts,
+    });
+  }
+}
+
+// ── Dataset stats ──────────────────────────────────────────
+async function pollDatasetStats() {
+  try {
+    const r = await fetch('/api/dataset_stats');
+    const d = await r.json();
+    latestDatasetStats = d;
+
+    // Sidebar raw counts
+    const rawEl = document.getElementById('raw-counts');
+    rawEl.innerHTML = '';
+    const minImages = 300;
+    CATS.forEach(cat => {
+      const c = d.raw_counts[cat] || 0;
+      const pct = Math.min(100, (c / minImages) * 100);
+      const barClass = pct < 33 ? 'bar-low' : pct < 80 ? 'bar-mid' : 'bar-good';
+      rawEl.innerHTML += '<div class="cat-stat">' +
+        '<span class="name">' + cat + '</span>' +
+        '<div class="bar-bg"><div class="bar-fill ' + barClass + '" style="width:' + pct + '%"></div></div>' +
+        '<span class="count">' + c + '</span></div>';
+    });
+    const uc = d.raw_counts.unlabeled || 0;
+    if (uc > 0) {
+      rawEl.innerHTML += '<div class="cat-stat">' +
+        '<span class="name" style="color:#ffb347">unlbl</span>' +
+        '<div class="bar-bg"><div class="bar-fill" style="width:10%;background:#5a3600"></div></div>' +
+        '<span class="count">' + uc + '</span></div>';
+    }
+
+    // Metrics tab dataset panel
+    const dsEl = document.getElementById('dataset-stats-content');
+    if (d.dataset_ready) {
+      const sc = d.split_counts;
+      dsEl.innerHTML = '<div class="stat-row"><span class="label">Train:</span><span>' + sc.train + '</span></div>' +
+        '<div class="stat-row"><span class="label">Val:</span><span>' + sc.val + '</span></div>' +
+        '<div class="stat-row"><span class="label">Test:</span><span>' + sc.test + '</span></div>' +
+        '<div class="stat-row"><span class="label">Calibration:</span><span>' + sc.calibration + '</span></div>';
+    } else {
+      dsEl.innerHTML = '<div style="color:#555;font-family:monospace;font-size:0.85rem">Dataset not prepared yet</div>';
+    }
+    updateReadiness();
+  } catch(e) { console.error(e); }
+}
+
+// ── Readiness indicators ────────────────────────────────────
+function updateReadiness() {
+  const readiness = {
+    pull:    { ready: true, hint: 'Ready' },
+    prepare: { ready: (latestDatasetStats.raw_total || 0) > 0, hint: 'Need raw images' },
+    train:   { ready: !!(latestOutputs.dataset_yaml || {}).exists, hint: 'Run Prepare first' },
+    export:  { ready: !!(latestOutputs.best_pt || {}).exists, hint: 'Run Train first' },
+    convert: { ready: !!(latestOutputs.best_onnx || {}).exists, hint: 'Run Export first' },
+    deploy:  { ready: !!(latestOutputs.cat_detector_hef || {}).exists, hint: 'Run Convert first' },
+  };
+
+  // Check if step's own output artifact exists (persists across restarts)
+  const completed = {
+    pull:    (latestDatasetStats.raw_total || 0) > 0,
+    prepare: !!(latestOutputs.dataset_yaml || {}).exists,
+    train:   !!(latestOutputs.best_pt || {}).exists,
+    export:  !!(latestOutputs.best_onnx || {}).exists,
+    convert: !!(latestOutputs.cat_detector_hef || {}).exists,
+    deploy:  latestStepStates['deploy'] === 'done',
+  };
+
+  STEPS.forEach(name => {
+    const state = latestStepStates[name] || 'idle';
+    const card = document.getElementById('step-' + name);
+    const hintEl = document.getElementById('hint-' + name);
+    const r = readiness[name];
+
+    card.classList.remove('ready', 'completed', 'blocked');
+    if (state === 'idle') {
+      if (completed[name]) {
+        card.classList.add('completed');
+        hintEl.textContent = 'Completed';
+      } else if (r.ready) {
+        card.classList.add('ready');
+        hintEl.textContent = 'Ready';
+      } else {
+        card.classList.add('blocked');
+        hintEl.textContent = r.hint;
+      }
+    } else {
+      hintEl.textContent = '';
+    }
+  });
+}
+
+// ── Keyboard shortcuts ─────────────────────────────────────
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+
+  const num = parseInt(e.key);
+  if (num >= 1 && num <= 5) {
+    runStep(STEPS[num - 1]);
+    return;
+  }
+  switch (e.key) {
+    case 'r': runAll(); break;
+    case 's': stopPipeline(); break;
+  }
+});
+
+// ── Init ───────────────────────────────────────────────────
+document.getElementById('log-output').addEventListener('scroll', function() {
+  if (logUpdating) return;
+  logAutoScroll = (this.scrollHeight - this.scrollTop - this.clientHeight) < 30;
+});
+loadSettings();
+loadVersions();
+pollDatasetStats();
+setInterval(pollStatus, 1000);
+setInterval(() => {
+  if (activeTab === 'metrics') pollMetrics();
+  pollDatasetStats();
+  loadVersions();
+}, 5000);
+</script>
+</body>
+</html>

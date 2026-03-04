@@ -21,19 +21,28 @@ class FrameExtractor:
     """Extract numpy frames from GStreamer buffers."""
 
     @staticmethod
-    def extract_frame(buffer, pad) -> np.ndarray | None:
+    def extract_frame(buffer, pad_or_element) -> np.ndarray | None:
         """Convert a GStreamer buffer to a numpy BGR array.
 
         Args:
-            buffer: Gst.Buffer from info.get_buffer()
-            pad: Gst.Pad from the probe callback (for video caps)
+            buffer: Gst.Buffer containing frame data
+            pad_or_element: Gst.Pad or Gst.Element (identity element from
+                            hailo-apps callback). Caps are read from the pad;
+                            if an element is passed, its sink pad is used.
 
         Returns:
             numpy array in BGR format (OpenCV-compatible), or None on failure.
         """
         from gi.repository import Gst
 
-        caps = pad.get_current_caps()
+        # Get caps — works with both a Pad and an Element
+        caps = None
+        if hasattr(pad_or_element, 'get_current_caps'):
+            caps = pad_or_element.get_current_caps()
+        if caps is None and hasattr(pad_or_element, 'get_static_pad'):
+            sink_pad = pad_or_element.get_static_pad("sink")
+            if sink_pad:
+                caps = sink_pad.get_current_caps()
         if caps is None:
             return None
 
@@ -123,6 +132,19 @@ class DetectionCapturer:
     def start(self) -> None:
         """Start the background save thread."""
         self._thread.start()
+
+    def should_capture(self, cat_name: str) -> bool:
+        """Check if a capture would be accepted (throttle + session limits).
+
+        Use this to avoid expensive frame extraction when capture would be rejected.
+        """
+        now = time.time()
+        with self._lock:
+            if (self.max_per_session > 0
+                    and self._session_capture_count.get(cat_name, 0) >= self.max_per_session):
+                return False
+            elapsed = now - self._last_capture_time.get(cat_name, 0.0)
+            return elapsed >= self.min_interval
 
     def maybe_capture(
         self,
