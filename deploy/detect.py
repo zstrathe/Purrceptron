@@ -68,6 +68,7 @@ class PreviewFrameWriter:
                  jpeg_quality: int):
         self.preview_path = preview_path
         self.tmp_path = preview_path + ".tmp"
+        self.detections_path = preview_path.replace(".jpg", "_detections.json")
         self.target_interval = 1.0 / preview_fps
         self.preview_size = (preview_width, preview_height)
         self.jpeg_quality = jpeg_quality
@@ -129,6 +130,15 @@ class PreviewFrameWriter:
                     with open(self.tmp_path, "wb") as f:
                         f.write(jpeg.tobytes())
                     os.replace(self.tmp_path, self.preview_path)
+                # Write detection metadata sidecar
+                det_tmp = self.detections_path + ".tmp"
+                with open(det_tmp, "w") as f:
+                    json.dump([
+                        {"label": d["label"], "confidence": d["confidence"],
+                         "track_id": d.get("track_id")}
+                        for d in detections
+                    ], f)
+                os.replace(det_tmp, self.detections_path)
             except Exception as exc:
                 print_warning(f"PreviewFrameWriter error: {exc}")
             self._queue.task_done()
@@ -138,7 +148,8 @@ class PreviewFrameWriter:
         self._queue.join()
         self._queue.put(None)
         self._thread.join(timeout=5)
-        for p in (self.preview_path, self.tmp_path):
+        for p in (self.preview_path, self.tmp_path,
+                  self.detections_path, self.detections_path + ".tmp"):
             try:
                 os.remove(p)
             except FileNotFoundError:
@@ -259,7 +270,9 @@ if HAILO_AVAILABLE:
             self.feeding_tracker = None  # Optional FeedingTracker instance
             self.detection_capturer = None  # Optional DetectionCapturer instance
             self.capture_mode = None  # "eating" or "detections"
+            self.capture_filter_labels: set[str] | None = None  # labels to auto-capture
             self.unlabeled_classes: set[str] = set()  # COCO classes to save as "unlabeled"
+            self.ignore_labels: set[str] = set()  # labels hidden from video/pills
             self.preview_writer: PreviewFrameWriter | None = None
             self.command_listener: StdinCommandListener | None = None
             self.manual_capture_dir: Path | None = None
@@ -301,6 +314,11 @@ if HAILO_AVAILABLE:
                 roi.remove_object(detection)
                 continue
 
+            # Hide ignored labels from video overlay and pills
+            if user_data.ignore_labels and label in user_data.ignore_labels:
+                roi.remove_object(detection)
+                continue
+
             # Track unique IDs if tracker is active
             track_objs = detection.get_objects_typed(hailo.HAILO_UNIQUE_ID)
             track_id = track_objs[0].get_id() if track_objs else None
@@ -326,11 +344,14 @@ if HAILO_AVAILABLE:
         if user_data.get_count() % 150 == 0:
             print_info(f"Frame {user_data.get_count()}: {len(frame_detections)} detections this frame")
 
-        # Process stdin capture commands (cheap — just a queue check)
+        # Process stdin commands (cheap — just a queue check)
         if user_data.command_listener:
             cmd = user_data.command_listener.get_command()
-            if cmd and cmd.get("cmd") == "capture":
-                _handle_capture_command(element, buffer, user_data, cmd)
+            if cmd:
+                if cmd.get("cmd") == "capture":
+                    _handle_capture_command(element, buffer, user_data, cmd)
+                elif cmd.get("cmd") == "set_ignore_labels":
+                    user_data.ignore_labels = set(cmd.get("labels", []))
 
         # Feed into session tracker (with tracker IDs)
         if user_data.feeding_tracker:
@@ -345,7 +366,11 @@ if HAILO_AVAILABLE:
         needs_capture = False
         if user_data.detection_capturer and detected_cats:
             if user_data.capture_mode == "detections":
-                for cat in detected_cats:
+                # Filter to only configured labels (if set)
+                capture_cats = detected_cats
+                if user_data.capture_filter_labels:
+                    capture_cats = detected_cats & user_data.capture_filter_labels
+                for cat in capture_cats:
                     save_label = ("unlabeled" if user_data.unlabeled_classes
                                   and cat in user_data.unlabeled_classes else cat)
                     if user_data.detection_capturer.should_capture(save_label):
@@ -372,7 +397,7 @@ if HAILO_AVAILABLE:
             if user_data.capture_mode == "eating" and user_data.feeding_tracker:
                 _maybe_capture_eating_cats(user_data, detected_cats, frame)
             elif user_data.capture_mode == "detections":
-                _maybe_capture_detections(user_data, detected_cats, frame)
+                _maybe_capture_detections(user_data, detected_cats, frame, frame_detections)
 
 
     def _handle_capture_command(element, buffer, user_data: CatDetectionCallback, cmd: dict):
@@ -408,19 +433,42 @@ if HAILO_AVAILABLE:
                   flush=True)
 
 
-    def _maybe_capture_detections(user_data, detected_cats, frame):
+    def _maybe_capture_detections(user_data, detected_cats, frame, frame_detections=None):
         """Capture a frame for each detected class (no feeding tracker required).
 
         Args:
             user_data: CatDetectionCallback with detection_capturer
             detected_cats: set of detected label names
             frame: Pre-extracted BGR numpy array (shared with preview writer)
+            frame_detections: list of detection dicts with bbox_norm for drawing
         """
-        for cat in detected_cats:
+        # Draw bounding boxes on a copy so saved frames show what was detected
+        save_frame = frame
+        if frame_detections:
+            h, w = frame.shape[:2]
+            pixel_dets = []
+            for det in frame_detections:
+                nx, ny, nw, nh = det["bbox_norm"]
+                pixel_dets.append({
+                    "label": det["label"],
+                    "confidence": det["confidence"],
+                    "bbox": (int(nx * w), int(ny * h),
+                             int((nx + nw) * w), int((ny + nh) * h)),
+                    "track_id": det.get("track_id"),
+                })
+            save_frame = frame.copy()
+            draw_bounding_boxes(save_frame, pixel_dets)
+
+        # Filter by configured labels
+        capture_cats = detected_cats
+        if user_data.capture_filter_labels:
+            capture_cats = detected_cats & user_data.capture_filter_labels
+
+        for cat in capture_cats:
             save_label = cat
             if user_data.unlabeled_classes and cat in user_data.unlabeled_classes:
                 save_label = "unlabeled"
-            user_data.detection_capturer.maybe_capture(save_label, frame)
+            user_data.detection_capturer.maybe_capture(save_label, save_frame)
 
 
     def _maybe_capture_eating_cats(user_data, detected_cats, frame):
@@ -470,29 +518,31 @@ def main():
     web_cfg = cfg.get("web_ui", {})
 
     # Build Hailo sys.argv from config; CLI args in remaining_argv override.
-    # If model/labels files don't exist, omit the flag so hailo-apps uses its
-    # built-in defaults (e.g. the standard COCO yolov8 model).
-    hef_path = str(resolve_path(deploy_cfg["hef_path"], PROJECT_ROOT))
-    labels_path = str(resolve_path(deploy_cfg["labels_json"], PROJECT_ROOT))
+    # If model/labels are empty or files don't exist, omit the flags so
+    # hailo-apps uses its built-in defaults (e.g. the standard COCO yolov8 model).
+    raw_hef = deploy_cfg.get("hef_path", "")
+    raw_labels = deploy_cfg.get("labels_json", "")
     camera_device = camera_cfg.get("device", "/dev/video0")
 
-    if Path(hef_path).exists():
-        # Custom model: we control input, model, and labels
-        sys.argv = [sys.argv[0], "--input", camera_device]
-        sys.argv += ["--hef-path", hef_path]
-        print_info(f"Model: {hef_path}")
-        if Path(labels_path).exists():
-            sys.argv += ["--labels-json", labels_path]
-            print_info(f"Labels: {labels_path}")
+    sys.argv = [sys.argv[0], "--input", camera_device]
+
+    if raw_hef:
+        hef_path = str(resolve_path(raw_hef, PROJECT_ROOT))
+        if Path(hef_path).is_file():
+            sys.argv += ["--hef-path", hef_path]
+            print_info(f"Model: {hef_path}")
+            # Only pass labels when using a custom model
+            if raw_labels:
+                labels_path = str(resolve_path(raw_labels, PROJECT_ROOT))
+                if Path(labels_path).is_file():
+                    sys.argv += ["--labels-json", labels_path]
+                    print_info(f"Labels: {labels_path}")
+                else:
+                    print_warning(f"Labels not found: {labels_path}")
         else:
-            print_warning(f"Labels not found: {labels_path}")
+            print_warning(f"Model not found: {hef_path} — using hailo-apps defaults")
     else:
-        # Default model: pass input + labels, let hailo-apps handle model
-        sys.argv = [sys.argv[0], "--input", camera_device]
-        if Path(labels_path).exists():
-            sys.argv += ["--labels-json", labels_path]
-            print_info(f"Labels: {labels_path}")
-        print_warning(f"Model not found: {hef_path} — using hailo-apps defaults")
+        print_info("No custom model configured — using hailo-apps defaults")
 
     sys.argv += remaining_argv
     print_info(f"sys.argv for hailo-apps: {sys.argv}")
@@ -573,6 +623,31 @@ def main():
     except Exception as exc:
         print_warning(f"Could not configure callback queue: {exc}")
 
+    # Configure tracker class-id (-1 = track all classes)
+    try:
+        tracker = app.pipeline.get_by_name("hailo_tracker")
+        if tracker:
+            tracker.set_property("class-id", tracker_class_id)
+            print_info(f"Tracker '{tracker.get_name()}': class-id={tracker_class_id}")
+        else:
+            # Try iterating to find by factory name
+            it = app.pipeline.iterate_elements()
+            found = False
+            while True:
+                ok, elem = it.next()
+                if ok != 1:  # Gst.IteratorResult.OK
+                    break
+                factory = elem.get_factory()
+                if factory and factory.get_name() == "hailotracker":
+                    elem.set_property("class-id", tracker_class_id)
+                    print_info(f"Tracker '{elem.get_name()}': class-id={tracker_class_id}")
+                    found = True
+                    break
+            if not found:
+                print_warning("No hailotracker element found in pipeline")
+    except Exception as exc:
+        print_warning(f"Could not configure tracker: {exc}")
+
     # Setup feeding tracker if enabled
     if feeding_cfg.get("enabled", False):
         from deploy.feeding_tracker import FeedingTracker
@@ -598,14 +673,26 @@ def main():
             capture_cfg.get("output_dir", "data/raw"),
             PROJECT_ROOT,
         )
+        # Use auto-capture interval as the throttle (fallback to detection_capture's own)
+        collection_cfg = cfg.get("collection", {})
+        interval = collection_cfg.get(
+            "auto_capture_interval_sec",
+            capture_cfg.get("min_interval_seconds", 15.0),
+        )
         user_data.detection_capturer = DetectionCapturer(
             output_dir=capture_dir,
             cats=cfg.get("cats", []),
-            min_interval_seconds=capture_cfg.get("min_interval_seconds", 15.0),
+            min_interval_seconds=interval,
             max_captures_per_session=capture_cfg.get("max_captures_per_session", 0),
             jpeg_quality=capture_cfg.get("jpeg_quality", 95),
             csv_logging=capture_cfg.get("csv_logging", True),
         )
+
+        # Set label filter if configured
+        filter_labels = capture_cfg.get("filter_labels", [])
+        if filter_labels:
+            user_data.capture_filter_labels = set(filter_labels)
+            print_info(f"Capture filter: {filter_labels}")
 
         # Capture mode: "eating" if feeding tracker active, else "detections"
         if user_data.feeding_tracker:

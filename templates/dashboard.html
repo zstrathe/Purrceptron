@@ -188,6 +188,28 @@
   .flash.active { animation: flash-fade 0.3s ease-out; }
   @keyframes flash-fade { from { opacity: 1; } to { opacity: 0; } }
 
+  /* ── Detection Info Bar ── */
+  .detection-bar {
+    background: #16213e; border-radius: 6px; padding: 8px 12px;
+    margin-top: 8px; border: 1px solid #0f3460;
+  }
+  .detection-pills {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    min-height: 24px; align-items: center;
+  }
+  .det-none {
+    color: #555; font-family: monospace; font-size: 0.75rem;
+  }
+  .det-pill {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 3px 10px; border-radius: 12px;
+    font-family: monospace; font-size: 0.8rem; font-weight: 600;
+    color: #000; white-space: nowrap;
+  }
+  .det-pill .det-conf {
+    font-weight: 400; font-size: 0.7rem; opacity: 0.7;
+  }
+
   .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
   .nav-row { display: flex; gap: 8px; margin-top: 8px; }
 
@@ -346,7 +368,7 @@
           <h4>Inference Settings</h4>
           <div class="inference-row">
             <label>Model:</label>
-            <select id="inf-model">
+            <select id="inf-model" onchange="onModelChange()">
               <option value="">No models found</option>
             </select>
           </div>
@@ -381,9 +403,8 @@
           </label>
         </div>
         <div class="inference-row">
-          <label>Interval:</label>
-          <input type="number" id="cap-interval" value="15" min="1" onchange="saveCaptureSettings()">
-          <span style="font-size:0.8rem;color:#555">sec</span>
+          <label>Labels:</label>
+          <input type="text" id="cap-labels" onchange="saveCaptureSettings()">
         </div>
       </div>
 
@@ -392,6 +413,23 @@
         <img id="camera-feed" src="" alt="Detection Feed" style="display:none">
         <div class="no-feed-msg" id="no-feed-msg">Waiting for camera...</div>
         <div class="flash" id="capture-flash"></div>
+      </div>
+
+      <!-- Current Detections -->
+      <div class="detection-bar">
+        <div class="detection-pills" id="detection-pills">
+          <span class="det-none">No detections</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
+          <span style="font-size:0.75rem;color:#8892b0;font-family:monospace">Ignore:</span>
+          <div style="flex:1;display:flex;align-items:center;background:#0a0a1a;border:1px solid #0f3460;border-radius:4px;overflow:hidden">
+            <input type="text" id="ignore-labels" placeholder="e.g. person, dog"
+                   onkeydown="if(event.key==='Enter')sendIgnoreLabels()"
+                   style="flex:1;font-size:0.75rem;padding:4px 8px;background:transparent;color:#e0e0e0;border:none;outline:none;font-family:monospace">
+            <button onclick="sendIgnoreLabels()"
+                    style="font-size:0.65rem;font-weight:700;padding:3px 10px;margin:2px 3px 2px 2px;background:#0f3460;color:#e0e0e0;border:none;border-radius:3px;cursor:pointer;font-family:monospace;white-space:nowrap;letter-spacing:0.5px">Apply</button>
+          </div>
+        </div>
       </div>
 
       <!-- Manual Capture Buttons -->
@@ -507,6 +545,13 @@
       <kbd>d</kbd> Delete<br>
       <kbd>n</kbd>/<kbd>&rarr;</kbd> Next &nbsp; <kbd>p</kbd>/<kbd>&larr;</kbd> Prev
     </div>
+
+    <div class="sidebar-card">
+      <h3>Recent Detections</h3>
+      <div id="recent-detections" style="font-family:monospace;font-size:0.8rem;color:#e0e0e0">
+        <span style="color:#8892b0">No detections yet</span>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -576,6 +621,95 @@ async function pollPreview() {
 function startPreviewLoop() {
   if (previewTimer) clearTimeout(previewTimer);
   pollPreview();
+  pollDetections();
+}
+
+// ── Detection pills polling ────────────────────────────────
+const DET_COLORS = {
+  'cat': '#ffa500', 'Cat3': '#00ff00', 'Cat1': '#6464ff', 'Cat2': '#00c8ff'
+};
+const DET_DEFAULT_COLOR = '#c8c8c8';
+
+async function pollDetections() {
+  if (activeTab !== 'capture') { setTimeout(pollDetections, 500); return; }
+  try {
+    const r = await fetch('/api/detections');
+    if (r.ok) {
+      const dets = await r.json();
+      renderDetectionPills(dets);
+      updateRecentLabels(dets);
+      renderRecentDetections();
+    }
+  } catch(e) {}
+  setTimeout(pollDetections, 200);
+}
+
+function renderDetectionPills(dets) {
+  const container = document.getElementById('detection-pills');
+  // Parse ignore list
+  const ignoreRaw = document.getElementById('ignore-labels').value;
+  const ignoreSet = new Set(ignoreRaw.split(',').map(s => s.trim().toLowerCase()).filter(s => s));
+  // Group by label, skipping ignored
+  const groups = {};
+  for (const d of dets) {
+    if (ignoreSet.has(d.label.toLowerCase())) continue;
+    if (!groups[d.label]) groups[d.label] = {count: 0, confs: [], ids: []};
+    groups[d.label].count++;
+    groups[d.label].confs.push(d.confidence);
+    if (d.track_id != null) groups[d.label].ids.push(d.track_id);
+  }
+  let html = '';
+  for (const [label, g] of Object.entries(groups)) {
+    const color = DET_COLORS[label] || DET_DEFAULT_COLOR;
+    const avgConf = (g.confs.reduce((a,b) => a+b, 0) / g.confs.length * 100).toFixed(0);
+    let text = label;
+    if (g.count > 1) text += ' \u00d7' + g.count;
+    let detail = avgConf + '%';
+    if (g.ids.length) detail += ' #' + g.ids.join(',');
+    html += `<span class="det-pill" style="background:${color}">${text} <span class="det-conf">${detail}</span></span>`;
+  }
+  container.innerHTML = html || '<span class="det-none">No detections</span>';
+}
+
+// ── Recent detections tracking ────────────────────────────
+const recentLabels = [];  // ordered most-recent first, max 20 unique
+function updateRecentLabels(dets) {
+  const ignoreRaw = document.getElementById('ignore-labels').value;
+  const ignoreSet = new Set(ignoreRaw.split(',').map(s => s.trim().toLowerCase()).filter(s => s));
+  const seen = new Set();
+  for (const d of dets) {
+    const label = d.label;
+    if (ignoreSet.has(label.toLowerCase()) || seen.has(label)) continue;
+    seen.add(label);
+    const idx = recentLabels.indexOf(label);
+    if (idx !== -1) recentLabels.splice(idx, 1);
+    recentLabels.unshift(label);
+  }
+  while (recentLabels.length > 20) recentLabels.pop();
+}
+
+function renderRecentDetections() {
+  const container = document.getElementById('recent-detections');
+  if (recentLabels.length === 0) {
+    container.innerHTML = '<span style="color:#8892b0">No detections yet</span>';
+    return;
+  }
+  container.innerHTML = recentLabels.map(label => {
+    const color = DET_COLORS[label] || DET_DEFAULT_COLOR;
+    return `<div style="padding:2px 0;display:flex;align-items:center;gap:6px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color}"></span>${label}</div>`;
+  }).join('');
+}
+
+// ── Ignore labels (send to backend to hide from video) ────
+function sendIgnoreLabels() {
+  const raw = document.getElementById('ignore-labels').value;
+  const labels = raw.split(',').map(s => s.trim()).filter(s => s.length > 0);
+  localStorage.setItem('ignoreLabels', raw);
+  fetch('/api/ignore_labels', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({labels})
+  }).catch(() => {});
 }
 
 // ── Detection Mode Switching ───────────────────────────────
@@ -628,6 +762,7 @@ async function switchDetectionMode(mode) {
     console.error(e);
   }
   updateModeUI();
+  updateCaptureLabelsForMode();
 }
 
 function updateModeUI() {
@@ -894,16 +1029,23 @@ async function loadInferenceSettings() {
 async function saveInferenceSettings() {
   const model = document.getElementById('inf-model').value;
   const feedingEnabled = document.getElementById('inf-feeding').checked;
+  await fetch('/api/inference/settings', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      deployment: { hef_path: model, labels_json: model ? 'deploy/labels.json' : '' },
+      feeding: { enabled: feedingEnabled },
+    })
+  });
+}
 
-  if (model) {
-    await fetch('/api/inference/settings', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({
-        deployment: { hef_path: model },
-        feeding: { enabled: feedingEnabled },
-      })
-    });
+async function onModelChange() {
+  if (pipelineMode !== 'inference') return;
+  await saveInferenceSettings();
+  const r = await fetch('/api/inference/start', {method: 'POST'});
+  const d = await r.json();
+  if (d.status !== 'ok') {
+    alert('Model switch failed: ' + (d.message || 'unknown'));
   }
 }
 
@@ -914,13 +1056,15 @@ async function loadCaptureSettings() {
     const settings = await resp.json();
     const dc = settings.detection_capture || {};
     document.getElementById('cap-enabled').checked = dc.enabled || false;
-    document.getElementById('cap-interval').value = dc.min_interval_seconds || 15;
+    const labels = dc.filter_labels || [];
+    document.getElementById('cap-labels').value = labels.join(', ');
   } catch(e) { console.error(e); }
 }
 
 async function saveCaptureSettings() {
   const enabled = document.getElementById('cap-enabled').checked;
-  const interval = parseInt(document.getElementById('cap-interval').value) || 15;
+  const raw = document.getElementById('cap-labels').value;
+  const labels = raw.split(',').map(s => s.trim()).filter(s => s.length > 0);
   try {
     await fetch('/api/inference/settings', {
       method: 'POST',
@@ -928,11 +1072,30 @@ async function saveCaptureSettings() {
       body: JSON.stringify({
         detection_capture: {
           enabled: enabled,
-          min_interval_seconds: interval,
+          filter_labels: labels,
         }
       })
     });
   } catch(e) { console.error(e); }
+}
+
+// ── Mode-aware capture label defaults ─────────────────────
+async function updateCaptureLabelsForMode() {
+  const input = document.getElementById('cap-labels');
+  if (pipelineMode === 'inference') {
+    // Cache current COCO-mode labels before overwriting
+    localStorage.setItem('cocoCapLabels', input.value);
+    // Fetch fine-tuned model labels
+    try {
+      const r = await fetch('/api/inference/labels');
+      const d = await r.json();
+      input.value = (d.labels || []).join(', ');
+    } catch(e) { console.error(e); }
+  } else {
+    // Restore cached COCO labels, or default to "cat"
+    input.value = localStorage.getItem('cocoCapLabels') || 'cat';
+  }
+  saveCaptureSettings();
 }
 
 // ── Status polling ─────────────────────────────────────────
@@ -1033,7 +1196,18 @@ document.addEventListener('keydown', (e) => {
 // ── Init ───────────────────────────────────────────────────
 startPreviewLoop();
 loadInferenceSettings();
-loadCaptureSettings();
+loadCaptureSettings().then(() => {
+  // If labels field is empty after loading config, apply mode-aware defaults
+  if (!document.getElementById('cap-labels').value.trim()) {
+    updateCaptureLabelsForMode();
+  }
+});
+// Restore cached ignore filter
+const cachedIgnore = localStorage.getItem('ignoreLabels');
+if (cachedIgnore) {
+  document.getElementById('ignore-labels').value = cachedIgnore;
+  sendIgnoreLabels();
+}
 setInterval(pollStatus, 1000);
 </script>
 </body>

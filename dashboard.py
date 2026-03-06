@@ -113,9 +113,16 @@ class DetectionPipelineManager:
         self._lock = threading.Lock()
         self.mode: str = "default"  # "default" or "inference"
         self._config: dict | None = None
+        # Original inference paths — preserved before mode switching can overwrite them
+        self._inference_hef = "models/cat_detector.hef"
+        self._inference_labels = "deploy/labels.json"
 
     def set_config(self, config: dict) -> None:
         self._config = config
+        # Preserve original inference paths before mode switching can contaminate them
+        deploy = config.get("deployment", {})
+        self._inference_hef = deploy.get("hef_path") or "models/cat_detector.hef"
+        self._inference_labels = deploy.get("labels_json") or "deploy/labels.json"
 
     def scan_models(self) -> list[str]:
         """Scan models/ for .hef files, return relative paths."""
@@ -133,6 +140,23 @@ class DetectionPipelineManager:
                 return False
             return self.process.poll() is None
 
+    def _write_mode_config(self, mode: str) -> None:
+        """Update project.yaml with model paths for the given mode."""
+        if not self._config:
+            return
+        yaml_path = self.config_path or (self.project_root / "configs" / "project.yaml")
+        with open(yaml_path) as f:
+            yaml_cfg = yaml.safe_load(f)
+        if mode == "default":
+            yaml_cfg["deployment"]["hef_path"] = ""
+            yaml_cfg["deployment"]["labels_json"] = ""
+            yaml_cfg["deployment"]["filter_classes"] = []
+        else:  # "inference"
+            # hef_path and labels_json already set by saveInferenceSettings
+            yaml_cfg["deployment"]["filter_classes"] = []
+        with open(yaml_path, "w") as f:
+            yaml.dump(yaml_cfg, f, default_flow_style=False, sort_keys=False)
+
     def start(self, mode: str = "default") -> dict:
         """Start detect.py subprocess in the given mode.
 
@@ -144,6 +168,7 @@ class DetectionPipelineManager:
             return {"status": "error", "message": "Already running"}
 
         self.mode = mode
+        self._write_mode_config(mode)
 
         # Build the detect.py command with absolute paths.
         # IMPORTANT: cwd must stay at hailo-apps dir — hailo-apps resolves
@@ -217,38 +242,8 @@ class DetectionPipelineManager:
     def switch_mode(self, new_mode: str) -> dict:
         """Stop detect.py, update config for new mode, restart."""
         self.stop()
-
-        yaml_path = self.config_path or (self.project_root / "configs" / "project.yaml")
-
-        if self._config:
-            deploy_cfg = self._config.get("deployment", {})
-
-            with open(yaml_path) as f:
-                yaml_cfg = yaml.safe_load(f)
-
-            if new_mode == "default":
-                yaml_cfg["deployment"]["hef_path"] = deploy_cfg.get(
-                    "default_hef_path", "models/yolov8m.hef"
-                )
-                yaml_cfg["deployment"]["labels_json"] = deploy_cfg.get(
-                    "default_labels_json", "deploy/coco_labels.json"
-                )
-                yaml_cfg["deployment"]["filter_classes"] = []
-            else:  # "inference"
-                yaml_cfg["deployment"]["hef_path"] = deploy_cfg.get(
-                    "hef_path", "models/cat_detector.hef"
-                )
-                yaml_cfg["deployment"]["labels_json"] = deploy_cfg.get(
-                    "labels_json", "deploy/labels.json"
-                )
-                yaml_cfg["deployment"]["filter_classes"] = []
-
-            with open(yaml_path, "w") as f:
-                yaml.dump(yaml_cfg, f, default_flow_style=False, sort_keys=False)
-
         # Brief pause for camera release
         time.sleep(1)
-
         return self.start(mode=new_mode)
 
     def send_command(self, cmd: dict) -> bool:
@@ -329,7 +324,7 @@ class ConfigManager:
             # Update detection_capture section
             if "detection_capture" in settings:
                 for key in ("enabled", "unlabeled_classes", "min_interval_seconds",
-                            "max_captures_per_session"):
+                            "max_captures_per_session", "filter_labels"):
                     if key in settings["detection_capture"]:
                         cfg["detection_capture"][key] = settings["detection_capture"][key]
 
@@ -388,6 +383,24 @@ def create_app(
                             headers={'Cache-Control': 'no-cache, no-store, must-revalidate'})
         except (FileNotFoundError, OSError):
             return '', 204
+
+    @flask_app.route("/api/detections")
+    def api_detections():
+        """Return current detection labels from the sidecar JSON."""
+        det_path = DetectionPipelineManager.PREVIEW_PATH.replace(".jpg", "_detections.json")
+        try:
+            with open(det_path) as f:
+                return Response(f.read(), mimetype="application/json",
+                                headers={'Cache-Control': 'no-cache, no-store, must-revalidate'})
+        except (FileNotFoundError, OSError):
+            return Response("[]", mimetype="application/json")
+
+    @flask_app.route("/api/ignore_labels", methods=["POST"])
+    def api_ignore_labels():
+        """Send ignore labels list to detect.py to hide from video overlay."""
+        labels = request.json.get("labels", [])
+        pipeline_mgr.send_command({"cmd": "set_ignore_labels", "labels": labels})
+        return jsonify({"status": "ok"})
 
     # ── Capture API (sends command to detect.py via stdin) ───────
     @flask_app.route("/api/capture/<cat_name>", methods=["POST"])
@@ -554,6 +567,18 @@ def create_app(
             return jsonify({"status": "error", "message": "No data"}), 400
         config_mgr.update_inference_settings(data)
         return jsonify({"status": "ok"})
+
+    @flask_app.route("/api/inference/labels")
+    def api_inference_labels():
+        """Return the labels list from the currently configured labels JSON."""
+        cfg = config_mgr.read()
+        labels_path = cfg.get("deployment", {}).get("labels_json", "")
+        full_path = project_root / labels_path
+        if full_path.exists():
+            with open(full_path) as f:
+                data = json.load(f)
+            return jsonify({"labels": data.get("labels", [])})
+        return jsonify({"labels": []})
 
     @flask_app.route("/api/inference/start", methods=["POST"])
     def api_inference_start():
