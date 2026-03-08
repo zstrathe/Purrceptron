@@ -33,7 +33,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from utils import PROJECT_ROOT, get_config_with_args, resolve_path, add_common_args
+from utils import PROJECT_ROOT, get_config_with_args, load_config, resolve_path, add_common_args
 from utils.display import print_info, print_error, print_success, print_warning
 
 # Hailo imports — only available on the Raspberry Pi
@@ -319,6 +319,11 @@ if HAILO_AVAILABLE:
                 roi.remove_object(detection)
                 continue
 
+            # Hide labels not in capture filter from overlay and preview
+            if user_data.capture_filter_labels and label not in user_data.capture_filter_labels:
+                roi.remove_object(detection)
+                continue
+
             # Track unique IDs if tracker is active
             track_objs = detection.get_objects_typed(hailo.HAILO_UNIQUE_ID)
             track_id = track_objs[0].get_id() if track_objs else None
@@ -352,6 +357,8 @@ if HAILO_AVAILABLE:
                     _handle_capture_command(element, buffer, user_data, cmd)
                 elif cmd.get("cmd") == "set_ignore_labels":
                     user_data.ignore_labels = set(cmd.get("labels", []))
+                elif cmd.get("cmd") == "set_detection_capture":
+                    _handle_set_detection_capture(user_data, cmd)
 
         # Feed into session tracker (with tracker IDs)
         if user_data.feeding_tracker:
@@ -487,6 +494,55 @@ if HAILO_AVAILABLE:
                 continue
             session_id = user_data.feeding_tracker.get_session_id(cat)
             user_data.detection_capturer.maybe_capture(cat, frame, session_id)
+
+
+    def _handle_set_detection_capture(user_data: CatDetectionCallback, cmd: dict):
+        """Handle live toggle of detection capture from the dashboard."""
+        enabled = cmd.get("enabled", False)
+        filter_labels = cmd.get("filter_labels", [])
+
+        if enabled:
+            if not user_data.detection_capturer:
+                from deploy.detection_capturer import DetectionCapturer
+
+                cfg = load_config()
+                capture_cfg = cfg.get("detection_capture", {})
+                collection_cfg = cfg.get("collection", {})
+
+                capture_dir = resolve_path(
+                    capture_cfg.get("output_dir", "data/raw"),
+                    PROJECT_ROOT,
+                )
+                interval = collection_cfg.get(
+                    "auto_capture_interval_sec",
+                    capture_cfg.get("min_interval_seconds", 15.0),
+                )
+                user_data.detection_capturer = DetectionCapturer(
+                    output_dir=capture_dir,
+                    cats=cfg.get("cats", []),
+                    min_interval_seconds=interval,
+                    max_captures_per_session=capture_cfg.get("max_captures_per_session", 0),
+                    jpeg_quality=capture_cfg.get("jpeg_quality", 95),
+                    csv_logging=capture_cfg.get("csv_logging", True),
+                )
+                user_data.detection_capturer.start()
+
+                unlabeled = capture_cfg.get("unlabeled_classes", [])
+                if unlabeled:
+                    user_data.unlabeled_classes = set(unlabeled)
+
+            user_data.capture_mode = "detections"
+            if filter_labels:
+                user_data.capture_filter_labels = set(filter_labels)
+            else:
+                user_data.capture_filter_labels = None
+            print_info(f"Detection capture enabled (filter: {filter_labels or 'all'})")
+        else:
+            if user_data.detection_capturer:
+                user_data.detection_capturer.shutdown()
+                user_data.detection_capturer = None
+            user_data.capture_mode = None
+            print_info("Detection capture disabled")
 
 
 def main():

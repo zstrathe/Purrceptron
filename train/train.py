@@ -64,6 +64,9 @@ def main() -> None:
     batch_size = args.batch_size or cfg["training"]["batch_size"]
     patience = cfg["training"]["patience"]
     image_size = cfg["training"]["image_size"]
+    lr0 = cfg["training"].get("lr0", 0.01)
+    lrf = cfg["training"].get("lrf", 0.01)
+    optimizer = cfg["training"].get("optimizer", "SGD")
     dataset_yaml = args.dataset_yaml or resolve_path(
         "data/dataset/dataset.yaml", PROJECT_ROOT
     )
@@ -78,6 +81,7 @@ def main() -> None:
     print_info(f"Model: {model_size}")
     print_info(f"Dataset: {dataset_yaml}")
     print_info(f"Epochs: {epochs}, Batch: {batch_size}, Image size: {image_size}")
+    print_info(f"LR: {lr0} -> {lrf}, Optimizer: {optimizer}")
 
     from ultralytics import YOLO
 
@@ -108,6 +112,9 @@ def main() -> None:
         project=str(project_dir),
         name=run_name,
         exist_ok=True,
+        lr0=lr0,
+        lrf=lrf,
+        optimizer=optimizer,
         # Fixed-camera augmentation
         hsv_h=0.015,
         hsv_s=0.7,

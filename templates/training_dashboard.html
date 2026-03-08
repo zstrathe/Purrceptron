@@ -144,6 +144,73 @@
   .settings-row select { min-width: 140px; }
   .settings-row input[type="number"] { width: 80px; }
 
+  /* ── Tooltips ── */
+  .tip {
+    position: relative; display: inline-block; cursor: help;
+    width: 15px; height: 15px; line-height: 15px; text-align: center;
+    font-size: 0.65rem; font-weight: 700; color: #8892b0;
+    border: 1px solid #0f3460; border-radius: 50%; flex-shrink: 0;
+    font-family: sans-serif;
+  }
+  .tip .tip-text {
+    display: none; position: absolute; bottom: 120%; left: 50%;
+    transform: translateX(-50%); width: 240px; padding: 8px 10px;
+    background: #0a0a1a; color: #c0c0c0; border: 1px solid #0f3460;
+    border-radius: 6px; font-size: 0.78rem; line-height: 1.4;
+    font-weight: 400; font-family: system-ui, sans-serif; z-index: 100;
+    pointer-events: none; white-space: normal;
+  }
+  .tip:hover .tip-text { display: block; }
+
+  /* ── Annotate Tab ── */
+  #tab-annotate.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .ann-toolbar {
+    display: flex; align-items: center; gap: 10px; padding: 8px 0;
+    flex-wrap: wrap; font-family: monospace; font-size: 0.85rem;
+  }
+  .ann-toolbar .ann-progress { color: #8892b0; }
+  .ann-toolbar .ann-img-info { color: #52b788; flex: 1; text-align: right; }
+  .ann-canvas-wrap {
+    position: relative; flex: 1; min-height: 200px; background: #000;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 6px; overflow: hidden;
+  }
+  .ann-canvas-wrap img {
+    max-width: 100%; max-height: 100%; object-fit: contain;
+    display: block; user-select: none; -webkit-user-drag: none;
+  }
+  .ann-canvas-wrap canvas {
+    position: absolute; top: 0; left: 0; cursor: crosshair;
+  }
+  .ann-actions {
+    display: flex; gap: 8px; padding: 8px 0; flex-wrap: wrap; align-items: center;
+  }
+  .ann-actions .btn { font-size: 0.8rem; }
+  .ann-thumbs {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    gap: 3px; max-height: 220px; overflow-y: auto; padding: 4px 0;
+  }
+  .ann-thumb {
+    position: relative; cursor: pointer; border-radius: 3px; overflow: hidden;
+    border: 2px solid transparent; aspect-ratio: 4/3;
+  }
+  .ann-thumb img { width: 100%; height: 100%; object-fit: cover; }
+  .ann-thumb.has-bbox { border-color: #52b788; }
+  .ann-thumb.has-bbox::after {
+    content: ''; position: absolute; inset: 0;
+    background: rgba(82,183,136,0.15); pointer-events: none;
+  }
+  .ann-thumb.no-bbox { border-color: #e63946; }
+  .ann-thumb.active { border-color: #4cc9f0; border-width: 3px; }
+  .ann-thumb.active.has-bbox::after { background: transparent; }
+  .ann-thumb .ann-thumb-flag {
+    position: absolute; top: 2px; right: 2px; font-size: 0.6rem;
+    background: rgba(0,0,0,0.7); padding: 1px 3px;
+    border-radius: 2px; z-index: 1;
+  }
+  .ann-thumb .ann-thumb-flag.done { color: #52b788; }
+  .ann-thumb .ann-thumb-flag.missing { color: #e63946; }
+
   /* ── Output Log ── */
   .log-section {
     position: relative; margin-top: 12px;
@@ -290,6 +357,7 @@
   <div class="top-bar-inner">
     <div class="tab-bar">
       <button class="tab-btn active" data-tab="pipeline" onclick="switchTab('pipeline')">Pipeline</button>
+      <button class="tab-btn" data-tab="annotate" onclick="switchTab('annotate')">Annotate</button>
       <button class="tab-btn" data-tab="metrics" onclick="switchTab('metrics')">Metrics</button>
     </div>
     <div class="top-status" id="top-status">Pipeline idle</div>
@@ -306,7 +374,11 @@
       <div class="version-bar">
         <label>Version:</label>
         <select id="version-select" onchange="switchVersion(this.value)"></select>
+        <span id="version-size" style="color:#555;font-size:0.8rem"></span>
         <button class="btn btn-nav btn-sm" onclick="newVersion()">+ New</button>
+        <button class="btn btn-nav btn-sm" onclick="renameVersion()">Rename</button>
+        <button class="btn btn-nav btn-sm" onclick="duplicateVersion()">Duplicate</button>
+        <button class="btn btn-nav btn-sm" style="color:#e63946" onclick="deleteVersion()">Delete</button>
       </div>
 
       <div class="pipeline-controls">
@@ -329,8 +401,21 @@
           </div>
           <button class="btn btn-nav btn-sm" onclick="runStep('pull')">Run</button>
         </div>
-        <div class="step-card" id="step-prepare" data-step="prepare">
+        <div class="step-card" id="step-annotate" data-step="annotate">
           <span class="step-num">2</span>
+          <div class="step-info">
+            <div class="step-name">Review Annotations</div>
+            <div class="step-hint" id="hint-annotate"></div>
+            <div class="step-elapsed" id="elapsed-annotate"></div>
+          </div>
+          <div class="step-status">
+            <span class="step-dot idle" id="dot-annotate"></span>
+            <span id="state-annotate">idle</span>
+          </div>
+          <button class="btn btn-nav btn-sm" onclick="switchTab('annotate')">Review</button>
+        </div>
+        <div class="step-card" id="step-prepare" data-step="prepare">
+          <span class="step-num">3</span>
           <div class="step-info">
             <div class="step-name">Prepare Dataset</div>
             <div class="step-hint" id="hint-prepare"></div>
@@ -343,7 +428,7 @@
           <button class="btn btn-nav btn-sm" onclick="runStep('prepare')">Run</button>
         </div>
         <div class="step-card" id="step-train" data-step="train">
-          <span class="step-num">3</span>
+          <span class="step-num">4</span>
           <div class="step-info">
             <div class="step-name">Train Model</div>
             <div class="step-hint" id="hint-train"></div>
@@ -356,7 +441,7 @@
           <button class="btn btn-nav btn-sm" onclick="runStep('train')">Run</button>
         </div>
         <div class="step-card" id="step-export" data-step="export">
-          <span class="step-num">4</span>
+          <span class="step-num">5</span>
           <div class="step-info">
             <div class="step-name">Export ONNX</div>
             <div class="step-hint" id="hint-export"></div>
@@ -369,7 +454,7 @@
           <button class="btn btn-nav btn-sm" onclick="runStep('export')">Run</button>
         </div>
         <div class="step-card" id="step-convert" data-step="convert">
-          <span class="step-num">5</span>
+          <span class="step-num">6</span>
           <div class="step-info">
             <div class="step-name">Convert HEF</div>
             <div class="step-hint" id="hint-convert"></div>
@@ -382,7 +467,7 @@
           <button class="btn btn-nav btn-sm" onclick="runStep('convert')">Run</button>
         </div>
         <div class="step-card" id="step-deploy" data-step="deploy">
-          <span class="step-num">6</span>
+          <span class="step-num">7</span>
           <div class="step-info">
             <div class="step-name">Deploy to Pi</div>
             <div class="step-hint" id="hint-deploy"></div>
@@ -401,6 +486,7 @@
         <h3>Training Settings</h3>
         <div class="settings-row">
           <label>Model:</label>
+          <span class="tip">?<span class="tip-text">Model size tradeoff. n=fastest, s=balanced, m=most accurate. Larger needs more GPU memory.</span></span>
           <select id="set-model">
             <option value="yolov8n">yolov8n (fast)</option>
             <option value="yolov8s">yolov8s (balanced)</option>
@@ -409,17 +495,38 @@
         </div>
         <div class="settings-row">
           <label>Epochs:</label>
-          <input type="number" id="set-epochs" value="150" min="1" max="1000">
+          <span class="tip">?<span class="tip-text">Max training iterations. Training stops early via Patience. Typical: 100-500.</span></span>
+          <input type="number" id="set-epochs" value="150" min="1" max="10000">
           <label>Batch:</label>
+          <span class="tip">?<span class="tip-text">Images per step. Larger=faster but more memory. Auto picks the largest batch that fits in GPU memory.</span></span>
           <input type="number" id="set-batch" value="16" min="1" max="128">
           <input type="checkbox" id="set-batch-auto" onchange="toggleAutoBatch()">
           <label for="set-batch-auto" style="min-width:auto;cursor:pointer">Auto</label>
         </div>
         <div class="settings-row">
           <label>Image size:</label>
+          <span class="tip">?<span class="tip-text">Input resolution (px). Must be a multiple of 32. Larger=more detail but slower. Standard: 640.</span></span>
           <input type="number" id="set-imgsz" value="640" min="320" max="1280" step="32">
           <label>Patience:</label>
+          <span class="tip">?<span class="tip-text">Stop if validation loss doesn't improve for N epochs. Prevents overfitting.</span></span>
           <input type="number" id="set-patience" value="30" min="1" max="200">
+        </div>
+        <div class="settings-row">
+          <label>Learning rate:</label>
+          <span class="tip">?<span class="tip-text">Initial learning rate. Higher=faster but less stable. Default: 0.01.</span></span>
+          <input type="number" id="set-lr0" value="0.01" min="0.0001" max="0.1" step="0.001">
+          <label>Final LR:</label>
+          <span class="tip">?<span class="tip-text">End-of-training LR as fraction of initial. Lower=more gradual decay. Default: 0.01.</span></span>
+          <input type="number" id="set-lrf" value="0.01" min="0.0001" max="1.0" step="0.001">
+        </div>
+        <div class="settings-row">
+          <label>Optimizer:</label>
+          <span class="tip">?<span class="tip-text">SGD (good generalization), Adam (faster convergence), AdamW (Adam + weight decay, often best for fine-tuning).</span></span>
+          <select id="set-optimizer">
+            <option value="SGD">SGD</option>
+            <option value="Adam">Adam</option>
+            <option value="AdamW">AdamW</option>
+          </select>
         </div>
         <div style="margin-top:8px">
           <button class="btn btn-nav btn-sm" onclick="saveSettings()">Save Settings</button>
@@ -431,10 +538,46 @@
       <div class="log-section">
         <h3>Output</h3>
         <div class="log-wrap">
-          <button class="log-copy-btn" onclick="copyLog()">Copy</button>
+          <button class="log-copy-btn" style="right:52px" onclick="copyLog()">Copy</button>
+          <button class="log-copy-btn" onclick="openLogBrowser()">Logs</button>
           <div class="log-output" id="log-output">Waiting for pipeline...</div>
         </div>
       </div>
+
+      <!-- Log browser modal -->
+      <div id="log-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:1000; justify-content:center; align-items:center;">
+        <div style="background:#0d1117; border:1px solid #333; border-radius:8px; padding:20px; max-width:500px; width:90%; max-height:70vh; overflow-y:auto;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+            <h3 style="margin:0; color:#e6f1ff; font-size:0.95rem;">Training Logs</h3>
+            <button onclick="closeLogBrowser()" style="background:none; border:none; color:#8892b0; font-size:1.2rem; cursor:pointer;">&times;</button>
+          </div>
+          <div id="log-list" style="font-family:monospace; font-size:0.8rem; color:#8892b0;">Loading...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ════ ANNOTATE TAB ════ -->
+    <div class="tab-content" id="tab-annotate">
+      <div class="ann-toolbar">
+        <span class="ann-progress" id="ann-progress">0/0 annotated</span>
+        <button class="btn btn-nav btn-sm" onclick="annAutoDetectCurrent()">Auto-detect</button>
+        <button class="btn btn-nav btn-sm" onclick="annClearBbox()">Clear</button>
+        <label style="font-size:0.8rem;color:#8892b0;cursor:pointer">
+          <input type="checkbox" id="ann-skip-done" onchange="annRenderThumbs()"> Hide annotated
+        </label>
+        <span class="ann-img-info" id="ann-img-info"></span>
+      </div>
+      <div class="ann-canvas-wrap" id="ann-canvas-wrap">
+        <img id="ann-img" crossorigin="anonymous">
+        <canvas id="ann-canvas"></canvas>
+      </div>
+      <div class="ann-actions">
+        <button class="btn btn-nav btn-sm" onclick="annPrev()">&larr; Prev (p)</button>
+        <button class="btn btn-nav btn-sm" onclick="annNext()">Next (n) &rarr;</button>
+        <span style="flex:1"></span>
+        <button class="btn btn-primary btn-sm" onclick="annAutoDetectAll()">Auto-detect All Missing</button>
+      </div>
+      <div class="ann-thumbs" id="ann-thumbs"></div>
     </div>
 
     <!-- ════ METRICS TAB ════ -->
@@ -534,7 +677,7 @@
 
 <script>
 const CATS = {{ cat_names | tojson }};
-const STEPS = ['pull', 'prepare', 'train', 'export', 'convert', 'deploy'];
+const STEPS = ['pull', 'annotate', 'prepare', 'train', 'export', 'convert', 'deploy'];
 let activeTab = 'pipeline';
 let lossChart = null;
 let mapChart = null;
@@ -542,6 +685,7 @@ let metricsLoaded = false;
 let latestOutputs = {};
 let latestDatasetStats = {};
 let latestStepStates = {};
+let latestAnnotationStats = {};
 let lastLogHtml = '';
 let logAutoScroll = true;
 let logUpdating = false;
@@ -552,22 +696,35 @@ function switchTab(tab) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + tab));
   if (tab === 'metrics') pollMetrics();
+  if (tab === 'annotate') loadAnnotateTab();
 }
 
 // ── Version management ─────────────────────────────────────
+let latestVersions = [];
+
 async function loadVersions() {
   try {
     const r = await fetch('/api/versions');
     const d = await r.json();
+    latestVersions = d.versions || [];
     const sel = document.getElementById('version-select');
-    const current = sel.value;
     if (d.versions.length === 0) {
       sel.innerHTML = '<option value="v1" selected>v1</option>';
     } else {
-      sel.innerHTML = d.versions.map(v =>
-        '<option value="' + v.name + '"' + (v.name === d.active ? ' selected' : '') + '>' +
-        v.name + (v.has_model ? ' \u2713' : '') + '</option>'
-      ).join('');
+      sel.innerHTML = d.versions.map(v => {
+        const marks = [v.has_model ? 'M' : '', v.has_hef ? 'H' : ''].filter(Boolean).join(',');
+        const suffix = marks ? ' [' + marks + ']' : '';
+        return '<option value="' + v.name + '"' + (v.name === d.active ? ' selected' : '') + '>' +
+          v.name + suffix + '</option>';
+      }).join('');
+    }
+    // Show size of active version
+    const active = d.versions.find(v => v.name === d.active);
+    const sizeEl = document.getElementById('version-size');
+    if (active && active.size_mb > 0) {
+      sizeEl.textContent = '(' + active.size_mb + ' MB)';
+    } else {
+      sizeEl.textContent = '';
     }
   } catch(e) { console.error(e); }
 }
@@ -595,12 +752,75 @@ function newVersion() {
   switchVersion(clean);
 }
 
+async function renameVersion() {
+  const sel = document.getElementById('version-select');
+  const current = sel.value;
+  const newName = prompt('Rename "' + current + '" to:', current);
+  if (!newName || !newName.trim() || newName.trim() === current) return;
+  const clean = newName.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+  try {
+    const r = await fetch('/api/versions', {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name: current, new_name: clean })
+    });
+    const d = await r.json();
+    if (d.status !== 'ok') { alert('Error: ' + (d.message || 'unknown')); return; }
+    await loadVersions();
+    pollStatus();
+  } catch(e) { console.error(e); }
+}
+
+async function duplicateVersion() {
+  const sel = document.getElementById('version-select');
+  const current = sel.value;
+  const newName = prompt('Duplicate "' + current + '" as:', current + '_copy');
+  if (!newName || !newName.trim()) return;
+  const clean = newName.trim().replace(/[^a-zA-Z0-9_-]/g, '_');
+  try {
+    const r = await fetch('/api/versions/duplicate', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name: current, new_name: clean })
+    });
+    const d = await r.json();
+    if (d.status !== 'ok') { alert('Error: ' + (d.message || 'unknown')); return; }
+    await loadVersions();
+    pollStatus();
+    pollDatasetStats();
+  } catch(e) { console.error(e); }
+}
+
+async function deleteVersion() {
+  const sel = document.getElementById('version-select');
+  const current = sel.value;
+  const info = latestVersions.find(v => v.name === current);
+  const size = info ? ' (' + info.size_mb + ' MB)' : '';
+  if (!confirm('Delete version "' + current + '"' + size + '?\n\nThis will permanently remove all data, models, and training artifacts for this version.')) return;
+  try {
+    const r = await fetch('/api/versions', {
+      method: 'DELETE',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name: current })
+    });
+    const d = await r.json();
+    if (d.status !== 'ok') { alert('Error: ' + (d.message || 'unknown')); return; }
+    await loadVersions();
+    pollStatus();
+    pollDatasetStats();
+  } catch(e) { console.error(e); }
+}
+
 // ── Pipeline controls ──────────────────────────────────────
 async function runStep(name) {
   try {
     const r = await fetch('/api/run/' + name, {method: 'POST'});
     const d = await r.json();
-    if (d.status !== 'ok') alert('Error: ' + (d.message || 'unknown'));
+    if (d.status === 'interactive') {
+      switchTab('annotate');
+    } else if (d.status !== 'ok') {
+      alert('Error: ' + (d.message || 'unknown'));
+    }
   } catch(e) { console.error(e); }
 }
 
@@ -643,6 +863,9 @@ async function loadSettings() {
     }
     document.getElementById('set-imgsz').value = t.image_size || 640;
     document.getElementById('set-patience').value = t.patience || 30;
+    document.getElementById('set-lr0').value = t.lr0 || 0.01;
+    document.getElementById('set-lrf').value = t.lrf || 0.01;
+    document.getElementById('set-optimizer').value = t.optimizer || 'SGD';
   } catch(e) { console.error(e); }
 }
 
@@ -658,6 +881,9 @@ async function saveSettings() {
           batch_size: document.getElementById('set-batch-auto').checked ? -1 : parseInt(document.getElementById('set-batch').value),
           image_size: parseInt(document.getElementById('set-imgsz').value),
           patience: parseInt(document.getElementById('set-patience').value),
+          lr0: parseFloat(document.getElementById('set-lr0').value),
+          lrf: parseFloat(document.getElementById('set-lrf').value),
+          optimizer: document.getElementById('set-optimizer').value,
         }
       })
     });
@@ -690,6 +916,45 @@ function copyLog() {
     btn.textContent = 'Copied!';
     setTimeout(() => { btn.textContent = 'Copy'; }, 1000);
   }
+}
+
+async function openLogBrowser() {
+  const modal = document.getElementById('log-modal');
+  modal.style.display = 'flex';
+  const listEl = document.getElementById('log-list');
+  listEl.innerHTML = 'Loading...';
+  try {
+    const r = await fetch('/api/logs');
+    const d = await r.json();
+    if (!d.logs.length) {
+      listEl.innerHTML = '<div style="color:#555;">No log files yet.</div>';
+      return;
+    }
+    // Group by version
+    const groups = {};
+    d.logs.forEach(l => {
+      if (!groups[l.version]) groups[l.version] = [];
+      groups[l.version].push(l);
+    });
+    let html = '';
+    for (const [ver, logs] of Object.entries(groups)) {
+      html += `<div style="color:#64ffda; margin-top:10px; font-weight:600;">${ver}</div>`;
+      html += logs.map(l => {
+        const date = new Date(l.modified * 1000).toLocaleString();
+        return `<div style="padding:4px 0 4px 12px; border-bottom:1px solid #1a1a2e;">
+          <a href="/api/logs/${l.path}" target="_blank" style="color:#ccd6f6; text-decoration:none;">${l.name}</a>
+          <span style="color:#555; margin-left:8px;">${l.size_kb} KB &middot; ${date}</span>
+        </div>`;
+      }).join('');
+    }
+    listEl.innerHTML = html;
+  } catch(e) {
+    listEl.innerHTML = '<div style="color:#e74c3c;">Failed to load logs.</div>';
+  }
+}
+
+function closeLogBrowser() {
+  document.getElementById('log-modal').style.display = 'none';
 }
 
 // ── Time formatting ────────────────────────────────────────
@@ -783,6 +1048,9 @@ async function pollStatus() {
         }
         requestAnimationFrame(() => { logUpdating = false; });
       }
+    } else if (lastLogHtml !== '') {
+      lastLogHtml = '';
+      document.getElementById('log-output').innerHTML = 'Waiting for pipeline...';
     }
 
     // Output files
@@ -793,6 +1061,14 @@ async function pollStatus() {
 
     // Track step states for readiness
     STEPS.forEach(name => { latestStepStates[name] = (steps[name] || {}).state || 'idle'; });
+    // Track annotation stats for the annotate step
+    if (steps.annotate && steps.annotate.annotation_stats) {
+      latestAnnotationStats = steps.annotate.annotation_stats;
+      const hint = document.getElementById('hint-annotate');
+      if (latestAnnotationStats.total > 0 && latestAnnotationStats.missing > 0) {
+        hint.textContent = latestAnnotationStats.annotated + '/' + latestAnnotationStats.total + ' annotated';
+      }
+    }
     updateReadiness();
 
   } catch(e) {}
@@ -978,24 +1254,39 @@ async function pollDatasetStats() {
 
 // ── Readiness indicators ────────────────────────────────────
 function updateReadiness() {
+  // Annotation stats come from pollStatus (latestAnnotationStats)
+  const annStats = latestAnnotationStats || {};
   const readiness = {
-    pull:    { ready: true, hint: 'Ready' },
-    prepare: { ready: (latestDatasetStats.raw_total || 0) > 0, hint: 'Need raw images' },
-    train:   { ready: !!(latestOutputs.dataset_yaml || {}).exists, hint: 'Run Prepare first' },
-    export:  { ready: !!(latestOutputs.best_pt || {}).exists, hint: 'Run Train first' },
-    convert: { ready: !!(latestOutputs.best_onnx || {}).exists, hint: 'Run Export first' },
-    deploy:  { ready: !!(latestOutputs.cat_detector_hef || {}).exists, hint: 'Run Convert first' },
+    pull:     { ready: true, hint: 'Ready' },
+    annotate: { ready: (latestDatasetStats.raw_total || 0) > 0, hint: 'Pull data first' },
+    prepare:  { ready: (latestDatasetStats.raw_total || 0) > 0, hint: 'Need raw images' },
+    train:    { ready: !!(latestOutputs.dataset_yaml || {}).exists, hint: 'Run Prepare first' },
+    export:   { ready: !!(latestOutputs.best_pt || {}).exists, hint: 'Run Train first' },
+    convert:  { ready: !!(latestOutputs.best_onnx || {}).exists, hint: 'Run Export first' },
+    deploy:   { ready: !!(latestOutputs.cat_detector_hef || {}).exists, hint: 'Run Convert first' },
   };
 
   // Check if step's own output artifact exists (persists across restarts)
   const completed = {
-    pull:    (latestDatasetStats.raw_total || 0) > 0,
-    prepare: !!(latestOutputs.dataset_yaml || {}).exists,
-    train:   !!(latestOutputs.best_pt || {}).exists,
-    export:  !!(latestOutputs.best_onnx || {}).exists,
-    convert: !!(latestOutputs.cat_detector_hef || {}).exists,
-    deploy:  latestStepStates['deploy'] === 'done',
+    pull:     (latestDatasetStats.raw_total || 0) > 0,
+    annotate: annStats.total > 0 && annStats.missing === 0,
+    prepare:  !!(latestOutputs.dataset_yaml || {}).exists,
+    train:    !!(latestOutputs.best_pt || {}).exists,
+    export:   !!(latestOutputs.best_onnx || {}).exists,
+    convert:  !!(latestOutputs.cat_detector_hef || {}).exists,
+    deploy:   latestStepStates['deploy'] === 'done',
   };
+
+  // If a step is running, block all subsequent steps
+  let blocked_by_running = false;
+  STEPS.forEach(name => {
+    const state = latestStepStates[name] || 'idle';
+    if (blocked_by_running) {
+      readiness[name].ready = false;
+      completed[name] = false;
+    }
+    if (state === 'running') blocked_by_running = true;
+  });
 
   STEPS.forEach(name => {
     const state = latestStepStates[name] || 'idle';
@@ -1010,7 +1301,11 @@ function updateReadiness() {
         hintEl.textContent = 'Completed';
       } else if (r.ready) {
         card.classList.add('ready');
-        hintEl.textContent = 'Ready';
+        if (name === 'annotate' && annStats.total > 0) {
+          hintEl.textContent = annStats.annotated + '/' + annStats.total + ' annotated';
+        } else {
+          hintEl.textContent = 'Ready';
+        }
       } else {
         card.classList.add('blocked');
         hintEl.textContent = r.hint;
@@ -1021,10 +1316,335 @@ function updateReadiness() {
   });
 }
 
+// ═══════════════════════════════════════════════════════════
+// ANNOTATE TAB
+// ═══════════════════════════════════════════════════════════
+let annImages = [];
+let annIndex = 0;
+let annBbox = null;  // {cx, cy, w, h} normalized or null
+let annDrawing = false;
+let annDrawStart = null;
+
+async function loadAnnotateTab() {
+  try {
+    const r = await fetch('/api/annotate/images');
+    const d = await r.json();
+    annImages = d.images || [];
+    annIndex = 0;
+    // Jump to first un-annotated image
+    const firstMissing = annImages.findIndex(img => !img.has_bbox);
+    if (firstMissing >= 0) annIndex = firstMissing;
+    annRenderThumbs();
+    annLoadImage();
+  } catch(e) { console.error(e); }
+}
+
+function annUpdateProgress() {
+  const total = annImages.length;
+  const done = annImages.filter(i => i.has_bbox).length;
+  document.getElementById('ann-progress').textContent = done + '/' + total + ' annotated';
+}
+
+function annRenderThumbs() {
+  const el = document.getElementById('ann-thumbs');
+  const skipDone = document.getElementById('ann-skip-done').checked;
+  let html = '';
+  annImages.forEach((img, idx) => {
+    if (skipDone && img.has_bbox && idx !== annIndex) return;
+    const cls = (img.has_bbox ? 'has-bbox' : 'no-bbox') + (idx === annIndex ? ' active' : '');
+    const flag = img.has_bbox
+      ? '<span class="ann-thumb-flag done">&#10003;</span>'
+      : '<span class="ann-thumb-flag missing">!</span>';
+    html += '<div class="ann-thumb ' + cls + '" onclick="annGoto(' + idx + ')">' +
+      '<img src="/api/annotate/image/' + img.cat + '/' + img.filename + '" loading="lazy">' +
+      flag + '</div>';
+  });
+  el.innerHTML = html;
+  annUpdateProgress();
+  // Scroll active into view
+  const active = el.querySelector('.active');
+  if (active) active.scrollIntoView({block: 'nearest'});
+}
+
+async function annLoadImage() {
+  if (annImages.length === 0) {
+    document.getElementById('ann-img-info').textContent = 'No images';
+    return;
+  }
+  const img = annImages[annIndex];
+  const imgEl = document.getElementById('ann-img');
+  document.getElementById('ann-img-info').textContent = img.cat + ' / ' + img.filename;
+
+  imgEl.onload = async () => {
+    annResizeCanvas();
+    // Load existing bbox
+    try {
+      const r = await fetch('/api/annotate/bbox/' + img.cat + '/' + img.filename);
+      const d = await r.json();
+      annBbox = d.exists ? {cx: d.cx, cy: d.cy, w: d.w, h: d.h} : null;
+    } catch(e) { annBbox = null; }
+    annDrawBbox();
+    annRenderThumbs();
+  };
+  imgEl.src = '/api/annotate/image/' + img.cat + '/' + img.filename + '?' + Date.now();
+}
+
+function annResizeCanvas() {
+  const imgEl = document.getElementById('ann-img');
+  const canvas = document.getElementById('ann-canvas');
+  const wrap = document.getElementById('ann-canvas-wrap');
+  // Match canvas to rendered image size and position
+  const wrapRect = wrap.getBoundingClientRect();
+  const imgRect = imgEl.getBoundingClientRect();
+  canvas.width = imgRect.width;
+  canvas.height = imgRect.height;
+  canvas.style.left = (imgRect.left - wrapRect.left) + 'px';
+  canvas.style.top = (imgRect.top - wrapRect.top) + 'px';
+}
+
+function annDrawBbox() {
+  const canvas = document.getElementById('ann-canvas');
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!annBbox) return;
+  const {cx, cy, w, h} = annBbox;
+  const x = (cx - w/2) * canvas.width;
+  const y = (cy - h/2) * canvas.height;
+  const bw = w * canvas.width;
+  const bh = h * canvas.height;
+  ctx.strokeStyle = '#52b788';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, bw, bh);
+  // Label
+  const img = annImages[annIndex];
+  if (img) {
+    ctx.fillStyle = 'rgba(82,183,136,0.8)';
+    ctx.font = '12px monospace';
+    const label = img.cat;
+    const tw = ctx.measureText(label).width;
+    ctx.fillRect(x, y - 16, tw + 6, 16);
+    ctx.fillStyle = '#000';
+    ctx.fillText(label, x + 3, y - 4);
+  }
+}
+
+function annDrawCrosshairs(ctx, mx, my, canvas) {
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath();
+  ctx.moveTo(mx, 0); ctx.lineTo(mx, canvas.height);
+  ctx.moveTo(0, my); ctx.lineTo(canvas.width, my);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+// Canvas mouse events for drawing — mousedown on canvas, move/up on document
+// so drawing continues when cursor leaves the image
+(function() {
+  const canvas = document.getElementById('ann-canvas');
+
+  // Crosshairs on hover (when not drawing)
+  canvas.addEventListener('mousemove', (e) => {
+    if (annDrawing) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    annDrawBbox();
+    const ctx = canvas.getContext('2d');
+    annDrawCrosshairs(ctx, mx, my, canvas);
+  });
+
+  // Clear crosshairs when cursor leaves
+  canvas.addEventListener('mouseleave', () => {
+    if (!annDrawing) annDrawBbox();
+  });
+
+  canvas.addEventListener('mousedown', (e) => {
+    if (activeTab !== 'annotate') return;
+    annDrawing = true;
+    const rect = canvas.getBoundingClientRect();
+    annDrawStart = {x: e.clientX - rect.left, y: e.clientY - rect.top};
+  });
+
+  document.addEventListener('mousemove', (e) => {
+    if (!annDrawing || !annDrawStart) return;
+    const canvas = document.getElementById('ann-canvas');
+    const rect = canvas.getBoundingClientRect();
+    // Clamp to canvas bounds so bbox stops at image edges
+    const mx = Math.max(0, Math.min(canvas.width, e.clientX - rect.left));
+    const my = Math.max(0, Math.min(canvas.height, e.clientY - rect.top));
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = '#4cc9f0';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 3]);
+    ctx.strokeRect(annDrawStart.x, annDrawStart.y, mx - annDrawStart.x, my - annDrawStart.y);
+    ctx.setLineDash([]);
+    annDrawCrosshairs(ctx, mx, my, canvas);
+  });
+
+  document.addEventListener('mouseup', (e) => {
+    if (!annDrawing || !annDrawStart) return;
+    annDrawing = false;
+    const canvas = document.getElementById('ann-canvas');
+    const rect = canvas.getBoundingClientRect();
+    // Clamp to canvas bounds
+    const mx = Math.max(0, Math.min(canvas.width, e.clientX - rect.left));
+    const my = Math.max(0, Math.min(canvas.height, e.clientY - rect.top));
+    // Compute normalized bbox
+    let x1 = Math.min(annDrawStart.x, mx);
+    let y1 = Math.min(annDrawStart.y, my);
+    let x2 = Math.max(annDrawStart.x, mx);
+    let y2 = Math.max(annDrawStart.y, my);
+    // Ignore tiny accidental clicks
+    if (Math.abs(x2 - x1) < 5 || Math.abs(y2 - y1) < 5) {
+      annDrawBbox();
+      return;
+    }
+    x1 = Math.max(0, x1); y1 = Math.max(0, y1);
+    x2 = Math.min(canvas.width, x2); y2 = Math.min(canvas.height, y2);
+    annBbox = {
+      cx: ((x1 + x2) / 2) / canvas.width,
+      cy: ((y1 + y2) / 2) / canvas.height,
+      w: (x2 - x1) / canvas.width,
+      h: (y2 - y1) / canvas.height,
+    };
+    annDrawBbox();
+    annSave();
+  });
+})();
+
+// Resize canvas when window resizes
+window.addEventListener('resize', () => {
+  if (activeTab === 'annotate' && annImages.length > 0) {
+    annResizeCanvas();
+    annDrawBbox();
+  }
+});
+
+async function annSave() {
+  if (!annBbox || annImages.length === 0) return;
+  const img = annImages[annIndex];
+  const catIdx = CATS.indexOf(img.cat);
+  try {
+    await fetch('/api/annotate/bbox/' + img.cat + '/' + img.filename, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({class_id: catIdx >= 0 ? catIdx : 0, ...annBbox}),
+    });
+    img.has_bbox = true;
+    annRenderThumbs();
+  } catch(e) { console.error(e); }
+}
+
+function annClearBbox() {
+  annBbox = null;
+  annDrawBbox();
+  if (annImages.length === 0) return;
+  const img = annImages[annIndex];
+  fetch('/api/annotate/bbox/' + img.cat + '/' + img.filename, {method: 'DELETE'});
+  img.has_bbox = false;
+  annRenderThumbs();
+}
+
+function annNext() {
+  if (annImages.length === 0) return;
+  annSave();
+  const skipDone = document.getElementById('ann-skip-done').checked;
+  if (skipDone) {
+    for (let i = annIndex + 1; i < annImages.length; i++) {
+      if (!annImages[i].has_bbox) { annIndex = i; annLoadImage(); return; }
+    }
+  } else {
+    if (annIndex < annImages.length - 1) { annIndex++; annLoadImage(); }
+  }
+}
+
+function annPrev() {
+  if (annImages.length === 0) return;
+  annSave();
+  const skipDone = document.getElementById('ann-skip-done').checked;
+  if (skipDone) {
+    for (let i = annIndex - 1; i >= 0; i--) {
+      if (!annImages[i].has_bbox) { annIndex = i; annLoadImage(); return; }
+    }
+  } else {
+    if (annIndex > 0) { annIndex--; annLoadImage(); }
+  }
+}
+
+function annGoto(idx) {
+  annSave();
+  annIndex = idx;
+  annLoadImage();
+}
+
+async function annAutoDetectCurrent() {
+  if (annImages.length === 0) return;
+  const img = annImages[annIndex];
+  try {
+    const r = await fetch('/api/annotate/auto-detect', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({cat: img.cat, filename: img.filename}),
+    });
+    const d = await r.json();
+    if (d.detected) {
+      annBbox = {cx: d.cx, cy: d.cy, w: d.w, h: d.h};
+      annDrawBbox();
+    } else {
+      alert('No cat detected in this image');
+    }
+  } catch(e) { console.error(e); }
+}
+
+async function annAutoDetectAll() {
+  const missing = annImages.filter(i => !i.has_bbox);
+  if (missing.length === 0) { alert('All images are annotated'); return; }
+  if (!confirm('Auto-detect bboxes for ' + missing.length + ' images? This may take a while.')) return;
+  const prog = document.getElementById('ann-progress');
+  let done = 0;
+  for (const img of missing) {
+    prog.textContent = 'Auto-detecting... ' + (++done) + '/' + missing.length;
+    try {
+      const r = await fetch('/api/annotate/auto-detect', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({cat: img.cat, filename: img.filename}),
+      });
+      const d = await r.json();
+      if (d.detected) {
+        const catIdx = CATS.indexOf(img.cat);
+        await fetch('/api/annotate/bbox/' + img.cat + '/' + img.filename, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({class_id: catIdx >= 0 ? catIdx : 0, cx: d.cx, cy: d.cy, w: d.w, h: d.h}),
+        });
+        img.has_bbox = true;
+      }
+    } catch(e) { console.error(e); }
+  }
+  annRenderThumbs();
+  annLoadImage();
+}
+
 // ── Keyboard shortcuts ─────────────────────────────────────
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
 
+  // Annotate tab shortcuts
+  if (activeTab === 'annotate') {
+    switch (e.key) {
+      case 'n': case 'ArrowRight': annNext(); return;
+      case 'p': case 'ArrowLeft': annPrev(); return;
+      case 'a': annAutoDetectCurrent(); return;
+      case 'd': annClearBbox(); return;
+    }
+    return;
+  }
+
+  // Pipeline tab shortcuts
   const num = parseInt(e.key);
   if (num >= 1 && num <= 5) {
     runStep(STEPS[num - 1]);

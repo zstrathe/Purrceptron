@@ -191,16 +191,19 @@ class LabelReviewApp:
         elif self.scope == "cat":
             dirs = [self.scope_cat]
         else:  # "all" — unlabeled first so reviewers see what needs attention
-            dirs = ["unlabeled"] + self.cats
+            dirs = ["unlabeled"] + self.cats + ["background"]
 
         for dirname in dirs:
             dir_path = self.data_dir / dirname
             if not dir_path.is_dir():
                 continue
             for ext in self.EXTENSIONS:
-                self.all_images.extend(sorted(dir_path.glob(f"*{ext}")))
+                self.all_images.extend(dir_path.glob(f"*{ext}"))
 
-        # Filter to unreviewed for the review queue
+        # Sort newest first by modification time
+        self.all_images.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+        # Filter to unreviewed for the review queue (preserves newest-first order)
         self.images = [
             img for img in self.all_images
             if not self._review_state.is_reviewed(img)
@@ -276,23 +279,25 @@ class LabelReviewApp:
         dest_dir = self.data_dir / new_label
         dest_dir.mkdir(parents=True, exist_ok=True)
 
-        # Rename to match label convention: {label}_{timestamp}.jpg
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        # Preserve original timestamp from filename: {label}_{timestamp}.jpg
         ext = path.suffix
-        dest_name = f"{new_label}_{ts}{ext}"
+        original_ts = path.stem.split('_', 1)[1] if '_' in path.stem else datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        dest_name = f"{new_label}_{original_ts}{ext}"
         dest_path = dest_dir / dest_name
 
         # Avoid collision
         counter = 1
         while dest_path.exists():
-            dest_name = f"{new_label}_{ts}_{counter}{ext}"
+            dest_name = f"{new_label}_{original_ts}_{counter}{ext}"
             dest_path = dest_dir / dest_name
             counter += 1
 
         # Update review state for old → new path
         self._review_state.remove_entry(path)
 
+        orig_mtime = path.stat().st_mtime
         shutil.move(str(path), str(dest_path))
+        os.utime(str(dest_path), (orig_mtime, orig_mtime))
 
         self._review_state.mark_reviewed(dest_path)
 
@@ -366,6 +371,142 @@ class LabelReviewApp:
         """Go back one image."""
         self.index = max(0, self.index - 1)
         return {"status": "ok"}
+
+    # ── Batch operations ──
+
+    def _label_by_path(self, path: Path, new_label: str) -> dict:
+        """Label a specific image by its path. Used by batch operations."""
+        if not path.exists():
+            return {"status": "error", "message": "Image no longer exists"}
+
+        current_label = path.parent.name
+        self._review_state.mark_reviewed(path)
+
+        if new_label == current_label:
+            self.skipped_count += 1
+            try:
+                idx = self.images.index(path)
+                self.images.pop(idx)
+                if self.index >= idx and self.index > 0:
+                    self.index -= 1
+            except ValueError:
+                pass
+            return {"status": "ok", "action": "already_labeled"}
+
+        dest_dir = self.data_dir / new_label
+        dest_dir.mkdir(parents=True, exist_ok=True)
+
+        ext = path.suffix
+        original_ts = path.stem.split('_', 1)[1] if '_' in path.stem else datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        dest_name = f"{new_label}_{original_ts}{ext}"
+        dest_path = dest_dir / dest_name
+
+        counter = 1
+        while dest_path.exists():
+            dest_name = f"{new_label}_{original_ts}_{counter}{ext}"
+            dest_path = dest_dir / dest_name
+            counter += 1
+
+        self._review_state.remove_entry(path)
+        orig_mtime = path.stat().st_mtime
+        shutil.move(str(path), str(dest_path))
+        os.utime(str(dest_path), (orig_mtime, orig_mtime))
+        self._review_state.mark_reviewed(dest_path)
+        self._thumbnails.remove(path)
+        self.labeled_count += 1
+
+        try:
+            idx = self.images.index(path)
+            self.images.pop(idx)
+            if self.index >= idx and self.index > 0:
+                self.index -= 1
+        except ValueError:
+            pass
+
+        try:
+            all_idx = self.all_images.index(path)
+            self.all_images[all_idx] = dest_path
+        except ValueError:
+            pass
+
+        return {"status": "ok", "action": "labeled", "new_label": new_label}
+
+    def _delete_by_path(self, path: Path) -> dict:
+        """Delete a specific image by its path. Used by batch operations."""
+        if not path.exists():
+            return {"status": "error", "message": "Image no longer exists"}
+
+        label = path.parent.name
+        trash_cat_dir = self.trash_dir / label
+        trash_cat_dir.mkdir(parents=True, exist_ok=True)
+
+        dest = trash_cat_dir / path.name
+        counter = 1
+        while dest.exists():
+            dest = trash_cat_dir / f"{path.stem}_{counter}{path.suffix}"
+            counter += 1
+
+        self._review_state.remove_entry(path)
+        self._thumbnails.remove(path)
+        shutil.move(str(path), str(dest))
+        self.deleted_count += 1
+
+        try:
+            idx = self.images.index(path)
+            self.images.pop(idx)
+            if self.index >= idx and self.index > 0:
+                self.index -= 1
+        except ValueError:
+            pass
+
+        try:
+            self.all_images.remove(path)
+        except ValueError:
+            pass
+
+        return {"status": "ok", "action": "deleted"}
+
+    def batch_label(self, indices: list[int], label: str) -> dict:
+        """Label multiple images by their all_images indices."""
+        paths = []
+        for idx in indices:
+            if 0 <= idx < len(self.all_images):
+                paths.append(self.all_images[idx])
+
+        labeled = 0
+        errors = 0
+        for path in paths:
+            result = self._label_by_path(path, label)
+            if result.get("status") == "ok":
+                labeled += 1
+            else:
+                errors += 1
+
+        if self.index >= len(self.images):
+            self.index = max(0, len(self.images) - 1)
+
+        return {"status": "ok", "labeled": labeled, "errors": errors}
+
+    def batch_delete(self, indices: list[int]) -> dict:
+        """Delete multiple images by their all_images indices."""
+        paths = []
+        for idx in indices:
+            if 0 <= idx < len(self.all_images):
+                paths.append(self.all_images[idx])
+
+        deleted = 0
+        errors = 0
+        for path in paths:
+            result = self._delete_by_path(path)
+            if result.get("status") == "ok":
+                deleted += 1
+            else:
+                errors += 1
+
+        if self.index >= len(self.images):
+            self.index = max(0, len(self.images) - 1)
+
+        return {"status": "ok", "deleted": deleted, "errors": errors}
 
     def get_stats(self) -> dict:
         return {

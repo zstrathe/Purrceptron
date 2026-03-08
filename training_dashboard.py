@@ -15,6 +15,7 @@ import argparse
 import collections
 import csv
 import json
+import re
 import signal
 import subprocess
 import sys
@@ -23,7 +24,9 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, render_template, request
+from datetime import datetime
+
+from flask import Flask, Response, jsonify, render_template, request, send_file
 
 # ---------------------------------------------------------------------------
 # Project imports
@@ -40,16 +43,20 @@ import yaml
 # Training Step Manager
 # ═══════════════════════════════════════════════════════════════════════════
 
-STEP_ORDER = ["pull", "prepare", "train", "export", "convert", "deploy"]
+STEP_ORDER = ["pull", "annotate", "prepare", "train", "export", "convert", "deploy"]
 
 STEP_LABELS = {
     "pull": "Pull Data from Pi",
+    "annotate": "Review Annotations",
     "prepare": "Prepare Dataset",
     "train": "Train Model",
     "export": "Export ONNX",
     "convert": "Convert HEF",
     "deploy": "Deploy to Pi",
 }
+
+# Steps that are interactive (not subprocess-based)
+INTERACTIVE_STEPS = {"annotate"}
 
 
 @dataclass
@@ -62,6 +69,7 @@ class TrainingStep:
     start_time: float | None = None
     end_time: float | None = None
     exit_code: int | None = None
+    log_file: object = None  # file handle for persisting full output
 
 
 class TrainingStepManager:
@@ -76,6 +84,8 @@ class TrainingStepManager:
         self._current_step: str | None = None
         self._train_python = str(project_root / "venv_train" / "bin" / "python")
         self._active_version: str = "v1"
+        self._version_size_cache: dict[str, float] = {}
+        self._version_size_cache_time: float = 0
 
         self._steps: dict[str, TrainingStep] = {
             name: TrainingStep(name=name, label=STEP_LABELS[name])
@@ -97,21 +107,152 @@ class TrainingStepManager:
     def set_active_version(self, name: str) -> None:
         """Switch to a different version, creating its directory if needed."""
         with self._lock:
+            if name == self._active_version:
+                return
+
             self._active_version = name
             ver_dir = self.project_root / "versions" / name
             ver_dir.mkdir(parents=True, exist_ok=True)
+
+            # Clear stale step output from previous version
+            if self._current_step is None:
+                for step in self._steps.values():
+                    step.state = "idle"
+                    step.output.clear()
+                    step.exit_code = None
+                    step.start_time = None
+                    step.end_time = None
+                    step.process = None
 
     def get_versions(self) -> list[dict]:
         """List available training versions."""
         versions_dir = self.project_root / "versions"
         versions = []
-        if versions_dir.is_dir():
-            for d in sorted(versions_dir.iterdir()):
-                if d.is_dir():
-                    has_best = (d / "training" / "weights" / "best.pt").exists()
-                    has_onnx = (d / "training" / "weights" / "best.onnx").exists()
-                    versions.append({"name": d.name, "has_model": has_best, "has_onnx": has_onnx})
+        if not versions_dir.is_dir():
+            return versions
+
+        # Refresh size cache if stale (> 60s)
+        now = time.time()
+        if now - self._version_size_cache_time > 60:
+            self._version_size_cache.clear()
+            self._version_size_cache_time = now
+
+        for d in sorted(versions_dir.iterdir()):
+            if d.is_dir():
+                has_best = (d / "training" / "weights" / "best.pt").exists()
+                has_onnx = (d / "training" / "weights" / "best.onnx").exists()
+                has_hef = (d / "cat_detector.hef").exists()
+                name = d.name
+                if name not in self._version_size_cache:
+                    size_bytes = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+                    self._version_size_cache[name] = round(size_bytes / 1024 / 1024, 1)
+                versions.append({
+                    "name": name,
+                    "has_model": has_best,
+                    "has_onnx": has_onnx,
+                    "has_hef": has_hef,
+                    "size_mb": self._version_size_cache[name],
+                })
         return versions
+
+    def _invalidate_size_cache(self, name: str | None = None) -> None:
+        """Clear cached version sizes. Pass a name to clear one, or None to clear all."""
+        if name is None:
+            self._version_size_cache.clear()
+        else:
+            self._version_size_cache.pop(name, None)
+
+    @staticmethod
+    def _fix_dataset_yaml_path(version_dir: Path) -> None:
+        """Update the absolute path in dataset.yaml to match the version directory."""
+        dataset_yaml = version_dir / "dataset" / "dataset.yaml"
+        if not dataset_yaml.exists():
+            return
+        with open(dataset_yaml) as f:
+            content = yaml.safe_load(f)
+        if content and "path" in content:
+            content["path"] = str((version_dir / "dataset").resolve())
+            with open(dataset_yaml, "w") as f:
+                yaml.dump(content, f, default_flow_style=False, sort_keys=False)
+
+    def delete_version(self, name: str) -> dict:
+        """Delete a version directory."""
+        import shutil
+        with self._lock:
+            if self._current_step is not None and name == self._active_version:
+                return {"status": "error", "message": "Cannot delete version while a step is running"}
+
+            ver_dir = self.project_root / "versions" / name
+            if not ver_dir.is_dir():
+                return {"status": "error", "message": f"Version '{name}' not found"}
+
+            shutil.rmtree(ver_dir)
+            self._invalidate_size_cache(name)
+
+            # If we deleted the active version, switch to another
+            if name == self._active_version:
+                versions = self.get_versions()
+                if versions:
+                    self._active_version = versions[-1]["name"]
+                else:
+                    self._active_version = "v1"
+                    (self.project_root / "versions" / "v1").mkdir(parents=True, exist_ok=True)
+
+                # Clear step state for the new version
+                for step in self._steps.values():
+                    step.state = "idle"
+                    step.output.clear()
+                    step.exit_code = None
+                    step.start_time = None
+                    step.end_time = None
+                    step.process = None
+
+        return {"status": "ok", "active": self._active_version}
+
+    def rename_version(self, name: str, new_name: str) -> dict:
+        """Rename a version directory."""
+        with self._lock:
+            if self._current_step is not None and name == self._active_version:
+                return {"status": "error", "message": "Cannot rename version while a step is running"}
+
+            ver_dir = self.project_root / "versions" / name
+            new_dir = self.project_root / "versions" / new_name
+
+            if not ver_dir.is_dir():
+                return {"status": "error", "message": f"Version '{name}' not found"}
+            if new_dir.exists():
+                return {"status": "error", "message": f"Version '{new_name}' already exists"}
+
+            ver_dir.rename(new_dir)
+            self._fix_dataset_yaml_path(new_dir)
+            # Transfer cached size to new name
+            old_size = self._version_size_cache.pop(name, None)
+            if old_size is not None:
+                self._version_size_cache[new_name] = old_size
+
+            if name == self._active_version:
+                self._active_version = new_name
+
+        return {"status": "ok", "active": self._active_version}
+
+    def duplicate_version(self, name: str, new_name: str) -> dict:
+        """Duplicate a version directory."""
+        import shutil
+        with self._lock:
+            ver_dir = self.project_root / "versions" / name
+            new_dir = self.project_root / "versions" / new_name
+
+            if not ver_dir.is_dir():
+                return {"status": "error", "message": f"Version '{name}' not found"}
+            if new_dir.exists():
+                return {"status": "error", "message": f"Version '{new_name}' already exists"}
+
+        # Copy outside lock (can be slow for large versions)
+        shutil.copytree(ver_dir, new_dir)
+        self._fix_dataset_yaml_path(new_dir)
+
+        self.set_active_version(new_name)
+        return {"status": "ok", "active": new_name}
 
     def _cleanup_train_dir(self) -> None:
         """Remove partial training artifacts so the next run starts fresh."""
@@ -153,9 +294,10 @@ class TrainingStepManager:
             calib_dir = str(ver_dir / "dataset" / "calibration")
             hw_arch = deploy_cfg.get("hw_arch", "hailo10h")
             model_size = self._config.get("training", {}).get("model_size", "yolov8s")
-            return ["bash", "train/convert_hef.sh", onnx_path, num_classes, calib_dir, hw_arch, model_size]
+            return ["bash", "train/convert_hef.sh", onnx_path, num_classes, calib_dir, hw_arch, model_size, str(ver_dir)]
         elif step_name == "deploy":
-            return ["bash", "scripts/transfer_model.sh"]
+            hef_path = str(ver_dir / "cat_detector.hef")
+            return ["bash", "scripts/transfer_model.sh", "", hef_path]
         else:
             raise ValueError(f"Unknown step: {step_name}")
 
@@ -163,6 +305,10 @@ class TrainingStepManager:
         """Launch a single training step."""
         if step_name not in self._steps:
             return {"status": "error", "message": f"Unknown step: {step_name}"}
+
+        # Interactive steps don't run as subprocesses
+        if step_name in INTERACTIVE_STEPS:
+            return {"status": "interactive", "action": "open_annotate_tab"}
 
         with self._lock:
             if self._current_step is not None:
@@ -191,6 +337,13 @@ class TrainingStepManager:
             step.exit_code = None
             step.output.clear()
             self._current_step = step_name
+
+            # Open log file for full output persistence
+            self._close_step_log(step)
+            log_dir = self.project_root / "logs" / "training" / self._active_version
+            log_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            step.log_file = open(log_dir / f"{step_name}_{ts}.log", "w")
 
             # Clean up partial training artifacts before starting a new run
             if step_name == "train":
@@ -243,9 +396,19 @@ class TrainingStepManager:
             step.state = "error"
             step.end_time = time.time()
             step.output.append("[STOPPED] Step terminated by user")
+            self._close_step_log(step)
             name = self._current_step
             self._current_step = None
             return {"status": "ok", "step": name}
+
+    @staticmethod
+    def _close_step_log(step: TrainingStep) -> None:
+        if step.log_file and not step.log_file.closed:
+            try:
+                step.log_file.close()
+            except Exception:
+                pass
+        step.log_file = None
 
     def _monitor_step(self, step: TrainingStep) -> None:
         """Read output and detect completion (runs in daemon thread)."""
@@ -253,8 +416,16 @@ class TrainingStepManager:
             try:
                 for line in step.process.stdout:
                     step.output.append(line.rstrip())
+                    if step.log_file and not step.log_file.closed:
+                        try:
+                            step.log_file.write(line)
+                            step.log_file.flush()
+                        except Exception:
+                            pass
             except (ValueError, OSError):
                 pass
+
+        self._close_step_log(step)
 
         # Process finished
         exit_code = step.process.wait() if step.process else -1
@@ -262,8 +433,14 @@ class TrainingStepManager:
         step.end_time = time.time()
 
         with self._lock:
+            self._invalidate_size_cache(self._active_version)
             if exit_code == 0:
                 step.state = "done"
+                # Copy annotations from previous version after pull
+                if step.name == "pull":
+                    msg = self._copy_annotations_from_previous()
+                    if msg:
+                        step.output.append(msg)
                 self._current_step = None
                 # Auto-chain to next step
                 if self._auto_pipeline:
@@ -282,11 +459,79 @@ class TrainingStepManager:
                 self._auto_pipeline = False
 
     def _next_step(self, current: str) -> str | None:
-        """Return the next step name after current, or None if done."""
+        """Return the next step name after current, or None if done.
+
+        Skips interactive steps (like annotate) during auto-pipeline.
+        """
         idx = STEP_ORDER.index(current)
-        if idx + 1 < len(STEP_ORDER):
-            return STEP_ORDER[idx + 1]
+        for i in range(idx + 1, len(STEP_ORDER)):
+            if STEP_ORDER[i] not in INTERACTIVE_STEPS:
+                return STEP_ORDER[i]
         return None
+
+    def get_annotation_stats(self) -> dict:
+        """Count annotated vs total images in the active version's raw dir."""
+        ver_dir = self.get_version_dir()
+        raw_dir = ver_dir / "raw"
+        cats = self._config.get("cats", [])
+        total = 0
+        annotated = 0
+        for cat_name in cats:
+            cat_dir = raw_dir / cat_name
+            if not cat_dir.is_dir():
+                continue
+            for img in cat_dir.glob("*.jpg"):
+                total += 1
+                if img.with_suffix(".txt").exists():
+                    annotated += 1
+        return {"total": total, "annotated": annotated, "missing": total - annotated}
+
+    def _copy_annotations_from_previous(self) -> str:
+        """Copy .txt annotation files from the most recent previous version.
+
+        Matches by filename so images that carry over between versions
+        keep their annotations automatically.
+        """
+        import shutil
+
+        ver_dir = self.get_version_dir()
+        raw_dir = ver_dir / "raw"
+        cats = self._config.get("cats", [])
+
+        # Find previous version with raw data
+        versions = self.get_versions()
+        prev_raw = None
+        prev_name = None
+        for v in reversed(versions):
+            if v["name"] == self._active_version:
+                continue
+            candidate = self.project_root / "versions" / v["name"] / "raw"
+            if candidate.is_dir():
+                prev_raw = candidate
+                prev_name = v["name"]
+                break
+
+        if not prev_raw:
+            return ""
+
+        copied = 0
+        for cat_name in cats:
+            cur_cat = raw_dir / cat_name
+            prev_cat = prev_raw / cat_name
+            if not cur_cat.is_dir() or not prev_cat.is_dir():
+                continue
+            for img in cur_cat.glob("*.jpg"):
+                txt = img.with_suffix(".txt")
+                if txt.exists():
+                    continue  # already annotated
+                prev_txt = prev_cat / txt.name
+                if prev_txt.exists():
+                    shutil.copy2(prev_txt, txt)
+                    copied += 1
+
+        if copied:
+            return f"[INFO] Copied {copied} annotations from {prev_name}"
+        return ""
 
     def reload_config(self, config: dict) -> None:
         """Update stored config (after settings change)."""
@@ -308,6 +553,16 @@ class TrainingStepManager:
                     "elapsed": elapsed,
                     "exit_code": step.exit_code,
                 }
+
+            # Compute annotate step state from annotation completeness
+            ann_stats = self.get_annotation_stats()
+            if ann_stats["total"] == 0:
+                steps["annotate"]["state"] = "idle"
+            elif ann_stats["missing"] == 0:
+                steps["annotate"]["state"] = "done"
+            else:
+                steps["annotate"]["state"] = "idle"
+            steps["annotate"]["annotation_stats"] = ann_stats
 
             return {
                 "steps": steps,
@@ -371,7 +626,8 @@ class TrainingConfigManager:
 
             if "training" in settings:
                 for key in ("model_size", "epochs", "batch_size", "image_size",
-                            "patience", "val_split", "test_split"):
+                            "patience", "lr0", "lrf", "optimizer",
+                            "val_split", "test_split"):
                     if key in settings["training"]:
                         cfg["training"][key] = settings["training"][key]
 
@@ -469,7 +725,7 @@ def get_output_files(project_root: Path, version_dir: Path) -> dict:
         "dataset_yaml": version_dir / "dataset" / "dataset.yaml",
         "best_pt": version_dir / "training" / "weights" / "best.pt",
         "best_onnx": version_dir / "training" / "weights" / "best.onnx",
-        "cat_detector_hef": project_root / "models" / "cat_detector.hef",
+        "cat_detector_hef": version_dir / "cat_detector.hef",
         "labels_json": project_root / "deploy" / "labels.json",
     }
     result = {}
@@ -551,6 +807,43 @@ def create_app(
         step_mgr.set_active_version(name)
         return jsonify({"status": "ok", "active": name})
 
+    @flask_app.route("/api/versions", methods=["DELETE"])
+    def api_delete_version():
+        data = request.get_json()
+        name = data.get("name", "").strip()
+        if not name:
+            return jsonify({"status": "error", "message": "No version name"}), 400
+        result = step_mgr.delete_version(name)
+        if result["status"] == "error":
+            return jsonify(result), 409
+        return jsonify(result)
+
+    @flask_app.route("/api/versions", methods=["PATCH"])
+    def api_rename_version():
+        data = request.get_json()
+        name = data.get("name", "").strip()
+        new_name = data.get("new_name", "").strip()
+        new_name = re.sub(r"[^a-zA-Z0-9_-]", "_", new_name)
+        if not name or not new_name:
+            return jsonify({"status": "error", "message": "Name required"}), 400
+        result = step_mgr.rename_version(name, new_name)
+        if result["status"] == "error":
+            return jsonify(result), 409
+        return jsonify(result)
+
+    @flask_app.route("/api/versions/duplicate", methods=["POST"])
+    def api_duplicate_version():
+        data = request.get_json()
+        name = data.get("name", "").strip()
+        new_name = data.get("new_name", "").strip()
+        new_name = re.sub(r"[^a-zA-Z0-9_-]", "_", new_name)
+        if not name or not new_name:
+            return jsonify({"status": "error", "message": "Name required"}), 400
+        result = step_mgr.duplicate_version(name, new_name)
+        if result["status"] == "error":
+            return jsonify(result), 409
+        return jsonify(result)
+
     # ── Dataset Stats API ─────────────────────────────────────────
     @flask_app.route("/api/dataset_stats")
     def api_dataset_stats():
@@ -571,6 +864,156 @@ def create_app(
         new_cfg = config_mgr.read()
         step_mgr.reload_config(new_cfg)
         return jsonify({"status": "ok"})
+
+    # ── Annotation API ─────────────────────────────────────────
+    @flask_app.route("/api/annotate/images")
+    def api_annotate_images():
+        ver_dir = step_mgr.get_version_dir()
+        raw_dir = ver_dir / "raw"
+        images = []
+        for cat_name in cats:
+            cat_dir = raw_dir / cat_name
+            if not cat_dir.is_dir():
+                continue
+            for img in sorted(cat_dir.glob("*.jpg")):
+                has_bbox = img.with_suffix(".txt").exists()
+                images.append({
+                    "cat": cat_name,
+                    "filename": img.name,
+                    "has_bbox": has_bbox,
+                })
+        return jsonify({"images": images})
+
+    @flask_app.route("/api/annotate/image/<cat>/<filename>")
+    def api_annotate_image(cat, filename):
+        ver_dir = step_mgr.get_version_dir()
+        img_path = ver_dir / "raw" / cat / filename
+        if not img_path.exists():
+            return "Not found", 404
+        return send_file(str(img_path), mimetype="image/jpeg")
+
+    @flask_app.route("/api/annotate/bbox/<cat>/<filename>", methods=["GET"])
+    def api_annotate_bbox_get(cat, filename):
+        ver_dir = step_mgr.get_version_dir()
+        label_name = Path(filename).with_suffix(".txt").name
+        label_path = ver_dir / "raw" / cat / label_name
+        if not label_path.exists():
+            return jsonify({"exists": False})
+        text = label_path.read_text().strip()
+        if not text:
+            return jsonify({"exists": False})
+        parts = text.split("\n")[0].split()
+        if len(parts) < 5:
+            return jsonify({"exists": False})
+        return jsonify({
+            "exists": True,
+            "class_id": int(parts[0]),
+            "cx": float(parts[1]),
+            "cy": float(parts[2]),
+            "w": float(parts[3]),
+            "h": float(parts[4]),
+        })
+
+    @flask_app.route("/api/annotate/bbox/<cat>/<filename>", methods=["POST"])
+    def api_annotate_bbox_save(cat, filename):
+        data = request.get_json()
+        if not data:
+            return jsonify({"status": "error", "message": "No data"}), 400
+        ver_dir = step_mgr.get_version_dir()
+        label_name = Path(filename).with_suffix(".txt").name
+        label_path = ver_dir / "raw" / cat / label_name
+        class_id = data.get("class_id", 0)
+        cx = data["cx"]
+        cy = data["cy"]
+        w = data["w"]
+        h = data["h"]
+        label_path.write_text(f"{class_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}\n")
+        return jsonify({"status": "ok"})
+
+    @flask_app.route("/api/annotate/bbox/<cat>/<filename>", methods=["DELETE"])
+    def api_annotate_bbox_delete(cat, filename):
+        ver_dir = step_mgr.get_version_dir()
+        label_name = Path(filename).with_suffix(".txt").name
+        label_path = ver_dir / "raw" / cat / label_name
+        if label_path.exists():
+            label_path.unlink()
+        return jsonify({"status": "ok"})
+
+    @flask_app.route("/api/annotate/auto-detect", methods=["POST"])
+    def api_annotate_auto_detect():
+        data = request.get_json()
+        cat = data.get("cat", "")
+        filename = data.get("filename", "")
+        ver_dir = step_mgr.get_version_dir()
+        img_path = ver_dir / "raw" / cat / filename
+        if not img_path.exists():
+            return jsonify({"status": "error", "message": "Image not found"}), 404
+
+        try:
+            from ultralytics import YOLO
+            # Cache model in module-level variable
+            if not hasattr(api_annotate_auto_detect, "_coco_model"):
+                api_annotate_auto_detect._coco_model = YOLO("yolov8n.pt")
+            model = api_annotate_auto_detect._coco_model
+            results = model.predict(str(img_path), verbose=False, conf=0.15)
+            best_box = None
+            best_conf = 0.0
+            for r in results:
+                for box in r.boxes:
+                    if int(box.cls) == 15:  # COCO cat class
+                        conf = float(box.conf)
+                        if conf > best_conf:
+                            best_conf = conf
+                            x1, y1, x2, y2 = box.xyxy[0].tolist()
+                            img_h, img_w = r.orig_shape
+                            best_box = {
+                                "cx": ((x1 + x2) / 2) / img_w,
+                                "cy": ((y1 + y2) / 2) / img_h,
+                                "w": (x2 - x1) / img_w,
+                                "h": (y2 - y1) / img_h,
+                                "confidence": best_conf,
+                            }
+            if best_box:
+                return jsonify({"status": "ok", "detected": True, **best_box})
+            return jsonify({"status": "ok", "detected": False})
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 500
+
+    @flask_app.route("/api/annotate/stats")
+    def api_annotate_stats():
+        return jsonify(step_mgr.get_annotation_stats())
+
+    # ── Logs ───────────────────────────────────────────────────────
+    @flask_app.route("/api/logs")
+    def api_logs():
+        log_base = project_root / "logs" / "training"
+        if not log_base.is_dir():
+            return jsonify({"logs": []})
+        logs = []
+        for f in sorted(log_base.rglob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True):
+            st = f.stat()
+            # Extract version from path (logs/training/<version>/file.log)
+            version = f.parent.name
+            logs.append({
+                "name": f.name,
+                "version": version,
+                "path": f"{version}/{f.name}",
+                "size_kb": round(st.st_size / 1024, 1),
+                "modified": st.st_mtime,
+            })
+        return jsonify({"logs": logs})
+
+    @flask_app.route("/api/logs/<version>/<filename>")
+    def api_log_file(version, filename):
+        log_base = project_root / "logs" / "training"
+        log_path = log_base / version / filename
+        if not log_path.exists() or not log_path.is_file():
+            return "Not found", 404
+        try:
+            log_path.resolve().relative_to(log_base.resolve())
+        except ValueError:
+            return "Forbidden", 403
+        return send_file(str(log_path), mimetype="text/plain")
 
     return flask_app
 

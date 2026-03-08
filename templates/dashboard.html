@@ -73,6 +73,9 @@
   .inference-row label {
     font-size: 0.85rem; color: #8892b0; min-width: 70px;
   }
+  .inference-row label.toggle-switch {
+    min-width: 44px;
+  }
   .inference-row select, .inference-row input[type="number"], .inference-row input[type="text"] {
     background: #0a0a1a; color: #e0e0e0; border: 1px solid #0f3460;
     padding: 6px 10px; border-radius: 4px; font-size: 0.85rem;
@@ -83,20 +86,20 @@
   .inference-row input[type="text"] { min-width: 120px; }
 
   .toggle-switch {
-    position: relative; display: inline-block; width: 48px; height: 24px;
+    position: relative; display: inline-block; width: 44px; height: 20px; flex-shrink: 0;
   }
-  .toggle-switch input { opacity: 0; width: 0; height: 0; }
+  .toggle-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
   .toggle-slider {
-    position: absolute; inset: 0; background: #0a0a1a;
-    border: 1px solid #0f3460; border-radius: 24px; cursor: pointer;
+    position: absolute; inset: 0; background: #162447;
+    border-radius: 20px; cursor: pointer;
     transition: background 0.2s;
   }
   .toggle-slider::before {
-    content: ""; position: absolute; width: 18px; height: 18px;
-    left: 2px; bottom: 2px; background: #8892b0;
+    content: ""; position: absolute; width: 14px; height: 14px;
+    top: 3px; left: 3px; background: #8892b0;
     border-radius: 50%; transition: transform 0.2s;
   }
-  .toggle-switch input:checked + .toggle-slider { background: #1b4332; border-color: #52b788; }
+  .toggle-switch input:checked + .toggle-slider { background: #1b4332; }
   .toggle-switch input:checked + .toggle-slider::before { transform: translateX(24px); background: #52b788; }
 
   .settings-group {
@@ -118,6 +121,7 @@
   }
   .status-dot.stopped { background: #e63946; }
   .status-dot.running { background: #52b788; animation: pulse 1.5s infinite; }
+  .status-dot.restarting { background: #f4a261; animation: pulse 1s infinite; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
   .inference-log-wrap {
@@ -281,8 +285,25 @@
   }
   .thumb-item img { width: 100%; height: 100%; object-fit: cover; }
   .thumb-item.active { border-color: #52b788; }
+  .thumb-item.selected { border-color: #4a90d9; background: rgba(74,144,217,0.15); }
+  .thumb-item.selected::after {
+    content: '\2713'; position: absolute; top: 2px; right: 4px;
+    color: #4a90d9; font-size: 0.9rem; font-weight: bold; text-shadow: 0 0 3px #000;
+  }
   .thumb-item.reviewed { opacity: 0.5; }
   .thumb-item.reviewed:hover { opacity: 0.8; }
+  .thumb-item.reviewed.selected { opacity: 0.85; }
+  .selection-bar {
+    display: flex; align-items: center; gap: 6px; padding: 6px 10px;
+    background: #0f1a2e; border: 1px solid #4a90d9; border-radius: 6px;
+    margin-top: 6px; flex-wrap: wrap;
+  }
+  .selection-bar .sel-count { font-family: monospace; font-size: 0.8rem; color: #4a90d9; margin-right: 6px; }
+  .selection-bar .btn-sel { font-size: 0.7rem; padding: 3px 10px; border: 1px solid #333; border-radius: 4px; cursor: pointer; font-family: monospace; background: #1a1a3e; color: #e0e0e0; }
+  .selection-bar .btn-sel:hover { background: #2a2a5e; }
+  .selection-bar .btn-sel-del { background: #3e1a1a; border-color: #a33; }
+  .selection-bar .btn-sel-del:hover { background: #5e2a2a; }
+  .selection-bar .btn-sel-clear { background: transparent; border-color: #555; color: #8892b0; }
   .thumb-label {
     position: absolute; bottom: 0; left: 0; right: 0;
     background: rgba(0,0,0,0.7); font-size: 0.6rem;
@@ -387,8 +408,20 @@
         </div>
 
         <div class="inference-log-wrap" id="inf-log-wrap">
-          <button class="log-copy-btn" onclick="copyPipelineLog()">Copy</button>
+          <button class="log-copy-btn" style="right:52px" onclick="copyPipelineLog()">Copy</button>
+          <button class="log-copy-btn" onclick="openLogBrowser()">Logs</button>
           <div class="inference-log" id="inf-log"></div>
+        </div>
+
+        <!-- Log browser modal -->
+        <div id="log-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:1000; justify-content:center; align-items:center;">
+          <div style="background:#0d1117; border:1px solid #333; border-radius:8px; padding:20px; max-width:500px; width:90%; max-height:70vh; overflow-y:auto;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+              <h3 style="margin:0; color:#e6f1ff; font-size:0.95rem;">Detection Logs</h3>
+              <button onclick="closeLogBrowser()" style="background:none; border:none; color:#8892b0; font-size:1.2rem; cursor:pointer;">&times;</button>
+            </div>
+            <div id="log-list" style="font-family:monospace; font-size:0.8rem; color:#8892b0;">Loading...</div>
+          </div>
         </div>
       </div>
 
@@ -437,6 +470,7 @@
         {% for i, cat in cats %}
         <button class="btn btn-cat" onclick="captureAs('{{ cat }}')">{{ i }}: {{ cat }}</button>
         {% endfor %}
+        <button class="btn btn-cat" style="background:#1a1a3e;border-color:#333" onclick="captureAs('background')">BG: No Cat</button>
       </div>
 
       <!-- Auto-Capture Controls -->
@@ -482,7 +516,7 @@
         {% for i, cat in cats %}
         <button class="btn btn-cat" onclick="labelAs('{{ cat }}')">{{ i }}: {{ cat }}</button>
         {% endfor %}
-        <button class="btn btn-unlabeled" onclick="labelAs('unlabeled')">u: unlabeled</button>
+        <button class="btn btn-cat" style="background:#1a1a3e;border-color:#333" onclick="labelAs('background')">b: background</button>
         <button class="btn btn-delete" onclick="reviewDelete()">d: Delete</button>
       </div>
 
@@ -496,6 +530,21 @@
         <span>Sort:</span>
         <button class="sort-btn active" id="sort-time" onclick="sortThumbnails('time')">By time</button>
         <button class="sort-btn" id="sort-name" onclick="sortThumbnails('name')">By name</button>
+        <span style="margin-left:auto; font-size:0.7rem; color:#8892b0; font-family:monospace" id="select-hint">Click thumbnails to select</span>
+      </div>
+      <div class="selection-bar" id="selection-bar" style="display:none">
+        <span class="sel-count" id="selection-count">0 selected</span>
+        <select id="batch-label-select" style="font-size:0.75rem;padding:3px 8px;background:#0a0a1a;color:#e0e0e0;border:1px solid #333;border-radius:4px;font-family:monospace;cursor:pointer">
+          {% for i, cat in cats %}
+          <option value="{{ cat }}">{{ cat }}</option>
+          {% endfor %}
+          <option value="background">background</option>
+        </select>
+        <button class="btn-sel" style="background:#2d6a4f;border-color:#52b788;color:#fff" onclick="batchLabel(document.getElementById('batch-label-select').value)">Apply Label</button>
+        <span style="border-left:1px solid #555;height:18px;margin:0 6px"></span>
+        <button class="btn-sel btn-sel-del" onclick="batchDelete()">Delete Selected</button>
+        <span style="flex:1"></span>
+        <button onclick="clearSelection()" style="background:none;border:none;color:#8892b0;cursor:pointer;font-size:1.1rem;padding:0 4px" title="Exit multi-select">&times;</button>
       </div>
       <div class="thumbnail-grid" id="thumbnail-grid"></div>
     </div>
@@ -514,7 +563,12 @@
       </div>
       {% endfor %}
       <div class="cat-stat">
-        <span class="name" style="color:#ffb347">unlbl</span>
+        <span class="name" style="color:#7a8aaa">background</span>
+        <div class="bar-bg"><div class="bar-fill" id="bar-background" style="width:0%;background:#2a2a4e"></div></div>
+        <span class="count" id="count-background">0</span>
+      </div>
+      <div class="cat-stat" id="unlabeled-row">
+        <span class="name" style="color:#ffb347">unlabeled</span>
         <div class="bar-bg"><div class="bar-fill" id="bar-unlabeled" style="width:0%;background:#5a3600"></div></div>
         <span class="count" id="count-unlabeled">0</span>
       </div>
@@ -541,7 +595,7 @@
       {% for i, cat in cats %}
       <kbd>{{ i }}</kbd> {{ cat }}<br>
       {% endfor %}
-      <kbd>u</kbd> unlabeled<br>
+      <kbd>b</kbd> background<br>
       <kbd>d</kbd> Delete<br>
       <kbd>n</kbd>/<kbd>&rarr;</kbd> Next &nbsp; <kbd>p</kbd>/<kbd>&larr;</kbd> Prev
     </div>
@@ -563,6 +617,8 @@ let activeTab = 'capture';
 let pipelineMode = 'default';
 let reviewDone = false;
 let lastLogHtml = '';
+let logAutoScroll = true;
+let logUpdating = false;
 
 // ── Tab switching ──────────────────────────────────────────
 function switchTab(tab) {
@@ -734,6 +790,34 @@ function copyPipelineLog() {
     btn.textContent = 'Copied!';
     setTimeout(() => { btn.textContent = 'Copy'; }, 1000);
   }
+}
+
+async function openLogBrowser() {
+  const modal = document.getElementById('log-modal');
+  modal.style.display = 'flex';
+  const listEl = document.getElementById('log-list');
+  listEl.innerHTML = 'Loading...';
+  try {
+    const r = await fetch('/api/logs');
+    const d = await r.json();
+    if (!d.logs.length) {
+      listEl.innerHTML = '<div style="color:#555;">No log files yet.</div>';
+      return;
+    }
+    listEl.innerHTML = d.logs.map(l => {
+      const date = new Date(l.modified * 1000).toLocaleString();
+      return `<div style="padding:6px 0; border-bottom:1px solid #1a1a2e;">
+        <a href="/api/logs/${l.name}" target="_blank" style="color:#64ffda; text-decoration:none;">${l.name}</a>
+        <span style="color:#555; margin-left:8px;">${l.size_kb} KB &middot; ${date}</span>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    listEl.innerHTML = '<div style="color:#e74c3c;">Failed to load logs.</div>';
+  }
+}
+
+function closeLogBrowser() {
+  document.getElementById('log-modal').style.display = 'none';
 }
 
 async function switchDetectionMode(mode) {
@@ -916,19 +1000,29 @@ async function reviewPrev() {
 
 async function reviewRescan() {
   await fetch('/api/review/rescan', {method:'POST'});
+  selectedThumbnails.clear();
+  updateSelectionBar();
   loadReviewCurrent();
   loadThumbnails();
 }
 
-// ── Thumbnail Grid ─────────────────────────────────────────
+// ── Thumbnail Grid + Multi-Select ─────────────────────────
 let thumbnailImages = [];
 let currentSort = 'time';
+const selectedThumbnails = new Set();
+let lastSelectedVisualIndex = null;
 
 async function loadThumbnails() {
   try {
     const r = await fetch('/api/review/thumbnails');
     const d = await r.json();
     thumbnailImages = d.images;
+    // Prune stale selections (indices that no longer exist)
+    const validIndices = new Set(thumbnailImages.map(img => img.index));
+    for (const idx of selectedThumbnails) {
+      if (!validIndices.has(idx)) selectedThumbnails.delete(idx);
+    }
+    updateSelectionBar();
     applySortOrder(currentSort);
     renderThumbnails();
   } catch(e) { console.error(e); }
@@ -936,14 +1030,12 @@ async function loadThumbnails() {
 
 function applySortOrder(mode) {
   if (mode === 'time') {
-    // Sort by timestamp part of filename (after first underscore), newest first
     thumbnailImages.sort((a, b) => {
       const ta = a.filename.substring(a.filename.indexOf('_') + 1);
       const tb = b.filename.substring(b.filename.indexOf('_') + 1);
       return tb.localeCompare(ta);
     });
   } else if (mode === 'name') {
-    // Sort by label (cat name), then by filename within each label
     thumbnailImages.sort((a, b) => {
       if (a.label !== b.label) return a.label.localeCompare(b.label);
       return a.filename.localeCompare(b.filename);
@@ -959,6 +1051,77 @@ function sortThumbnails(mode) {
   renderThumbnails();
 }
 
+function updateSelectionBar() {
+  const bar = document.getElementById('selection-bar');
+  const count = selectedThumbnails.size;
+  if (count > 0) {
+    bar.style.display = 'flex';
+    document.getElementById('selection-count').textContent = count + ' selected';
+  } else {
+    bar.style.display = 'none';
+  }
+}
+
+function toggleSelect(index, div) {
+  if (selectedThumbnails.has(index)) {
+    selectedThumbnails.delete(index);
+    div.classList.remove('selected');
+  } else {
+    selectedThumbnails.add(index);
+    div.classList.add('selected');
+  }
+  updateSelectionBar();
+}
+
+function clearSelection() {
+  selectedThumbnails.clear();
+  lastSelectedVisualIndex = null;
+  document.querySelectorAll('.thumb-item.selected').forEach(el => el.classList.remove('selected'));
+  updateSelectionBar();
+}
+
+function selectAll() {
+  thumbnailImages.forEach(img => selectedThumbnails.add(img.index));
+  document.querySelectorAll('.thumb-item').forEach(el => el.classList.add('selected'));
+  updateSelectionBar();
+}
+
+async function batchLabel(label) {
+  if (selectedThumbnails.size === 0) return;
+  const indices = Array.from(selectedThumbnails);
+  try {
+    const r = await fetch('/api/review/batch-label', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({indices, label})
+    });
+    const d = await r.json();
+    selectedThumbnails.clear();
+    updateSelectionBar();
+    loadThumbnails();
+    updateReviewUI(d);
+    triggerFlash('review-flash', 'label-flash');
+  } catch(e) { console.error(e); }
+}
+
+async function batchDelete() {
+  if (selectedThumbnails.size === 0) return;
+  const indices = Array.from(selectedThumbnails);
+  try {
+    const r = await fetch('/api/review/batch-delete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({indices})
+    });
+    const d = await r.json();
+    selectedThumbnails.clear();
+    updateSelectionBar();
+    loadThumbnails();
+    updateReviewUI(d);
+    triggerFlash('review-flash', 'delete-flash');
+  } catch(e) { console.error(e); }
+}
+
 function renderThumbnails() {
   const grid = document.getElementById('thumbnail-grid');
   grid.innerHTML = '';
@@ -968,6 +1131,7 @@ function renderThumbnails() {
     div.className = 'thumb-item';
     div.dataset.originalIndex = img.index;
     if (img.reviewed) div.classList.add('reviewed');
+    if (selectedThumbnails.has(img.index)) div.classList.add('selected');
 
     const imgEl = document.createElement('img');
     imgEl.src = '/api/review/thumbnail/' + encodeURIComponent(img.relative_path);
@@ -979,9 +1143,43 @@ function renderThumbnails() {
     label.textContent = img.label;
     div.appendChild(label);
 
-    div.onclick = () => gotoThumbnail(img.index);
+    const visualIdx = thumbnailImages.indexOf(img);
+    div.onclick = (e) => {
+      if (e.shiftKey) {
+        let anchor = lastSelectedVisualIndex;
+        if (anchor === null) {
+          const activeEl = grid.querySelector('.thumb-item.active');
+          if (activeEl) {
+            anchor = Array.from(grid.children).indexOf(activeEl);
+          } else {
+            anchor = 0;
+          }
+        }
+        const lo = Math.min(anchor, visualIdx);
+        const hi = Math.max(anchor, visualIdx);
+        const thumbEls = grid.querySelectorAll('.thumb-item');
+        for (let i = lo; i <= hi; i++) {
+          selectedThumbnails.add(thumbnailImages[i].index);
+          thumbEls[i].classList.add('selected');
+        }
+        lastSelectedVisualIndex = visualIdx;
+        updateSelectionBar();
+      } else if (selectedThumbnails.size > 0 || e.ctrlKey || e.metaKey) {
+        toggleSelect(img.index, div);
+        lastSelectedVisualIndex = visualIdx;
+      } else {
+        gotoThumbnail(img.index);
+        lastSelectedVisualIndex = visualIdx;
+      }
+    };
+    // Long-press or right-click to start selection without needing Ctrl
+    div.oncontextmenu = (e) => {
+      e.preventDefault();
+      toggleSelect(img.index, div);
+    };
     grid.appendChild(div);
   });
+  grid.scrollTop = 0;
 }
 
 async function gotoThumbnail(originalIndex) {
@@ -1120,7 +1318,18 @@ async function pollStatus() {
     });
     const uc = counts.unlabeled || 0;
     document.getElementById('count-unlabeled').textContent = uc;
+    const unlabeledRow = document.getElementById('unlabeled-row');
+    if (uc > 0) {
+      unlabeledRow.style.background = 'rgba(255,179,71,0.12)';
+      unlabeledRow.style.borderRadius = '4px';
+      document.getElementById('count-unlabeled').style.color = '#ffb347';
+    } else {
+      unlabeledRow.style.background = '';
+      document.getElementById('count-unlabeled').style.color = '';
+    }
     topParts.push('unlabeled:' + uc);
+    const bc = counts.background || 0;
+    document.getElementById('count-background').textContent = bc;
     document.getElementById('top-counts').innerHTML = topParts.map(s => '<span>' + s + '</span>').join('');
 
     // Pipeline status
@@ -1136,9 +1345,13 @@ async function pollStatus() {
         const newHtml = d.pipeline.output.slice(-20).map(l => l.replace(/</g,'&lt;')).join('<br>');
         const hasSelection = window.getSelection().toString().length > 0;
         if (newHtml !== lastLogHtml && !hasSelection) {
+          logUpdating = true;
           lastLogHtml = newHtml;
           log.innerHTML = newHtml;
-          log.scrollTop = log.scrollHeight;
+          if (logAutoScroll) {
+            log.scrollTop = log.scrollHeight;
+          }
+          requestAnimationFrame(() => { logUpdating = false; });
         }
         logWrap.classList.toggle('visible', d.pipeline.output.length > 0);
       }
@@ -1146,9 +1359,16 @@ async function pollStatus() {
       // Update status indicators
       const dot = document.getElementById('inf-status-dot');
       const text = document.getElementById('inf-status-text');
+      const ri = d.pipeline.restart_info;
       if (d.pipeline.running) {
         dot.className = 'status-dot running';
         text.textContent = pipelineMode === 'inference' ? 'Running (Fine-tuned)' : 'Running (COCO)';
+      } else if (ri && ri.exhausted) {
+        dot.className = 'status-dot stopped';
+        text.textContent = 'Crashed (restart failed after ' + ri.count + ' attempts)';
+      } else if (ri) {
+        dot.className = 'status-dot restarting';
+        text.textContent = 'Restarting in ' + ri.waiting_seconds + 's... (attempt ' + ri.count + '/' + ri.max + ')';
       } else {
         dot.className = 'status-dot stopped';
         text.textContent = 'Pipeline stopped';
@@ -1158,7 +1378,7 @@ async function pollStatus() {
       document.getElementById('sidebar-mode').textContent =
         pipelineMode === 'inference' ? 'INFERENCE' : 'DETECTION';
       document.getElementById('sidebar-pipeline').textContent =
-        d.pipeline.running ? 'Running' : 'Stopped';
+        d.pipeline.running ? 'Running' : (ri && !ri.exhausted ? 'Restarting...' : 'Stopped');
     }
 
     // Auto-capture state
@@ -1185,7 +1405,7 @@ document.addEventListener('keydown', (e) => {
 
   if (activeTab === 'review') {
     switch (e.key) {
-      case 'u': labelAs('unlabeled'); break;
+      case 'b': labelAs('background'); break;
       case 'd': reviewDelete(); break;
       case 'n': case 'ArrowRight': reviewSkip(); break;
       case 'p': case 'ArrowLeft': reviewPrev(); break;
@@ -1208,6 +1428,10 @@ if (cachedIgnore) {
   document.getElementById('ignore-labels').value = cachedIgnore;
   sendIgnoreLabels();
 }
+document.getElementById('inf-log').addEventListener('scroll', function() {
+  if (logUpdating) return;
+  logAutoScroll = (this.scrollHeight - this.scrollTop - this.clientHeight) < 30;
+});
 setInterval(pollStatus, 1000);
 </script>
 </body>

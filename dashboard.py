@@ -22,6 +22,8 @@ import threading
 import time
 from pathlib import Path
 
+from datetime import datetime
+
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
 # ---------------------------------------------------------------------------
@@ -116,6 +118,13 @@ class DetectionPipelineManager:
         # Original inference paths — preserved before mode switching can overwrite them
         self._inference_hef = "models/cat_detector.hef"
         self._inference_labels = "deploy/labels.json"
+        # Watchdog auto-restart state
+        self._intentional_stop = False
+        self._watchdog_thread: threading.Thread | None = None
+        self._restart_info: dict | None = None
+        # Log file for persisting full output to disk
+        self._log_file = None
+        self._log_dir = self.project_root / "logs" / "detection"
 
     def set_config(self, config: dict) -> None:
         self._config = config
@@ -168,6 +177,8 @@ class DetectionPipelineManager:
             return {"status": "error", "message": "Already running"}
 
         self.mode = mode
+        self._intentional_stop = False
+        self._restart_info = None
         self._write_mode_config(mode)
 
         # Build the detect.py command with absolute paths.
@@ -208,15 +219,28 @@ class DetectionPipelineManager:
             return {"status": "error", "message": str(exc)}
 
         self._output_lines.clear()
+        # Open a log file for full output persistence
+        self._close_log_file()
+        self._log_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._log_file = open(self._log_dir / f"{mode}_{ts}.log", "w")
+
         self._reader_thread = threading.Thread(
             target=self._read_output, daemon=True
         )
         self._reader_thread.start()
 
+        # Start watchdog for auto-restart on crash
+        self._watchdog_thread = threading.Thread(
+            target=self._watchdog, daemon=True
+        )
+        self._watchdog_thread.start()
+
         return {"status": "ok", "pid": self.process.pid, "mode": mode}
 
     def stop(self) -> dict:
         """Stop the detect.py subprocess."""
+        self._intentional_stop = True
         with self._lock:
             if self.process is None or self.process.poll() is not None:
                 self.process = None
@@ -237,7 +261,30 @@ class DetectionPipelineManager:
                 self.process.wait(timeout=2)
 
             self.process = None
+            self._close_log_file()
             return {"status": "ok"}
+
+    def _close_log_file(self) -> None:
+        if self._log_file and not self._log_file.closed:
+            try:
+                self._log_file.close()
+            except Exception:
+                pass
+        self._log_file = None
+
+    def get_log_files(self) -> list[dict]:
+        """List available log files, newest first."""
+        if not self._log_dir.is_dir():
+            return []
+        logs = []
+        for f in sorted(self._log_dir.glob("*.log"), key=lambda p: p.stat().st_mtime, reverse=True):
+            st = f.stat()
+            logs.append({
+                "name": f.name,
+                "size_kb": round(st.st_size / 1024, 1),
+                "modified": st.st_mtime,
+            })
+        return logs
 
     def switch_mode(self, new_mode: str) -> dict:
         """Stop detect.py, update config for new mode, restart."""
@@ -265,13 +312,46 @@ class DetectionPipelineManager:
             return list(self._output_lines)
 
     def get_status(self) -> dict:
-        return {
+        status = {
             "running": self.is_running(),
             "mode": self.mode,
             "pid": self.process.pid if self.process and self.is_running() else None,
             "output": self.get_output(),
             "models": self.scan_models(),
         }
+        if self._restart_info:
+            status["restart_info"] = self._restart_info
+        return status
+
+    def _watchdog(self) -> None:
+        """Monitor subprocess and auto-restart on unexpected exit."""
+        backoff = 3
+        max_restarts = 5
+        restarts = 0
+        while restarts < max_restarts:
+            if self.process is None:
+                return
+            ret = self.process.wait()
+            if self._intentional_stop:
+                return
+            restarts += 1
+            self._restart_info = {
+                "count": restarts,
+                "max": max_restarts,
+                "last_exit_code": ret,
+                "waiting_seconds": backoff,
+            }
+            time.sleep(backoff)
+            if self._intentional_stop:
+                return
+            self.process = None
+            self._restart_info = None
+            result = self.start(mode=self.mode)
+            if result["status"] != "ok":
+                self._restart_info = {"exhausted": True, "count": restarts}
+                return
+            backoff = min(backoff * 2, 30)
+        self._restart_info = {"exhausted": True, "count": restarts}
 
     def _read_output(self) -> None:
         if self.process is None or self.process.stdout is None:
@@ -280,8 +360,16 @@ class DetectionPipelineManager:
             for line in self.process.stdout:
                 with self._lock:
                     self._output_lines.append(line.rstrip())
+                if self._log_file and not self._log_file.closed:
+                    try:
+                        self._log_file.write(line)
+                        self._log_file.flush()
+                    except Exception:
+                        pass
         except (ValueError, OSError):
             pass
+        finally:
+            self._close_log_file()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -405,7 +493,7 @@ def create_app(
     # ── Capture API (sends command to detect.py via stdin) ───────
     @flask_app.route("/api/capture/<cat_name>", methods=["POST"])
     def api_capture(cat_name):
-        if cat_name not in cats and cat_name != "unlabeled":
+        if cat_name not in cats and cat_name not in ("unlabeled", "background"):
             return jsonify({"status": "error", "message": f"Unknown cat: {cat_name}"}), 400
         if not pipeline_mgr.is_running():
             return jsonify({"status": "error", "message": "Detection pipeline not running"}), 503
@@ -450,6 +538,8 @@ def create_app(
             counts[cat] = len(list(cat_dir.glob("*.jpg"))) if cat_dir.is_dir() else 0
         unlabeled_dir = data_dir / "unlabeled"
         counts["unlabeled"] = len(list(unlabeled_dir.glob("*.jpg"))) if unlabeled_dir.is_dir() else 0
+        bg_dir = data_dir / "background"
+        counts["background"] = len(list(bg_dir.glob("*.jpg"))) if bg_dir.is_dir() else 0
         result["image_counts"] = counts
 
         # Review state
@@ -547,6 +637,29 @@ def create_app(
         result["current"] = reviewer.get_current()
         return jsonify(result)
 
+    @flask_app.route("/api/review/batch-label", methods=["POST"])
+    def api_review_batch_label():
+        data = request.get_json()
+        indices = data.get("indices", [])
+        label = data.get("label", "").strip()
+        if not label or not indices:
+            return jsonify({"status": "error", "message": "Missing indices or label"}), 400
+        result = reviewer.batch_label(indices, label)
+        result["stats"] = reviewer.get_stats()
+        result["current"] = reviewer.get_current()
+        return jsonify(result)
+
+    @flask_app.route("/api/review/batch-delete", methods=["POST"])
+    def api_review_batch_delete():
+        data = request.get_json()
+        indices = data.get("indices", [])
+        if not indices:
+            return jsonify({"status": "error", "message": "No indices provided"}), 400
+        result = reviewer.batch_delete(indices)
+        result["stats"] = reviewer.get_stats()
+        result["current"] = reviewer.get_current()
+        return jsonify(result)
+
     # ── Inference API (mode switching) ────────────────────────────
     @flask_app.route("/api/inference/status")
     def api_inference_status():
@@ -566,6 +679,14 @@ def create_app(
         if not data:
             return jsonify({"status": "error", "message": "No data"}), 400
         config_mgr.update_inference_settings(data)
+        # Push detection capture changes to running detect.py process
+        if "detection_capture" in data:
+            dc = data["detection_capture"]
+            pipeline_mgr.send_command({
+                "cmd": "set_detection_capture",
+                "enabled": dc.get("enabled", False),
+                "filter_labels": dc.get("filter_labels", []),
+            })
         return jsonify({"status": "ok"})
 
     @flask_app.route("/api/inference/labels")
@@ -591,6 +712,23 @@ def create_app(
         """Switch back to default mode (COCO model)."""
         result = pipeline_mgr.switch_mode("default")
         return jsonify(result)
+
+    # ── Logs ───────────────────────────────────────────────────────
+    @flask_app.route("/api/logs")
+    def api_logs():
+        return jsonify({"logs": pipeline_mgr.get_log_files()})
+
+    @flask_app.route("/api/logs/<filename>")
+    def api_log_file(filename):
+        log_path = pipeline_mgr._log_dir / filename
+        if not log_path.exists() or not log_path.is_file():
+            return "Not found", 404
+        # Prevent path traversal
+        try:
+            log_path.resolve().relative_to(pipeline_mgr._log_dir.resolve())
+        except ValueError:
+            return "Forbidden", 403
+        return send_file(str(log_path), mimetype="text/plain")
 
     return flask_app
 

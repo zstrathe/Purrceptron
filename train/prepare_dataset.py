@@ -46,8 +46,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--min-confidence",
         type=float,
-        default=0.3,
-        help="Minimum confidence for COCO cat detection (default: 0.3)",
+        default=0.15,
+        help="Minimum confidence for COCO cat detection (default: 0.15)",
     )
     parser.add_argument(
         "--skip-annotation",
@@ -74,7 +74,7 @@ def auto_annotate(
 
     coco_model = YOLO("yolov8n.pt")
 
-    stats = {"annotated": 0, "no_detection": 0, "multi_detection": 0}
+    stats = {"annotated": 0, "pre_annotated": 0, "no_detection": 0, "multi_detection": 0}
 
     for cat_idx, cat_name in enumerate(cats):
         cat_dir = input_dir / cat_name
@@ -83,6 +83,13 @@ def auto_annotate(
         print_info(f"Annotating {cat_name}: {len(images)} images...")
 
         for img_path in images:
+            # Skip images that already have a label file (manually annotated)
+            label_path = img_path.with_suffix(".txt")
+            if label_path.exists():
+                stats["pre_annotated"] += 1
+                stats["annotated"] += 1
+                continue
+
             results = coco_model.predict(
                 str(img_path), verbose=False, conf=min_confidence
             )
@@ -124,7 +131,11 @@ def print_annotation_report(stats: dict[str, int], total_images: int) -> None:
         pct_ann = stats["annotated"] / total_images * 100
         pct_no = stats["no_detection"] / total_images * 100
         pct_multi = stats["multi_detection"] / total_images * 100
+        pre = stats.get("pre_annotated", 0)
         print_info(f"Successfully annotated: {stats['annotated']} ({pct_ann:.1f}%)")
+        if pre > 0:
+            print_info(f"  Pre-annotated (manual): {pre}")
+            print_info(f"  Auto-annotated: {stats['annotated'] - pre}")
         print_info(
             f"No cat detected: {stats['no_detection']} ({pct_no:.1f}%)"
             "  <- may need manual annotation"
@@ -176,6 +187,40 @@ def create_yolo_structure(
         for img_path, label_path in samples:
             shutil.copy2(img_path, img_dir / img_path.name)
             shutil.copy2(label_path, lbl_dir / label_path.name)
+
+
+def add_background_images(
+    input_dir: Path, output_dir: Path, val_ratio: float = 0.2, seed: int = 42
+) -> int:
+    """Add background (negative) images with empty labels to the dataset.
+
+    Background images teach the model what "no cat" looks like, reducing
+    false positives. Expects images in input_dir/background/*.jpg.
+    """
+    bg_dir = input_dir / "background"
+    if not bg_dir.is_dir():
+        return 0
+
+    bg_images = sorted(bg_dir.glob("*.jpg"))
+    if not bg_images:
+        return 0
+
+    random.seed(seed)
+    random.shuffle(bg_images)
+
+    val_count = max(1, int(len(bg_images) * val_ratio))
+    val_imgs = bg_images[:val_count]
+    train_imgs = bg_images[val_count:]
+
+    for split_name, imgs in [("train", train_imgs), ("val", val_imgs)]:
+        img_dir = output_dir / "images" / split_name
+        lbl_dir = output_dir / "labels" / split_name
+        for img_path in imgs:
+            shutil.copy2(img_path, img_dir / img_path.name)
+            # Empty label file = no objects in this image
+            (lbl_dir / img_path.with_suffix(".txt").name).write_text("")
+
+    return len(bg_images)
 
 
 def create_calibration_dir(
@@ -354,6 +399,11 @@ def main() -> None:
 
     # Create YOLO directory structure
     create_yolo_structure(splits, output_dir)
+
+    # Add background (negative) images if available
+    bg_count = add_background_images(input_dir, output_dir, seed=seed)
+    if bg_count > 0:
+        print_info(f"Background images added: {bg_count} (reduces false positives)")
 
     # Create calibration directory
     calib_count = create_calibration_dir(splits, output_dir)
