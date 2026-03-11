@@ -447,25 +447,8 @@ if HAILO_AVAILABLE:
             user_data: CatDetectionCallback with detection_capturer
             detected_cats: set of detected label names
             frame: Pre-extracted BGR numpy array (shared with preview writer)
-            frame_detections: list of detection dicts with bbox_norm for drawing
+            frame_detections: unused, kept for call-site compatibility
         """
-        # Draw bounding boxes on a copy so saved frames show what was detected
-        save_frame = frame
-        if frame_detections:
-            h, w = frame.shape[:2]
-            pixel_dets = []
-            for det in frame_detections:
-                nx, ny, nw, nh = det["bbox_norm"]
-                pixel_dets.append({
-                    "label": det["label"],
-                    "confidence": det["confidence"],
-                    "bbox": (int(nx * w), int(ny * h),
-                             int((nx + nw) * w), int((ny + nh) * h)),
-                    "track_id": det.get("track_id"),
-                })
-            save_frame = frame.copy()
-            draw_bounding_boxes(save_frame, pixel_dets)
-
         # Filter by configured labels
         capture_cats = detected_cats
         if user_data.capture_filter_labels:
@@ -475,7 +458,7 @@ if HAILO_AVAILABLE:
             save_label = cat
             if user_data.unlabeled_classes and cat in user_data.unlabeled_classes:
                 save_label = "unlabeled"
-            user_data.detection_capturer.maybe_capture(save_label, save_frame)
+            user_data.detection_capturer.maybe_capture(save_label, frame)
 
 
     def _maybe_capture_eating_cats(user_data, detected_cats, frame):

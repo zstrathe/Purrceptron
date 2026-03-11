@@ -65,8 +65,9 @@ def main() -> None:
     export_dir = args.output or resolve_path("data/export", PROJECT_ROOT)
     csv_path = output_dir / "capture_log.csv"
 
-    # Scan images
-    cat_images = scan_images(output_dir, cats)
+    # Scan images (cats + extra dirs like background/unlabeled)
+    all_dirs = cats + ["background", "unlabeled"]
+    cat_images = scan_images(output_dir, all_dirs)
     total = sum(len(imgs) for imgs in cat_images.values())
 
     if total == 0:
@@ -76,10 +77,11 @@ def main() -> None:
 
     print_header("Export Dataset")
     print("  Exporting dataset:")
-    for cat in cats:
-        count = len(cat_images[cat])
-        print(f"    {cat:8s} {count} images")
-    print(f"    {'Total':8s} {total} images\n")
+    for name in all_dirs:
+        count = len(cat_images.get(name, []))
+        if count > 0:
+            print(f"    {name:12s} {count} images")
+    print(f"    {'Total':12s} {total} images\n")
 
     # Prepare export directory
     export_dir.mkdir(parents=True, exist_ok=True)
@@ -108,9 +110,9 @@ def main() -> None:
 
     with tarfile.open(archive_path, "w:gz") as tar:
         tar.add(str(manifest_path), arcname="manifest.json")
-        for cat in cats:
-            for img_path in cat_images[cat]:
-                tar.add(str(img_path), arcname=f"{cat}/{img_path.name}")
+        for name in all_dirs:
+            for img_path in cat_images.get(name, []):
+                tar.add(str(img_path), arcname=f"{name}/{img_path.name}")
 
     size_mb = archive_path.stat().st_size / (1024 * 1024)
     print_success(f"Archive created: {archive_path}")

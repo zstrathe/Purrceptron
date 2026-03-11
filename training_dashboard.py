@@ -86,6 +86,8 @@ class TrainingStepManager:
         self._active_version: str = "v1"
         self._version_size_cache: dict[str, float] = {}
         self._version_size_cache_time: float = 0
+        self._ann_stats_cache: dict | None = None
+        self._ann_stats_cache_time: float = 0
 
         self._steps: dict[str, TrainingStep] = {
             name: TrainingStep(name=name, label=STEP_LABELS[name])
@@ -111,6 +113,8 @@ class TrainingStepManager:
                 return
 
             self._active_version = name
+            self._ann_stats_cache = None
+            self._ann_stats_cache_time = 0
             ver_dir = self.project_root / "versions" / name
             ver_dir.mkdir(parents=True, exist_ok=True)
 
@@ -438,9 +442,11 @@ class TrainingStepManager:
                 step.state = "done"
                 # Copy annotations from previous version after pull
                 if step.name == "pull":
+                    self._ensure_background_labels()
                     msg = self._copy_annotations_from_previous()
                     if msg:
                         step.output.append(msg)
+                    self.invalidate_annotation_cache()
                 self._current_step = None
                 # Auto-chain to next step
                 if self._auto_pipeline:
@@ -469,8 +475,24 @@ class TrainingStepManager:
                 return STEP_ORDER[i]
         return None
 
+    def _ensure_background_labels(self) -> None:
+        """Create empty .txt label files for background images (one-time operation)."""
+        ver_dir = self.get_version_dir()
+        bg_dir = ver_dir / "raw" / "background"
+        if not bg_dir.is_dir():
+            return
+        for img in bg_dir.glob("*.jpg"):
+            txt = img.with_suffix(".txt")
+            if not txt.exists():
+                txt.write_text("")
+
     def get_annotation_stats(self) -> dict:
-        """Count annotated vs total images in the active version's raw dir."""
+        """Count annotated vs total images in the active version's raw dir (read-only)."""
+        # Return cached result if fresh (< 5s)
+        now = time.time()
+        if self._ann_stats_cache and now - self._ann_stats_cache_time < 5:
+            return self._ann_stats_cache
+
         ver_dir = self.get_version_dir()
         raw_dir = ver_dir / "raw"
         cats = self._config.get("cats", [])
@@ -484,7 +506,24 @@ class TrainingStepManager:
                 total += 1
                 if img.with_suffix(".txt").exists():
                     annotated += 1
-        return {"total": total, "annotated": annotated, "missing": total - annotated}
+
+        # Background images are negative examples — count only (labels created by _ensure_background_labels)
+        bg_dir = raw_dir / "background"
+        if bg_dir.is_dir():
+            for img in bg_dir.glob("*.jpg"):
+                total += 1
+                if img.with_suffix(".txt").exists():
+                    annotated += 1
+
+        result = {"total": total, "annotated": annotated, "missing": total - annotated}
+        self._ann_stats_cache = result
+        self._ann_stats_cache_time = now
+        return result
+
+    def invalidate_annotation_cache(self) -> None:
+        """Clear cached annotation stats (call after annotation changes)."""
+        self._ann_stats_cache = None
+        self._ann_stats_cache_time = 0
 
     def _copy_annotations_from_previous(self) -> str:
         """Copy .txt annotation files from the most recent previous version.
@@ -515,16 +554,16 @@ class TrainingStepManager:
             return ""
 
         copied = 0
-        for cat_name in cats:
-            cur_cat = raw_dir / cat_name
-            prev_cat = prev_raw / cat_name
-            if not cur_cat.is_dir() or not prev_cat.is_dir():
+        for dir_name in cats + ["background"]:
+            cur_dir = raw_dir / dir_name
+            prev_dir = prev_raw / dir_name
+            if not cur_dir.is_dir() or not prev_dir.is_dir():
                 continue
-            for img in cur_cat.glob("*.jpg"):
+            for img in cur_dir.glob("*.jpg"):
                 txt = img.with_suffix(".txt")
                 if txt.exists():
                     continue  # already annotated
-                prev_txt = prev_cat / txt.name
+                prev_txt = prev_dir / txt.name
                 if prev_txt.exists():
                     shutil.copy2(prev_txt, txt)
                     copied += 1
@@ -696,18 +735,18 @@ def get_dataset_stats(version_dir: Path, cats: list[str]) -> dict:
     raw_counts = {}
     for cat in cats:
         cat_dir = raw_dir / cat
-        raw_counts[cat] = len(list(cat_dir.glob("*.jpg"))) if cat_dir.is_dir() else 0
+        raw_counts[cat] = sum(1 for _ in cat_dir.glob("*.jpg")) if cat_dir.is_dir() else 0
     unlabeled_dir = raw_dir / "unlabeled"
-    raw_counts["unlabeled"] = len(list(unlabeled_dir.glob("*.jpg"))) if unlabeled_dir.is_dir() else 0
+    raw_counts["unlabeled"] = sum(1 for _ in unlabeled_dir.glob("*.jpg")) if unlabeled_dir.is_dir() else 0
 
     # Dataset split counts
     split_counts = {}
     for split in ("train", "val", "test"):
         img_dir = dataset_dir / "images" / split
-        split_counts[split] = len(list(img_dir.glob("*.jpg"))) if img_dir.is_dir() else 0
+        split_counts[split] = sum(1 for _ in img_dir.glob("*.jpg")) if img_dir.is_dir() else 0
 
     calib_dir = dataset_dir / "calibration"
-    split_counts["calibration"] = len(list(calib_dir.glob("*.jpg"))) if calib_dir.is_dir() else 0
+    split_counts["calibration"] = sum(1 for _ in calib_dir.glob("*.jpg")) if calib_dir.is_dir() else 0
 
     dataset_yaml = dataset_dir / "dataset.yaml"
 
@@ -928,6 +967,7 @@ def create_app(
         w = data["w"]
         h = data["h"]
         label_path.write_text(f"{class_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}\n")
+        step_mgr.invalidate_annotation_cache()
         return jsonify({"status": "ok"})
 
     @flask_app.route("/api/annotate/bbox/<cat>/<filename>", methods=["DELETE"])
@@ -937,6 +977,7 @@ def create_app(
         label_path = ver_dir / "raw" / cat / label_name
         if label_path.exists():
             label_path.unlink()
+        step_mgr.invalidate_annotation_cache()
         return jsonify({"status": "ok"})
 
     @flask_app.route("/api/annotate/auto-detect", methods=["POST"])
@@ -953,7 +994,9 @@ def create_app(
             from ultralytics import YOLO
             # Cache model in module-level variable
             if not hasattr(api_annotate_auto_detect, "_coco_model"):
-                api_annotate_auto_detect._coco_model = YOLO("yolov8n.pt")
+                import torch
+                device = "cuda:0" if torch.cuda.is_available() else "cpu"
+                api_annotate_auto_detect._coco_model = YOLO("yolov8n.pt").to(device)
             model = api_annotate_auto_detect._coco_model
             results = model.predict(str(img_path), verbose=False, conf=0.15)
             best_box = None

@@ -72,7 +72,9 @@ def auto_annotate(
     """
     from ultralytics import YOLO
 
-    coco_model = YOLO("yolov8n.pt")
+    import torch
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+    coco_model = YOLO("yolov8n.pt").to(device)
 
     stats = {"annotated": 0, "pre_annotated": 0, "no_detection": 0, "multi_detection": 0}
 

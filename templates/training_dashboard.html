@@ -127,8 +127,11 @@
   }
   .settings-panel h3 {
     font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
-    margin-bottom: 10px; letter-spacing: 1px;
+    margin-bottom: 10px; letter-spacing: 1px; cursor: pointer; user-select: none;
   }
+  .settings-panel.collapsed h3 { margin-bottom: 0; }
+  .settings-panel.collapsed .settings-body { display: none; }
+  .settings-toggle { font-size: 0.6rem; margin-right: 4px; }
   .settings-row {
     display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
     flex-wrap: wrap;
@@ -482,8 +485,9 @@
       </div>
 
       <!-- Settings Panel -->
-      <div class="settings-panel">
-        <h3>Training Settings</h3>
+      <div class="settings-panel" id="settings-panel">
+        <h3 onclick="toggleSettings()"><span class="settings-toggle" id="settings-arrow">▼</span>Training Settings</h3>
+        <div class="settings-body">
         <div class="settings-row">
           <label>Model:</label>
           <span class="tip">?<span class="tip-text">Model size tradeoff. n=fastest, s=balanced, m=most accurate. Larger needs more GPU memory.</span></span>
@@ -531,6 +535,7 @@
         <div style="margin-top:8px">
           <button class="btn btn-nav btn-sm" onclick="saveSettings()">Save Settings</button>
         </div>
+        </div>
       </div>
       </div>
 
@@ -563,7 +568,7 @@
         <button class="btn btn-nav btn-sm" onclick="annAutoDetectCurrent()">Auto-detect</button>
         <button class="btn btn-nav btn-sm" onclick="annClearBbox()">Clear</button>
         <label style="font-size:0.8rem;color:#8892b0;cursor:pointer">
-          <input type="checkbox" id="ann-skip-done" onchange="annRenderThumbs()"> Hide annotated
+          <input type="checkbox" id="ann-skip-done" checked onchange="annRenderThumbs()"> Hide annotated
         </label>
         <span class="ann-img-info" id="ann-img-info"></span>
       </div>
@@ -702,30 +707,34 @@ function switchTab(tab) {
 // ── Version management ─────────────────────────────────────
 let latestVersions = [];
 
+function renderVersionDropdown(d) {
+  const sel = document.getElementById('version-select');
+  if (!d.versions || d.versions.length === 0) {
+    sel.innerHTML = '<option value="v1" selected>v1</option>';
+  } else {
+    sel.innerHTML = d.versions.map(v => {
+      const marks = [v.has_model ? 'M' : '', v.has_hef ? 'H' : ''].filter(Boolean).join(',');
+      const suffix = marks ? ' [' + marks + ']' : '';
+      return '<option value="' + v.name + '"' + (v.name === d.active ? ' selected' : '') + '>' +
+        v.name + suffix + '</option>';
+    }).join('');
+  }
+  const active = (d.versions || []).find(v => v.name === d.active);
+  const sizeEl = document.getElementById('version-size');
+  if (active && active.size_mb > 0) {
+    sizeEl.textContent = '(' + active.size_mb + ' MB)';
+  } else {
+    sizeEl.textContent = '';
+  }
+}
+
 async function loadVersions() {
   try {
     const r = await fetch('/api/versions');
     const d = await r.json();
     latestVersions = d.versions || [];
-    const sel = document.getElementById('version-select');
-    if (d.versions.length === 0) {
-      sel.innerHTML = '<option value="v1" selected>v1</option>';
-    } else {
-      sel.innerHTML = d.versions.map(v => {
-        const marks = [v.has_model ? 'M' : '', v.has_hef ? 'H' : ''].filter(Boolean).join(',');
-        const suffix = marks ? ' [' + marks + ']' : '';
-        return '<option value="' + v.name + '"' + (v.name === d.active ? ' selected' : '') + '>' +
-          v.name + suffix + '</option>';
-      }).join('');
-    }
-    // Show size of active version
-    const active = d.versions.find(v => v.name === d.active);
-    const sizeEl = document.getElementById('version-size');
-    if (active && active.size_mb > 0) {
-      sizeEl.textContent = '(' + active.size_mb + ' MB)';
-    } else {
-      sizeEl.textContent = '';
-    }
+    renderVersionDropdown(d);
+    try { localStorage.setItem('cachedVersions', JSON.stringify(d)); } catch(e) {}
   } catch(e) { console.error(e); }
 }
 
@@ -820,6 +829,14 @@ async function runStep(name) {
       switchTab('annotate');
     } else if (d.status !== 'ok') {
       alert('Error: ' + (d.message || 'unknown'));
+    } else {
+      // Clear cached completion for this step and all downstream
+      try {
+        const cached = JSON.parse(localStorage.getItem('stepCompleted') || '{}');
+        const idx = STEPS.indexOf(name);
+        for (let i = idx; i < STEPS.length; i++) cached[STEPS[i]] = false;
+        localStorage.setItem('stepCompleted', JSON.stringify(cached));
+      } catch(e) {}
     }
   } catch(e) { console.error(e); }
 }
@@ -839,6 +856,14 @@ async function stopPipeline() {
 }
 
 // ── Settings ───────────────────────────────────────────────
+function toggleSettings() {
+  const panel = document.getElementById('settings-panel');
+  panel.classList.toggle('collapsed');
+  const collapsed = panel.classList.contains('collapsed');
+  document.getElementById('settings-arrow').textContent = collapsed ? '▶' : '▼';
+  try { localStorage.setItem('settingsCollapsed', collapsed); } catch(e) {}
+}
+
 function toggleAutoBatch() {
   const auto = document.getElementById('set-batch-auto').checked;
   const input = document.getElementById('set-batch');
@@ -846,26 +871,31 @@ function toggleAutoBatch() {
   input.style.opacity = auto ? '0.35' : '1';
 }
 
+function applySettings(d) {
+  const t = d.training || {};
+  document.getElementById('set-model').value = t.model_size || 'yolov8m';
+  document.getElementById('set-epochs').value = t.epochs || 150;
+  const batchSize = t.batch_size || 16;
+  if (batchSize === -1) {
+    document.getElementById('set-batch-auto').checked = true;
+    document.getElementById('set-batch').value = 16;
+    toggleAutoBatch();
+  } else {
+    document.getElementById('set-batch').value = batchSize;
+  }
+  document.getElementById('set-imgsz').value = t.image_size || 640;
+  document.getElementById('set-patience').value = t.patience || 30;
+  document.getElementById('set-lr0').value = t.lr0 || 0.01;
+  document.getElementById('set-lrf').value = t.lrf || 0.01;
+  document.getElementById('set-optimizer').value = t.optimizer || 'SGD';
+}
+
 async function loadSettings() {
   try {
     const r = await fetch('/api/settings');
     const d = await r.json();
-    const t = d.training || {};
-    document.getElementById('set-model').value = t.model_size || 'yolov8m';
-    document.getElementById('set-epochs').value = t.epochs || 150;
-    const batchSize = t.batch_size || 16;
-    if (batchSize === -1) {
-      document.getElementById('set-batch-auto').checked = true;
-      document.getElementById('set-batch').value = 16;
-      toggleAutoBatch();
-    } else {
-      document.getElementById('set-batch').value = batchSize;
-    }
-    document.getElementById('set-imgsz').value = t.image_size || 640;
-    document.getElementById('set-patience').value = t.patience || 30;
-    document.getElementById('set-lr0').value = t.lr0 || 0.01;
-    document.getElementById('set-lrf').value = t.lrf || 0.01;
-    document.getElementById('set-optimizer').value = t.optimizer || 'SGD';
+    applySettings(d);
+    try { localStorage.setItem('cachedSettings', JSON.stringify(d)); } catch(e) {}
   } catch(e) { console.error(e); }
 }
 
@@ -1014,23 +1044,25 @@ async function pollStatus() {
       document.getElementById('top-status').textContent = '[' + ver + '] Running: ' + currentLabel +
         (d.auto_pipeline ? ' (auto-pipeline)' : '');
     } else {
-      const doneCount = STEPS.filter(n => (steps[n] || {}).state === 'done').length;
+      const cachedDone = JSON.parse(localStorage.getItem('stepCompleted') || '{}');
+      const doneCount = STEPS.filter(n => (steps[n] || {}).state === 'done' || cachedDone[n]).length;
       document.getElementById('top-status').textContent = '[' + ver + '] ' + (doneCount > 0
-        ? doneCount + '/5 steps complete' : 'Pipeline idle');
+        ? doneCount + '/' + STEPS.length + ' steps complete' : 'Pipeline idle');
     }
 
     // Sidebar
-    document.getElementById('sidebar-step').textContent = d.current_step
+    const sidebarStep = d.current_step
       ? (steps[d.current_step] || {}).label || d.current_step : '--';
-    document.getElementById('sidebar-mode').textContent = d.auto_pipeline
+    const sidebarMode = d.auto_pipeline
       ? 'Auto-pipeline' : (isRunning ? 'Single step' : 'Idle');
-
+    let sidebarElapsed = '--';
     if (d.current_step && steps[d.current_step]) {
-      document.getElementById('sidebar-elapsed').textContent =
-        fmtTime(steps[d.current_step].elapsed);
-    } else {
-      document.getElementById('sidebar-elapsed').textContent = '--';
+      sidebarElapsed = fmtTime(steps[d.current_step].elapsed);
     }
+    document.getElementById('sidebar-step').textContent = sidebarStep;
+    document.getElementById('sidebar-mode').textContent = sidebarMode;
+    document.getElementById('sidebar-elapsed').textContent = sidebarElapsed;
+    try { localStorage.setItem('cachedSidebar', JSON.stringify({step: sidebarStep, mode: sidebarMode, elapsed: sidebarElapsed})); } catch(e) {}
 
     // Output log — only update DOM if content changed (preserves text selection)
     if (d.output && d.output.length > 0) {
@@ -1057,6 +1089,7 @@ async function pollStatus() {
     if (d.outputs) {
       updateOutputFiles(d.outputs);
       latestOutputs = d.outputs;
+      try { localStorage.setItem('cachedOutputs', JSON.stringify(latestOutputs)); } catch(e) {}
     }
 
     // Track step states for readiness
@@ -1064,6 +1097,7 @@ async function pollStatus() {
     // Track annotation stats for the annotate step
     if (steps.annotate && steps.annotate.annotation_stats) {
       latestAnnotationStats = steps.annotate.annotation_stats;
+      try { localStorage.setItem('cachedAnnotationStats', JSON.stringify(latestAnnotationStats)); } catch(e) {}
       const hint = document.getElementById('hint-annotate');
       if (latestAnnotationStats.total > 0 && latestAnnotationStats.missing > 0) {
         hint.textContent = latestAnnotationStats.annotated + '/' + latestAnnotationStats.total + ' annotated';
@@ -1210,44 +1244,50 @@ function updateCharts(data) {
 }
 
 // ── Dataset stats ──────────────────────────────────────────
+function renderRawCounts(d) {
+  if (!d.raw_counts) return;
+  const rawEl = document.getElementById('raw-counts');
+  rawEl.innerHTML = '';
+  const minImages = 300;
+  CATS.forEach(cat => {
+    const c = d.raw_counts[cat] || 0;
+    const pct = Math.min(100, (c / minImages) * 100);
+    const barClass = pct < 33 ? 'bar-low' : pct < 80 ? 'bar-mid' : 'bar-good';
+    rawEl.innerHTML += '<div class="cat-stat">' +
+      '<span class="name">' + cat + '</span>' +
+      '<div class="bar-bg"><div class="bar-fill ' + barClass + '" style="width:' + pct + '%"></div></div>' +
+      '<span class="count">' + c + '</span></div>';
+  });
+  const uc = d.raw_counts.unlabeled || 0;
+  if (uc > 0) {
+    rawEl.innerHTML += '<div class="cat-stat">' +
+      '<span class="name" style="color:#ffb347">unlbl</span>' +
+      '<div class="bar-bg"><div class="bar-fill" style="width:10%;background:#5a3600"></div></div>' +
+      '<span class="count">' + uc + '</span></div>';
+  }
+}
+
+function renderDatasetStatsPanel(d) {
+  const dsEl = document.getElementById('dataset-stats-content');
+  if (d.dataset_ready) {
+    const sc = d.split_counts || {};
+    dsEl.innerHTML = '<div class="stat-row"><span class="label">Train:</span><span>' + (sc.train || 0) + '</span></div>' +
+      '<div class="stat-row"><span class="label">Val:</span><span>' + (sc.val || 0) + '</span></div>' +
+      '<div class="stat-row"><span class="label">Test:</span><span>' + (sc.test || 0) + '</span></div>' +
+      '<div class="stat-row"><span class="label">Calibration:</span><span>' + (sc.calibration || 0) + '</span></div>';
+  } else {
+    dsEl.innerHTML = '<div style="color:#555;font-family:monospace;font-size:0.85rem">Dataset not prepared yet</div>';
+  }
+}
+
 async function pollDatasetStats() {
   try {
     const r = await fetch('/api/dataset_stats');
     const d = await r.json();
     latestDatasetStats = d;
-
-    // Sidebar raw counts
-    const rawEl = document.getElementById('raw-counts');
-    rawEl.innerHTML = '';
-    const minImages = 300;
-    CATS.forEach(cat => {
-      const c = d.raw_counts[cat] || 0;
-      const pct = Math.min(100, (c / minImages) * 100);
-      const barClass = pct < 33 ? 'bar-low' : pct < 80 ? 'bar-mid' : 'bar-good';
-      rawEl.innerHTML += '<div class="cat-stat">' +
-        '<span class="name">' + cat + '</span>' +
-        '<div class="bar-bg"><div class="bar-fill ' + barClass + '" style="width:' + pct + '%"></div></div>' +
-        '<span class="count">' + c + '</span></div>';
-    });
-    const uc = d.raw_counts.unlabeled || 0;
-    if (uc > 0) {
-      rawEl.innerHTML += '<div class="cat-stat">' +
-        '<span class="name" style="color:#ffb347">unlbl</span>' +
-        '<div class="bar-bg"><div class="bar-fill" style="width:10%;background:#5a3600"></div></div>' +
-        '<span class="count">' + uc + '</span></div>';
-    }
-
-    // Metrics tab dataset panel
-    const dsEl = document.getElementById('dataset-stats-content');
-    if (d.dataset_ready) {
-      const sc = d.split_counts;
-      dsEl.innerHTML = '<div class="stat-row"><span class="label">Train:</span><span>' + sc.train + '</span></div>' +
-        '<div class="stat-row"><span class="label">Val:</span><span>' + sc.val + '</span></div>' +
-        '<div class="stat-row"><span class="label">Test:</span><span>' + sc.test + '</span></div>' +
-        '<div class="stat-row"><span class="label">Calibration:</span><span>' + sc.calibration + '</span></div>';
-    } else {
-      dsEl.innerHTML = '<div style="color:#555;font-family:monospace;font-size:0.85rem">Dataset not prepared yet</div>';
-    }
+    try { localStorage.setItem('cachedDatasetStats', JSON.stringify(d)); } catch(e) {}
+    renderRawCounts(d);
+    renderDatasetStatsPanel(d);
     updateReadiness();
   } catch(e) { console.error(e); }
 }
@@ -1291,15 +1331,19 @@ function updateReadiness() {
   STEPS.forEach(name => {
     const state = latestStepStates[name] || 'idle';
     const card = document.getElementById('step-' + name);
+    const dot = document.getElementById('dot-' + name);
+    const stateEl = document.getElementById('state-' + name);
     const hintEl = document.getElementById('hint-' + name);
     const r = readiness[name];
 
-    card.classList.remove('ready', 'completed', 'blocked');
-    if (state === 'idle') {
-      if (completed[name]) {
-        card.classList.add('completed');
-        hintEl.textContent = 'Completed';
-      } else if (r.ready) {
+    card.classList.remove('ready', 'completed', 'blocked', 'done');
+    if (completed[name] && state !== 'running') {
+      card.classList.add('completed');
+      dot.className = 'step-dot done';
+      stateEl.textContent = 'done';
+      hintEl.textContent = 'Completed';
+    } else if (state === 'idle') {
+      if (r.ready) {
         card.classList.add('ready');
         if (name === 'annotate' && annStats.total > 0) {
           hintEl.textContent = annStats.annotated + '/' + annStats.total + ' annotated';
@@ -1314,6 +1358,73 @@ function updateReadiness() {
       hintEl.textContent = '';
     }
   });
+
+  // Cache completion state for instant restore on page load
+  try { localStorage.setItem('stepCompleted', JSON.stringify(completed)); } catch(e) {}
+}
+
+// Restore cached completion state before first API response
+function restoreCachedCompletion() {
+  try {
+    // Restore data sources so updateReadiness() has real data on first run
+    const cachedOutputs = JSON.parse(localStorage.getItem('cachedOutputs') || '{}');
+    const cachedStats = JSON.parse(localStorage.getItem('cachedDatasetStats') || '{}');
+    const cachedAnnStats = JSON.parse(localStorage.getItem('cachedAnnotationStats') || '{}');
+    if (Object.keys(cachedOutputs).length) latestOutputs = cachedOutputs;
+    if (Object.keys(cachedStats).length) latestDatasetStats = cachedStats;
+    if (Object.keys(cachedAnnStats).length) latestAnnotationStats = cachedAnnStats;
+
+    // Restore step card styling
+    const cached = JSON.parse(localStorage.getItem('stepCompleted') || '{}');
+    STEPS.forEach(name => {
+      if (!cached[name]) return;
+      const card = document.getElementById('step-' + name);
+      const dot = document.getElementById('dot-' + name);
+      const stateEl = document.getElementById('state-' + name);
+      const hintEl = document.getElementById('hint-' + name);
+      card.classList.remove('ready', 'blocked', 'done');
+      card.classList.add('completed');
+      dot.className = 'step-dot done';
+      stateEl.textContent = 'done';
+      hintEl.textContent = 'Completed';
+    });
+
+    // Restore version dropdown
+    const cachedVersions = JSON.parse(localStorage.getItem('cachedVersions') || '{}');
+    if (cachedVersions.versions) renderVersionDropdown(cachedVersions);
+
+    // Restore settings form
+    const cachedSettings = JSON.parse(localStorage.getItem('cachedSettings') || '{}');
+    if (cachedSettings.training) applySettings(cachedSettings);
+
+    // Restore sidebar raw image counts
+    if (Object.keys(cachedStats).length) renderRawCounts(cachedStats);
+
+    // Restore output files
+    if (Object.keys(cachedOutputs).length) updateOutputFiles(cachedOutputs);
+
+    // Restore dataset stats panel
+    if (Object.keys(cachedStats).length) renderDatasetStatsPanel(cachedStats);
+
+    // Restore top status bar
+    const doneCount = STEPS.filter(n => cached[n]).length;
+    const ver = cachedVersions.active || '?';
+    if (doneCount > 0) {
+      document.getElementById('top-status').textContent = '[' + ver + '] ' + doneCount + '/' + STEPS.length + ' steps complete';
+    }
+
+    // Restore sidebar pipeline status
+    const cachedSidebar = JSON.parse(localStorage.getItem('cachedSidebar') || '{}');
+    if (cachedSidebar.step) document.getElementById('sidebar-step').textContent = cachedSidebar.step;
+    if (cachedSidebar.mode) document.getElementById('sidebar-mode').textContent = cachedSidebar.mode;
+    if (cachedSidebar.elapsed) document.getElementById('sidebar-elapsed').textContent = cachedSidebar.elapsed;
+
+    // Restore settings collapsed state
+    if (localStorage.getItem('settingsCollapsed') === 'true') {
+      document.getElementById('settings-panel').classList.add('collapsed');
+      document.getElementById('settings-arrow').textContent = '▶';
+    }
+  } catch(e) {}
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -1661,8 +1772,10 @@ document.getElementById('log-output').addEventListener('scroll', function() {
   if (logUpdating) return;
   logAutoScroll = (this.scrollHeight - this.scrollTop - this.clientHeight) < 30;
 });
+restoreCachedCompletion();
 loadSettings();
 loadVersions();
+pollStatus();
 pollDatasetStats();
 setInterval(pollStatus, 1000);
 setInterval(() => {
