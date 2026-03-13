@@ -146,6 +146,9 @@
   }
   .settings-row select { min-width: 140px; }
   .settings-row input[type="number"] { width: 80px; }
+  .settings-row input[type="checkbox"] {
+    width: 16px; height: 16px; accent-color: #52b788; cursor: pointer;
+  }
 
   /* ── Tooltips ── */
   .tip {
@@ -360,6 +363,7 @@
   <div class="top-bar-inner">
     <div class="tab-bar">
       <button class="tab-btn active" data-tab="pipeline" onclick="switchTab('pipeline')">Pipeline</button>
+      <button class="tab-btn" data-tab="label" onclick="switchTab('label')">Label</button>
       <button class="tab-btn" data-tab="annotate" onclick="switchTab('annotate')">Annotate</button>
       <button class="tab-btn" data-tab="metrics" onclick="switchTab('metrics')">Metrics</button>
     </div>
@@ -394,7 +398,7 @@
         <div class="step-card" id="step-pull" data-step="pull">
           <span class="step-num">1</span>
           <div class="step-info">
-            <div class="step-name">Pull Data from Pi</div>
+            <div class="step-name">Pull Captures from Pi</div>
             <div class="step-hint" id="hint-pull"></div>
             <div class="step-elapsed" id="elapsed-pull"></div>
           </div>
@@ -404,21 +408,34 @@
           </div>
           <button class="btn btn-nav btn-sm" onclick="runStep('pull')">Run</button>
         </div>
-        <div class="step-card" id="step-annotate" data-step="annotate">
+        <div class="step-card" id="step-label" data-step="label">
           <span class="step-num">2</span>
           <div class="step-info">
-            <div class="step-name">Review Annotations</div>
-            <div class="step-hint" id="hint-annotate"></div>
-            <div class="step-elapsed" id="elapsed-annotate"></div>
+            <div class="step-name">Label Captures</div>
+            <div class="step-hint" id="hint-label"></div>
+            <div class="step-elapsed" id="elapsed-label"></div>
           </div>
           <div class="step-status">
-            <span class="step-dot idle" id="dot-annotate"></span>
-            <span id="state-annotate">idle</span>
+            <span class="step-dot idle" id="dot-label"></span>
+            <span id="state-label">idle</span>
           </div>
-          <button class="btn btn-nav btn-sm" onclick="switchTab('annotate')">Review</button>
+          <button class="btn btn-nav btn-sm" onclick="switchTab('label')">Label</button>
+        </div>
+        <div class="step-card" id="step-crop" data-step="crop">
+          <span class="step-num">3</span>
+          <div class="step-info">
+            <div class="step-name">Crop Images</div>
+            <div class="step-hint" id="hint-crop"></div>
+            <div class="step-elapsed" id="elapsed-crop"></div>
+          </div>
+          <div class="step-status">
+            <span class="step-dot idle" id="dot-crop"></span>
+            <span id="state-crop">idle</span>
+          </div>
+          <button class="btn btn-nav btn-sm" onclick="runStep('crop')">Run</button>
         </div>
         <div class="step-card" id="step-prepare" data-step="prepare">
-          <span class="step-num">3</span>
+          <span class="step-num">4</span>
           <div class="step-info">
             <div class="step-name">Prepare Dataset</div>
             <div class="step-hint" id="hint-prepare"></div>
@@ -431,9 +448,9 @@
           <button class="btn btn-nav btn-sm" onclick="runStep('prepare')">Run</button>
         </div>
         <div class="step-card" id="step-train" data-step="train">
-          <span class="step-num">4</span>
+          <span class="step-num">5</span>
           <div class="step-info">
-            <div class="step-name">Train Model</div>
+            <div class="step-name">Train Classifier</div>
             <div class="step-hint" id="hint-train"></div>
             <div class="step-elapsed" id="elapsed-train"></div>
           </div>
@@ -443,34 +460,8 @@
           </div>
           <button class="btn btn-nav btn-sm" onclick="runStep('train')">Run</button>
         </div>
-        <div class="step-card" id="step-export" data-step="export">
-          <span class="step-num">5</span>
-          <div class="step-info">
-            <div class="step-name">Export ONNX</div>
-            <div class="step-hint" id="hint-export"></div>
-            <div class="step-elapsed" id="elapsed-export"></div>
-          </div>
-          <div class="step-status">
-            <span class="step-dot idle" id="dot-export"></span>
-            <span id="state-export">idle</span>
-          </div>
-          <button class="btn btn-nav btn-sm" onclick="runStep('export')">Run</button>
-        </div>
-        <div class="step-card" id="step-convert" data-step="convert">
-          <span class="step-num">6</span>
-          <div class="step-info">
-            <div class="step-name">Convert HEF</div>
-            <div class="step-hint" id="hint-convert"></div>
-            <div class="step-elapsed" id="elapsed-convert"></div>
-          </div>
-          <div class="step-status">
-            <span class="step-dot idle" id="dot-convert"></span>
-            <span id="state-convert">idle</span>
-          </div>
-          <button class="btn btn-nav btn-sm" onclick="runStep('convert')">Run</button>
-        </div>
         <div class="step-card" id="step-deploy" data-step="deploy">
-          <span class="step-num">7</span>
+          <span class="step-num">6</span>
           <div class="step-info">
             <div class="step-name">Deploy to Pi</div>
             <div class="step-hint" id="hint-deploy"></div>
@@ -482,58 +473,159 @@
           </div>
           <button class="btn btn-nav btn-sm" onclick="runStep('deploy')">Run</button>
         </div>
+        <div class="step-card" id="step-crossval" data-step="crossval" style="margin-top:12px; border-top:2px dashed #0f3460; padding-top:14px;">
+          <span class="step-num" style="font-size:0.8rem; min-width:22px;">CV</span>
+          <div class="step-info">
+            <div class="step-name">Cross-Validate</div>
+            <div class="step-hint" id="hint-crossval">Requires cropped images</div>
+            <div class="step-elapsed" id="elapsed-crossval"></div>
+          </div>
+          <div class="step-status">
+            <span class="step-dot idle" id="dot-crossval"></span>
+            <span id="state-crossval">idle</span>
+          </div>
+          <label style="color:#8892b0;font-size:0.75rem;margin-right:4px;">Folds:</label>
+          <input type="number" id="set-cv-folds" value="5" min="2" max="10" step="1" style="width:48px;background:#0a0a1a;border:1px solid #233554;color:#ccd6f6;border-radius:4px;padding:2px 4px;text-align:center;font-size:0.8rem;">
+          <button class="btn btn-nav btn-sm" onclick="runStep('crossval')">Run</button>
+        </div>
       </div>
 
       <!-- Settings Panel -->
       <div class="settings-panel" id="settings-panel">
-        <h3 onclick="toggleSettings()"><span class="settings-toggle" id="settings-arrow">▼</span>Training Settings</h3>
+        <h3 onclick="toggleSettings()"><span class="settings-toggle" id="settings-arrow">▼</span>Classifier Training Settings</h3>
         <div class="settings-body">
         <div class="settings-row">
-          <label>Model:</label>
-          <span class="tip">?<span class="tip-text">Model size tradeoff. n=fastest, s=balanced, m=most accurate. Larger needs more GPU memory.</span></span>
-          <select id="set-model">
-            <option value="yolov8n">yolov8n (fast)</option>
-            <option value="yolov8s">yolov8s (balanced)</option>
-            <option value="yolov8m" selected>yolov8m (accurate)</option>
-          </select>
+          <label>Phase 1 epochs:</label>
+          <span class="tip">?<span class="tip-text">Head-only warm-up epochs. Backbone frozen. Typical: 20.</span></span>
+          <input type="number" id="set-p1-epochs" value="20" min="1" max="500">
+          <label>Phase 2 epochs:</label>
+          <span class="tip">?<span class="tip-text">Full fine-tune (last 3 backbone blocks) epochs. Typical: 40.</span></span>
+          <input type="number" id="set-p2-epochs" value="40" min="1" max="500">
+          <label>Phase 3 (QAT) epochs:</label>
+          <span class="tip">?<span class="tip-text">Quantization-Aware Training epochs. Typical: 10. Uses patience=15.</span></span>
+          <input type="number" id="set-p3-epochs" value="10" min="1" max="100">
         </div>
         <div class="settings-row">
-          <label>Epochs:</label>
-          <span class="tip">?<span class="tip-text">Max training iterations. Training stops early via Patience. Typical: 100-500.</span></span>
-          <input type="number" id="set-epochs" value="150" min="1" max="10000">
+          <label>Phase 1 LR:</label>
+          <span class="tip">?<span class="tip-text">Head-only learning rate. Default: 0.001.</span></span>
+          <input type="number" id="set-p1-lr" value="0.001" min="0.00001" max="0.1" step="0.0001">
+          <label>Phase 2 backbone LR:</label>
+          <span class="tip">?<span class="tip-text">Differential LR for unfrozen backbone blocks. Default: 0.00001.</span></span>
+          <input type="number" id="set-p2-bb-lr" value="0.00001" min="0.000001" max="0.01" step="0.000001">
+          <label>Phase 2 head LR:</label>
+          <span class="tip">?<span class="tip-text">Differential LR for classifier head. Default: 0.0001.</span></span>
+          <input type="number" id="set-p2-head-lr" value="0.0001" min="0.000001" max="0.01" step="0.00001">
+        </div>
+        <div class="settings-row">
           <label>Batch:</label>
-          <span class="tip">?<span class="tip-text">Images per step. Larger=faster but more memory. Auto picks the largest batch that fits in GPU memory.</span></span>
-          <input type="number" id="set-batch" value="16" min="1" max="128">
-          <input type="checkbox" id="set-batch-auto" onchange="toggleAutoBatch()">
-          <label for="set-batch-auto" style="min-width:auto;cursor:pointer">Auto</label>
-        </div>
-        <div class="settings-row">
-          <label>Image size:</label>
-          <span class="tip">?<span class="tip-text">Input resolution (px). Must be a multiple of 32. Larger=more detail but slower. Standard: 640.</span></span>
-          <input type="number" id="set-imgsz" value="640" min="320" max="1280" step="32">
+          <span class="tip">?<span class="tip-text">Batch size. Do not go below 16 (BN statistics). Default: 32.</span></span>
+          <input type="number" id="set-batch" value="32" min="8" max="256">
           <label>Patience:</label>
-          <span class="tip">?<span class="tip-text">Stop if validation loss doesn't improve for N epochs. Prevents overfitting.</span></span>
-          <input type="number" id="set-patience" value="30" min="1" max="200">
+          <span class="tip">?<span class="tip-text">Early-stopping patience. Use ≥15 for QAT (temporary accuracy dip in first 5 epochs).</span></span>
+          <input type="number" id="set-patience" value="15" min="1" max="200">
+          <label>Weight decay:</label>
+          <span class="tip">?<span class="tip-text">L2 regularization strength. Default: 0.005.</span></span>
+          <input type="number" id="set-wd" value="0.005" min="0" max="0.1" step="0.001">
         </div>
         <div class="settings-row">
-          <label>Learning rate:</label>
-          <span class="tip">?<span class="tip-text">Initial learning rate. Higher=faster but less stable. Default: 0.01.</span></span>
-          <input type="number" id="set-lr0" value="0.01" min="0.0001" max="0.1" step="0.001">
-          <label>Final LR:</label>
-          <span class="tip">?<span class="tip-text">End-of-training LR as fraction of initial. Lower=more gradual decay. Default: 0.01.</span></span>
-          <input type="number" id="set-lrf" value="0.01" min="0.0001" max="1.0" step="0.001">
-        </div>
-        <div class="settings-row">
+          <label>MixUp alpha:</label>
+          <span class="tip">?<span class="tip-text">MixUp augmentation strength (Phase 2 only). 0=disabled. 0.2=safe for small datasets.</span></span>
+          <input type="number" id="set-mixup" value="0.2" min="0" max="1" step="0.05">
+          <label>Session gap (min):</label>
+          <span class="tip">?<span class="tip-text">Minutes between crops that defines a new session for train/val splitting.</span></span>
+          <input type="number" id="set-session-gap" value="5" min="1" max="60">
           <label>Optimizer:</label>
-          <span class="tip">?<span class="tip-text">SGD (good generalization), Adam (faster convergence), AdamW (Adam + weight decay, often best for fine-tuning).</span></span>
+          <span class="tip">?<span class="tip-text">AdamW recommended for fine-tuning with weight decay.</span></span>
           <select id="set-optimizer">
             <option value="SGD">SGD</option>
             <option value="Adam">Adam</option>
-            <option value="AdamW">AdamW</option>
+            <option value="AdamW" selected>AdamW</option>
           </select>
         </div>
         <div style="margin-top:8px">
           <button class="btn btn-nav btn-sm" onclick="saveSettings()">Save Settings</button>
+        </div>
+        </div>
+      </div>
+
+      <!-- Crop Settings Panel -->
+      <div class="settings-panel" id="crop-settings-panel">
+        <h3 onclick="toggleCropSettings()"><span class="settings-toggle" id="crop-settings-arrow">▼</span>Crop Settings</h3>
+        <div class="settings-body">
+        <div class="settings-row">
+          <label>Padding:</label>
+          <span class="tip">?<span class="tip-text">Fractional padding added around the detected bounding box on each side (0 = tight crop, 0.20 = 20% padding). Re-run Crop Images after changing.</span></span>
+          <input type="number" id="set-crop-padding" value="0.20" min="0" max="1" step="0.05" style="width:80px">
+          <label style="color:#8892b0;font-size:0.8rem">Output size: 224×224 px</label>
+        </div>
+        <div style="margin-top:8px; display:flex; gap:8px;">
+          <button class="btn btn-nav btn-sm" onclick="saveCropSettings()">Save</button>
+          <button class="btn btn-nav btn-sm" onclick="saveCropSettingsAndRecrop()" style="color:#52b788">Save &amp; Re-crop</button>
+        </div>
+        </div>
+      </div>
+
+      <!-- Augmentation & Balance Settings Panel -->
+      <div class="settings-panel collapsed" id="aug-settings-panel">
+        <h3 onclick="toggleAugSettings()"><span class="settings-toggle" id="aug-settings-arrow">▶</span>Augmentation &amp; Balance Settings</h3>
+        <div class="settings-body">
+        <div class="settings-row">
+          <label>Balance classes:</label>
+          <span class="tip">?<span class="tip-text">Weight the loss function by inverse class frequency so minority classes contribute more to gradient updates. Recommended when class counts differ by &gt;35%.</span></span>
+          <input type="checkbox" id="set-balance-classes" checked>
+        </div>
+        <div style="margin-top:10px; margin-bottom:6px;">
+          <label style="color:#8892b0; font-size:0.75rem; text-transform:uppercase; letter-spacing:0.5px">Online Augmentation (applied during training)</label>
+        </div>
+        <div class="settings-row">
+          <label>Horizontal flip:</label>
+          <span class="tip">?<span class="tip-text">50% chance of horizontal flip per image. Simple and effective for symmetric subjects.</span></span>
+          <input type="checkbox" id="set-aug-hflip" checked>
+          <label>Brightness/contrast:</label>
+          <span class="tip">?<span class="tip-text">Random brightness and contrast jitter. Helps with varying lighting conditions.</span></span>
+          <input type="checkbox" id="set-aug-brightness" checked>
+          <label>Shift/scale/rotate:</label>
+          <span class="tip">?<span class="tip-text">Small spatial transforms (5% shift, 5% scale, configurable rotation). Adds positional variety.</span></span>
+          <input type="checkbox" id="set-aug-ssr" checked>
+        </div>
+        <div class="settings-row">
+          <label>Gaussian blur:</label>
+          <span class="tip">?<span class="tip-text">10% chance of mild Gaussian blur. Simulates slight defocus.</span></span>
+          <input type="checkbox" id="set-aug-blur" checked>
+          <label>Gaussian noise:</label>
+          <span class="tip">?<span class="tip-text">15% chance of additive Gaussian noise. Improves robustness to sensor noise.</span></span>
+          <input type="checkbox" id="set-aug-noise" checked>
+          <label>Coarse dropout:</label>
+          <span class="tip">?<span class="tip-text">Cutout-style augmentation: randomly erases small rectangular regions. Prevents over-reliance on specific features.</span></span>
+          <input type="checkbox" id="set-aug-dropout" checked>
+        </div>
+        <div class="settings-row">
+          <label>Hue/saturation:</label>
+          <span class="tip">?<span class="tip-text">Random hue ±20° and saturation ±30% shifts. Helps with color variation from different lighting. Not in default pipeline — enable if lighting varies.</span></span>
+          <input type="checkbox" id="set-aug-hue">
+          <label>CLAHE:</label>
+          <span class="tip">?<span class="tip-text">Contrast Limited Adaptive Histogram Equalization. Enhances local contrast. Useful for fixed cameras with shadow variation across the frame.</span></span>
+          <input type="checkbox" id="set-aug-clahe">
+        </div>
+        <div style="margin-top:10px; margin-bottom:6px;">
+          <label style="color:#8892b0; font-size:0.75rem; text-transform:uppercase; letter-spacing:0.5px">Strength Parameters</label>
+        </div>
+        <div class="settings-row">
+          <label>Brightness limit:</label>
+          <span class="tip">?<span class="tip-text">Max brightness shift factor (0-1). Default: 0.3 = ±30%.</span></span>
+          <input type="number" id="set-aug-bright-limit" value="0.3" min="0" max="1" step="0.05">
+          <label>Contrast limit:</label>
+          <span class="tip">?<span class="tip-text">Max contrast shift factor (0-1). Default: 0.3 = ±30%.</span></span>
+          <input type="number" id="set-aug-contrast-limit" value="0.3" min="0" max="1" step="0.05">
+          <label>Rotate limit (°):</label>
+          <span class="tip">?<span class="tip-text">Max rotation in degrees. Keep low for fixed-camera setups. Default: 10.</span></span>
+          <input type="number" id="set-aug-rotate-limit" value="10" min="0" max="45" step="1">
+        </div>
+        <div style="margin-top:10px; margin-bottom:6px;">
+          <label style="color:#8892b0; font-size:0.75rem; text-transform:uppercase; letter-spacing:0.5px">Cross-Validation</label>
+        </div>
+        <div style="margin-top:8px">
+          <button class="btn btn-nav btn-sm" onclick="saveAugSettings()">Save Settings</button>
         </div>
         </div>
       </div>
@@ -559,6 +651,28 @@
           <div id="log-list" style="font-family:monospace; font-size:0.8rem; color:#8892b0;">Loading...</div>
         </div>
       </div>
+    </div>
+
+    <!-- ════ LABEL TAB ════ -->
+    <div class="tab-content" id="tab-label">
+      <div class="ann-toolbar">
+        <span class="ann-progress" id="label-progress">Loading...</span>
+        <button class="btn btn-nav btn-sm" onclick="labelUndo()">Undo Last</button>
+        <span class="ann-img-info" id="label-img-info"></span>
+      </div>
+      <div style="text-align:center; padding:12px 0; position:relative; display:inline-block; width:100%;">
+        <div style="position:relative; display:inline-block; max-width:100%;">
+          <img id="label-img" style="max-width:100%; max-height:500px; object-fit:contain; border:2px solid #1a1a2e; border-radius:4px; display:block;" onload="labelDrawBbox()">
+          <canvas id="label-bbox-canvas" style="position:absolute; top:0; left:0; pointer-events:none; border-radius:4px;"></canvas>
+        </div>
+      </div>
+      <div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap; margin:10px 0;" id="label-buttons">
+        <!-- Populated by JS from CATS -->
+      </div>
+      <div style="display:flex; gap:10px; justify-content:center; margin-bottom:12px;">
+        <button class="btn btn-nav btn-sm" onclick="labelSkip()" style="color:#888">Skip (s)</button>
+      </div>
+      <div id="label-thumbs" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; max-height:200px; overflow-y:auto;"></div>
     </div>
 
     <!-- ════ ANNOTATE TAB ════ -->
@@ -598,7 +712,7 @@
             </div>
             <div class="metric-item">
               <div class="metric-value" id="m-best-map">--</div>
-              <div class="metric-label">Best mAP50</div>
+              <div class="metric-label">Best Val Acc</div>
             </div>
             <div class="metric-item">
               <div class="metric-value" id="m-best-epoch">--</div>
@@ -606,7 +720,7 @@
             </div>
             <div class="metric-item">
               <div class="metric-value" id="m-train-loss">--</div>
-              <div class="metric-label">Train Loss</div>
+              <div class="metric-label">Current Phase</div>
             </div>
           </div>
         </div>
@@ -614,13 +728,25 @@
         <!-- Charts -->
         <div class="charts-row">
           <div class="chart-box">
-            <h3>Loss</h3>
+            <h3>Cross-Entropy Loss</h3>
             <canvas id="chart-loss"></canvas>
           </div>
           <div class="chart-box">
-            <h3>mAP</h3>
+            <h3>Accuracy</h3>
             <canvas id="chart-map"></canvas>
           </div>
+        </div>
+
+        <!-- Per-class accuracy -->
+        <div class="dataset-panel" id="per-class-panel">
+          <h3>Per-Class Val Accuracy</h3>
+          <div id="per-class-bars"></div>
+        </div>
+
+        <!-- CV Results -->
+        <div class="dataset-panel" id="cv-results-panel" style="display:none">
+          <h3>Cross-Validation Results</h3>
+          <div id="cv-results-content" style="font-family:monospace; font-size:0.8rem; color:#ccd6f6; overflow-x:auto;"></div>
         </div>
 
         <!-- Dataset Stats -->
@@ -631,7 +757,7 @@
       </div>
       <div class="no-metrics" id="no-metrics">
         No training metrics available yet.<br>
-        Run training to see loss curves and mAP charts.
+        Run training to see loss curves and accuracy charts.
       </div>
     </div>
 
@@ -656,24 +782,23 @@
     </div>
 
     <div class="sidebar-card">
-      <h3>Output Files</h3>
+      <h3>Artifacts</h3>
       <div id="output-files">
-        <div class="output-file"><span class="file-missing">-</span> dataset.yaml</div>
-        <div class="output-file"><span class="file-missing">-</span> best.pt</div>
-        <div class="output-file"><span class="file-missing">-</span> best.onnx</div>
-        <div class="output-file"><span class="file-missing">-</span> cat_detector.hef</div>
-        <div class="output-file"><span class="file-missing">-</span> labels.json</div>
+        <div class="output-file"><span class="file-missing">-</span> raw_images/</div>
+        <div class="output-file"><span class="file-missing">-</span> cropped_images/</div>
+        <div class="output-file"><span class="file-missing">-</span> cat_classifier.pt</div>
+        <div class="output-file"><span class="file-missing">-</span> models/cat_classifier.pt</div>
       </div>
     </div>
 
     <div class="sidebar-card">
-      <h3>Raw Images</h3>
+      <h3>Labeled Captures</h3>
       <div id="raw-counts"></div>
     </div>
 
     <div class="sidebar-card hints">
       <h3>Shortcuts</h3>
-      <kbd>1</kbd>-<kbd>5</kbd> Run step<br>
+      <kbd>1</kbd>-<kbd>6</kbd> Run step<br>
       <kbd>r</kbd> Run All<br>
       <kbd>s</kbd> Stop
     </div>
@@ -682,15 +807,40 @@
 
 <script>
 const CATS = {{ cat_names | tojson }};
-const STEPS = ['pull', 'annotate', 'prepare', 'train', 'export', 'convert', 'deploy'];
+const STEPS = ['pull', 'label', 'crop', 'prepare', 'train', 'deploy', 'crossval'];
 let activeTab = 'pipeline';
 let lossChart = null;
 let mapChart = null;
+
+// ── Phase-boundary background shading plugin ────────────────
+const phaseBgPlugin = {
+  id: 'phaseBg',
+  beforeDraw(chart) {
+    const boundaries = (chart.options.plugins.phaseBg || {}).boundaries;
+    if (!boundaries || !boundaries.length) return;
+    const ctx = chart.ctx;
+    const xAxis = chart.scales.x;
+    const yAxis = chart.scales.y;
+    const colors = {
+      phase1: 'rgba(82,183,136,0.07)',
+      phase2: 'rgba(244,162,97,0.07)',
+      phase3: 'rgba(230,57,70,0.07)',
+    };
+    boundaries.forEach((b, i) => {
+      const next = boundaries[i + 1];
+      const x1 = xAxis.getPixelForValue(b.epoch_idx);
+      const x2 = next ? xAxis.getPixelForValue(next.epoch_idx) : xAxis.right;
+      ctx.fillStyle = colors[b.phase] || 'rgba(100,100,100,0.05)';
+      ctx.fillRect(x1, yAxis.top, x2 - x1, yAxis.bottom - yAxis.top);
+    });
+  }
+};
+Chart.register(phaseBgPlugin);
 let metricsLoaded = false;
 let latestOutputs = {};
 let latestDatasetStats = {};
 let latestStepStates = {};
-let latestAnnotationStats = {};
+let latestLabelStats = {};
 let lastLogHtml = '';
 let logAutoScroll = true;
 let logUpdating = false;
@@ -702,6 +852,7 @@ function switchTab(tab) {
   document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + tab));
   if (tab === 'metrics') pollMetrics();
   if (tab === 'annotate') loadAnnotateTab();
+  if (tab === 'label') loadLabelTab();
 }
 
 // ── Version management ─────────────────────────────────────
@@ -713,7 +864,7 @@ function renderVersionDropdown(d) {
     sel.innerHTML = '<option value="v1" selected>v1</option>';
   } else {
     sel.innerHTML = d.versions.map(v => {
-      const marks = [v.has_model ? 'M' : '', v.has_hef ? 'H' : ''].filter(Boolean).join(',');
+      const marks = [v.has_model ? 'M' : '', v.has_dataset ? 'D' : ''].filter(Boolean).join(',');
       const suffix = marks ? ' [' + marks + ']' : '';
       return '<option value="' + v.name + '"' + (v.name === d.active ? ' selected' : '') + '>' +
         v.name + suffix + '</option>';
@@ -721,7 +872,7 @@ function renderVersionDropdown(d) {
   }
   const active = (d.versions || []).find(v => v.name === d.active);
   const sizeEl = document.getElementById('version-size');
-  if (active && active.size_mb > 0) {
+  if (active && active.size_mb != null && active.size_mb > 0) {
     sizeEl.textContent = '(' + active.size_mb + ' MB)';
   } else {
     sizeEl.textContent = '';
@@ -744,6 +895,22 @@ async function switchVersion(name) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ name })
   });
+  // Reset step displays immediately so the new version starts visually clean
+  // before the API response arrives (avoids stale "Completed" bleed-over).
+  STEPS.forEach(s => {
+    const card = document.getElementById('step-' + s);
+    const dot = document.getElementById('dot-' + s);
+    const stateEl = document.getElementById('state-' + s);
+    const hintEl = document.getElementById('hint-' + s);
+    if (card) card.className = 'step-card';
+    if (dot) dot.className = 'step-dot idle';
+    if (stateEl) stateEl.textContent = 'idle';
+    if (hintEl) hintEl.textContent = '';
+  });
+  try { localStorage.removeItem('stepCompleted'); } catch(e) {}
+  // Reset in-memory output/dataset state so updateReadiness() doesn't use stale data
+  latestOutputs = {};
+  latestDatasetStats = {};
   pollStatus();
   pollDatasetStats();
   if (activeTab === 'metrics') pollMetrics();
@@ -823,10 +990,17 @@ async function deleteVersion() {
 // ── Pipeline controls ──────────────────────────────────────
 async function runStep(name) {
   try {
+    if (name === 'crossval') {
+      await fetch('/api/settings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({classifier_training: {cv_folds: parseInt(document.getElementById('set-cv-folds').value)}})
+      });
+    }
     const r = await fetch('/api/run/' + name, {method: 'POST'});
     const d = await r.json();
     if (d.status === 'interactive') {
-      switchTab('annotate');
+      switchTab('label');
     } else if (d.status !== 'ok') {
       alert('Error: ' + (d.message || 'unknown'));
     } else {
@@ -864,30 +1038,20 @@ function toggleSettings() {
   try { localStorage.setItem('settingsCollapsed', collapsed); } catch(e) {}
 }
 
-function toggleAutoBatch() {
-  const auto = document.getElementById('set-batch-auto').checked;
-  const input = document.getElementById('set-batch');
-  input.disabled = auto;
-  input.style.opacity = auto ? '0.35' : '1';
-}
-
 function applySettings(d) {
-  const t = d.training || {};
-  document.getElementById('set-model').value = t.model_size || 'yolov8m';
-  document.getElementById('set-epochs').value = t.epochs || 150;
-  const batchSize = t.batch_size || 16;
-  if (batchSize === -1) {
-    document.getElementById('set-batch-auto').checked = true;
-    document.getElementById('set-batch').value = 16;
-    toggleAutoBatch();
-  } else {
-    document.getElementById('set-batch').value = batchSize;
-  }
-  document.getElementById('set-imgsz').value = t.image_size || 640;
-  document.getElementById('set-patience').value = t.patience || 30;
-  document.getElementById('set-lr0').value = t.lr0 || 0.01;
-  document.getElementById('set-lrf').value = t.lrf || 0.01;
-  document.getElementById('set-optimizer').value = t.optimizer || 'SGD';
+  const t = d.classifier_training || {};
+  document.getElementById('set-p1-epochs').value = t.phase1_epochs || 20;
+  document.getElementById('set-p2-epochs').value = t.phase2_epochs || 40;
+  document.getElementById('set-p3-epochs').value = t.phase3_epochs || 10;
+  document.getElementById('set-p1-lr').value = t.phase1_lr || 0.001;
+  document.getElementById('set-p2-bb-lr').value = t.phase2_backbone_lr || 0.00001;
+  document.getElementById('set-p2-head-lr').value = t.phase2_head_lr || 0.0001;
+  document.getElementById('set-batch').value = t.batch_size || 32;
+  document.getElementById('set-patience').value = t.patience || 15;
+  document.getElementById('set-wd').value = t.weight_decay || 0.005;
+  document.getElementById('set-mixup').value = t.mixup_alpha || 0.2;
+  document.getElementById('set-session-gap').value = t.session_gap_minutes || 5;
+  document.getElementById('set-optimizer').value = t.optimizer || 'AdamW';
 }
 
 async function loadSettings() {
@@ -895,6 +1059,7 @@ async function loadSettings() {
     const r = await fetch('/api/settings');
     const d = await r.json();
     applySettings(d);
+    applyAugSettings(d);
     try { localStorage.setItem('cachedSettings', JSON.stringify(d)); } catch(e) {}
   } catch(e) { console.error(e); }
 }
@@ -905,19 +1070,22 @@ async function saveSettings() {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({
-        training: {
-          model_size: document.getElementById('set-model').value,
-          epochs: parseInt(document.getElementById('set-epochs').value),
-          batch_size: document.getElementById('set-batch-auto').checked ? -1 : parseInt(document.getElementById('set-batch').value),
-          image_size: parseInt(document.getElementById('set-imgsz').value),
+        classifier_training: {
+          phase1_epochs: parseInt(document.getElementById('set-p1-epochs').value),
+          phase2_epochs: parseInt(document.getElementById('set-p2-epochs').value),
+          phase3_epochs: parseInt(document.getElementById('set-p3-epochs').value),
+          phase1_lr: parseFloat(document.getElementById('set-p1-lr').value),
+          phase2_backbone_lr: parseFloat(document.getElementById('set-p2-bb-lr').value),
+          phase2_head_lr: parseFloat(document.getElementById('set-p2-head-lr').value),
+          batch_size: parseInt(document.getElementById('set-batch').value),
           patience: parseInt(document.getElementById('set-patience').value),
-          lr0: parseFloat(document.getElementById('set-lr0').value),
-          lrf: parseFloat(document.getElementById('set-lrf').value),
+          weight_decay: parseFloat(document.getElementById('set-wd').value),
+          mixup_alpha: parseFloat(document.getElementById('set-mixup').value),
+          session_gap_minutes: parseInt(document.getElementById('set-session-gap').value),
           optimizer: document.getElementById('set-optimizer').value,
         }
       })
     });
-    // Visual feedback
     const btn = event.target;
     btn.textContent = 'Saved!';
     setTimeout(() => { btn.textContent = 'Save Settings'; }, 1000);
@@ -1080,6 +1248,17 @@ async function pollStatus() {
         }
         requestAnimationFrame(() => { logUpdating = false; });
       }
+      // Parse [CV PROGRESS] lines for crossval hint
+      if (d.current_step === 'crossval') {
+        for (let i = lines.length - 1; i >= 0; i--) {
+          const m = lines[i].match(/\[CV PROGRESS\]\s*fold=(\d+)\/(\d+)\s*phase=(\d+)\s*epoch=(\d+)\/(\d+)/);
+          if (m) {
+            const hintEl = document.getElementById('hint-crossval');
+            if (hintEl) hintEl.textContent = 'Fold ' + m[1] + '/' + m[2] + ', Phase ' + m[3] + ', Epoch ' + m[4] + '/' + m[5];
+            break;
+          }
+        }
+      }
     } else if (lastLogHtml !== '') {
       lastLogHtml = '';
       document.getElementById('log-output').innerHTML = 'Waiting for pipeline...';
@@ -1094,13 +1273,15 @@ async function pollStatus() {
 
     // Track step states for readiness
     STEPS.forEach(name => { latestStepStates[name] = (steps[name] || {}).state || 'idle'; });
-    // Track annotation stats for the annotate step
-    if (steps.annotate && steps.annotate.annotation_stats) {
-      latestAnnotationStats = steps.annotate.annotation_stats;
-      try { localStorage.setItem('cachedAnnotationStats', JSON.stringify(latestAnnotationStats)); } catch(e) {}
-      const hint = document.getElementById('hint-annotate');
-      if (latestAnnotationStats.total > 0 && latestAnnotationStats.missing > 0) {
-        hint.textContent = latestAnnotationStats.annotated + '/' + latestAnnotationStats.total + ' annotated';
+    // Track label stats for the label step
+    if (steps.label && steps.label.label_stats) {
+      latestLabelStats = steps.label.label_stats;
+      try { localStorage.setItem('cachedLabelStats', JSON.stringify(latestLabelStats)); } catch(e) {}
+      const hint = document.getElementById('hint-label');
+      if (latestLabelStats.unlabeled > 0) {
+        hint.textContent = latestLabelStats.labeled + ' labeled, ' + latestLabelStats.unlabeled + ' remaining';
+      } else if (latestLabelStats.labeled > 0) {
+        hint.textContent = latestLabelStats.labeled + ' labeled';
       }
     }
     updateReadiness();
@@ -1109,19 +1290,28 @@ async function pollStatus() {
 }
 
 function updateOutputFiles(outputs) {
-  const map = {
-    dataset_yaml: 'dataset.yaml',
-    best_pt: 'best.pt',
-    best_onnx: 'best.onnx',
-    cat_detector_hef: 'cat_detector.hef',
-    labels_json: 'labels.json',
-  };
   const container = document.getElementById('output-files');
   container.innerHTML = '';
-  for (const [key, label] of Object.entries(map)) {
+
+  // Directory artifact counts
+  const rawInfo = outputs.raw_images || {};
+  const cropInfo = outputs.cropped_images || {};
+  const rawIcon = rawInfo.exists ? '<span class="file-check">&#10003;</span>' : '<span class="file-missing">-</span>';
+  const cropIcon = cropInfo.exists ? '<span class="file-check">&#10003;</span>' : '<span class="file-missing">-</span>';
+  const rawCount = rawInfo.count != null ? ' (' + rawInfo.count + ')' : '';
+  const cropCount = cropInfo.count != null ? ' (' + cropInfo.count + ')' : '';
+  container.innerHTML += '<div class="output-file">' + rawIcon + ' raw_images/' + rawCount + '</div>';
+  container.innerHTML += '<div class="output-file">' + cropIcon + ' cropped_images/' + cropCount + '</div>';
+
+  // File artifacts
+  const fileMap = {
+    cat_classifier_pt: 'cat_classifier.pt',
+    global_model: 'models/cat_classifier.pt',
+  };
+  for (const [key, label] of Object.entries(fileMap)) {
     const info = outputs[key] || {};
     const icon = info.exists ? '<span class="file-check">&#10003;</span>' : '<span class="file-missing">-</span>';
-    const size = info.exists ? ' (' + info.size_mb + ' MB)' : '';
+    const size = info.exists && info.size_mb != null ? ' (' + info.size_mb + ' MB)' : '';
     container.innerHTML += '<div class="output-file">' + icon + ' ' + label + size + '</div>';
   }
 }
@@ -1143,25 +1333,83 @@ async function pollMetrics() {
 
     // Summary stats
     document.getElementById('m-epoch').textContent = d.total_epochs;
-    const bestMap = d.best_map50;
-    const mapEl = document.getElementById('m-best-map');
-    mapEl.textContent = bestMap.toFixed(3);
-    mapEl.className = 'metric-value' + (bestMap >= 0.7 ? '' : bestMap >= 0.5 ? ' warn' : ' bad');
+    const bestAcc = d.best_val_acc;
+    const accEl = document.getElementById('m-best-map');
+    accEl.textContent = (bestAcc * 100).toFixed(1) + '%';
+    accEl.className = 'metric-value' + (bestAcc >= 0.85 ? '' : bestAcc >= 0.7 ? ' warn' : ' bad');
     document.getElementById('m-best-epoch').textContent = d.best_epoch;
-
-    const lastLoss = d.train_box_loss.length > 0
-      ? d.train_box_loss[d.train_box_loss.length - 1] : 0;
-    document.getElementById('m-train-loss').textContent = lastLoss.toFixed(3);
+    document.getElementById('m-train-loss').textContent = d.current_phase || '--';
 
     // Charts
     updateCharts(d);
 
+    // Per-class accuracy bars
+    const pcEl = document.getElementById('per-class-bars');
+    if (d.per_class && Object.keys(d.per_class).length) {
+      pcEl.innerHTML = Object.entries(d.per_class).map(([cat, accs]) => {
+        const last = accs[accs.length - 1] || 0;
+        const pct = Math.round(last * 100);
+        const color = pct >= 90 ? '#52b788' : pct >= 75 ? '#f4a261' : '#e63946';
+        return '<div class="cat-stat"><span class="name">' + cat + '</span>' +
+          '<div class="bar-bg"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+          '<span class="count">' + pct + '%</span></div>';
+      }).join('');
+    }
+
     metricsLoaded = true;
   } catch(e) { console.error(e); }
+  pollCvResults();
+}
+
+async function pollCvResults() {
+  try {
+    const r = await fetch('/api/cv_results');
+    const d = await r.json();
+    const panel = document.getElementById('cv-results-panel');
+    const content = document.getElementById('cv-results-content');
+    if (!d.available) { panel.style.display = 'none'; return; }
+    panel.style.display = 'block';
+    const cv = d.results;
+    const cats = Object.keys(cv.per_class_mean || {});
+    let html = '<strong>Cross-Validation Results (' + cv.n_folds + '-fold)</strong><br><br>';
+    html += '<table style="border-collapse:collapse;width:100%">';
+    html += '<tr style="border-bottom:1px solid #233554"><th style="text-align:left;padding:4px 8px">Fold</th><th style="padding:4px 8px">Overall</th>';
+    cats.forEach(c => { html += '<th style="padding:4px 8px">' + c + '</th>'; });
+    html += '</tr>';
+    (cv.folds || []).forEach(f => {
+      html += '<tr><td style="padding:4px 8px">Fold ' + (f.fold + 1) + '</td>';
+      html += '<td style="text-align:center;padding:4px 8px">' + (f.best_val_acc * 100).toFixed(1) + '%</td>';
+      cats.forEach(c => {
+        const v = (f.per_class || {})[c];
+        html += '<td style="text-align:center;padding:4px 8px">' + (v != null ? (v * 100).toFixed(1) + '%' : '--') + '</td>';
+      });
+      html += '</tr>';
+    });
+    // Mean row
+    html += '<tr style="border-top:2px solid #233554;font-weight:bold"><td style="padding:4px 8px">Mean</td>';
+    html += '<td style="text-align:center;padding:4px 8px">' + (cv.mean_acc * 100).toFixed(1) + '%</td>';
+    cats.forEach(c => {
+      html += '<td style="text-align:center;padding:4px 8px">' + ((cv.per_class_mean[c] || 0) * 100).toFixed(1) + '%</td>';
+    });
+    html += '</tr>';
+    // Std row
+    html += '<tr style="color:#8892b0"><td style="padding:4px 8px">Std</td>';
+    html += '<td style="text-align:center;padding:4px 8px">&plusmn;' + (cv.std_acc * 100).toFixed(1) + '%</td>';
+    cats.forEach(c => {
+      html += '<td style="text-align:center;padding:4px 8px">&plusmn;' + ((cv.per_class_std[c] || 0) * 100).toFixed(1) + '%</td>';
+    });
+    html += '</tr></table>';
+    content.innerHTML = html;
+  } catch(e) { /* no CV results yet */ }
 }
 
 function updateCharts(data) {
   const labels = data.epochs;
+
+  // Build phase boundary annotations for shading
+  const phases = data.phases || [];
+  const phaseColors = { phase1: 'rgba(82,183,136,0.06)', phase2: 'rgba(244,162,97,0.06)', phase3: 'rgba(230,57,70,0.06)' };
+
   const chartOpts = {
     responsive: true,
     maintainAspectRatio: true,
@@ -1180,11 +1428,14 @@ function updateCharts(data) {
     },
   };
 
+  const phaseBoundaries = data.phase_boundaries || [];
+
   // Loss chart
   if (lossChart) {
     lossChart.data.labels = labels;
-    lossChart.data.datasets[0].data = data.train_box_loss;
-    lossChart.data.datasets[1].data = data.val_box_loss;
+    lossChart.data.datasets[0].data = data.train_loss;
+    lossChart.data.datasets[1].data = data.val_loss;
+    lossChart.options.plugins.phaseBg = { boundaries: phaseBoundaries };
     lossChart.update();
   } else {
     const ctx = document.getElementById('chart-loss').getContext('2d');
@@ -1194,28 +1445,29 @@ function updateCharts(data) {
         labels,
         datasets: [
           {
-            label: 'Train Box Loss',
-            data: data.train_box_loss,
+            label: 'Train Loss',
+            data: data.train_loss,
             borderColor: '#52b788', backgroundColor: 'transparent',
             borderWidth: 1.5, pointRadius: 0, tension: 0.3,
           },
           {
-            label: 'Val Box Loss',
-            data: data.val_box_loss,
+            label: 'Val Loss',
+            data: data.val_loss,
             borderColor: '#e63946', backgroundColor: 'transparent',
             borderWidth: 1.5, pointRadius: 0, tension: 0.3,
           },
         ],
       },
-      options: chartOpts,
+      options: { ...chartOpts, plugins: { ...chartOpts.plugins, phaseBg: { boundaries: phaseBoundaries } } },
     });
   }
 
-  // mAP chart
+  // Accuracy chart
   if (mapChart) {
     mapChart.data.labels = labels;
-    mapChart.data.datasets[0].data = data.map50;
-    mapChart.data.datasets[1].data = data.map50_95;
+    mapChart.data.datasets[0].data = data.train_acc;
+    mapChart.data.datasets[1].data = data.val_acc;
+    mapChart.options.plugins.phaseBg = { boundaries: phaseBoundaries };
     mapChart.update();
   } else {
     const ctx2 = document.getElementById('chart-map').getContext('2d');
@@ -1225,20 +1477,24 @@ function updateCharts(data) {
         labels,
         datasets: [
           {
-            label: 'mAP50',
-            data: data.map50,
+            label: 'Train Acc',
+            data: data.train_acc,
             borderColor: '#52b788', backgroundColor: 'transparent',
             borderWidth: 1.5, pointRadius: 0, tension: 0.3,
           },
           {
-            label: 'mAP50-95',
-            data: data.map50_95,
+            label: 'Val Acc',
+            data: data.val_acc,
             borderColor: '#f4a261', backgroundColor: 'transparent',
             borderWidth: 1.5, pointRadius: 0, tension: 0.3,
           },
         ],
       },
-      options: chartOpts,
+      options: {
+        ...chartOpts,
+        scales: { ...chartOpts.scales, y: { ...chartOpts.scales.y, min: 0, max: 1 } },
+        plugins: { ...chartOpts.plugins, phaseBg: { boundaries: phaseBoundaries } },
+      },
     });
   }
 }
@@ -1251,12 +1507,14 @@ function renderRawCounts(d) {
   const minImages = 300;
   CATS.forEach(cat => {
     const c = d.raw_counts[cat] || 0;
+    const cc = (d.crop_counts || {})[cat] || 0;
     const pct = Math.min(100, (c / minImages) * 100);
     const barClass = pct < 33 ? 'bar-low' : pct < 80 ? 'bar-mid' : 'bar-good';
+    const cropSuffix = cc > 0 ? ' <span style="color:#555;font-size:0.75em">(+' + cc + 'c)</span>' : '';
     rawEl.innerHTML += '<div class="cat-stat">' +
       '<span class="name">' + cat + '</span>' +
       '<div class="bar-bg"><div class="bar-fill ' + barClass + '" style="width:' + pct + '%"></div></div>' +
-      '<span class="count">' + c + '</span></div>';
+      '<span class="count">' + c + cropSuffix + '</span></div>';
   });
   const uc = d.raw_counts.unlabeled || 0;
   if (uc > 0) {
@@ -1272,11 +1530,9 @@ function renderDatasetStatsPanel(d) {
   if (d.dataset_ready) {
     const sc = d.split_counts || {};
     dsEl.innerHTML = '<div class="stat-row"><span class="label">Train:</span><span>' + (sc.train || 0) + '</span></div>' +
-      '<div class="stat-row"><span class="label">Val:</span><span>' + (sc.val || 0) + '</span></div>' +
-      '<div class="stat-row"><span class="label">Test:</span><span>' + (sc.test || 0) + '</span></div>' +
-      '<div class="stat-row"><span class="label">Calibration:</span><span>' + (sc.calibration || 0) + '</span></div>';
+      '<div class="stat-row"><span class="label">Val:</span><span>' + (sc.val || 0) + '</span></div>';
   } else {
-    dsEl.innerHTML = '<div style="color:#555;font-family:monospace;font-size:0.85rem">Dataset not prepared yet</div>';
+    dsEl.innerHTML = '<div style="color:#555;font-family:monospace;font-size:0.85rem">Dataset not prepared yet — run Prepare Dataset</div>';
   }
 }
 
@@ -1294,30 +1550,27 @@ async function pollDatasetStats() {
 
 // ── Readiness indicators ────────────────────────────────────
 function updateReadiness() {
-  // Annotation stats come from pollStatus (latestAnnotationStats)
-  const annStats = latestAnnotationStats || {};
+  const lblStats = latestLabelStats || {};
+  const hasRaw = (latestDatasetStats.raw_total || 0) > 0;
+  const hasCrop = (latestDatasetStats.crop_total || 0) > 0;
   const readiness = {
-    pull:     { ready: true, hint: 'Ready' },
-    annotate: { ready: (latestDatasetStats.raw_total || 0) > 0, hint: 'Pull data first' },
-    prepare:  { ready: (latestDatasetStats.raw_total || 0) > 0, hint: 'Need raw images' },
-    train:    { ready: !!(latestOutputs.dataset_yaml || {}).exists, hint: 'Run Prepare first' },
-    export:   { ready: !!(latestOutputs.best_pt || {}).exists, hint: 'Run Train first' },
-    convert:  { ready: !!(latestOutputs.best_onnx || {}).exists, hint: 'Run Export first' },
-    deploy:   { ready: !!(latestOutputs.cat_detector_hef || {}).exists, hint: 'Run Convert first' },
+    pull:    { ready: true, hint: 'Ready' },
+    label:   { ready: (lblStats.labeled || 0) > 0 || (lblStats.unlabeled || 0) > 0, hint: 'Pull captures first' },
+    crop:    { ready: hasRaw, hint: 'Label captures first' },
+    prepare: { ready: hasCrop, hint: 'Run Crop Images first' },
+    train:   { ready: !!(latestDatasetStats.dataset_ready), hint: 'Run Prepare first' },
+    deploy:  { ready: !!(latestOutputs.cat_classifier_pt || {}).exists, hint: 'Run Train first' },
   };
 
-  // Check if step's own output artifact exists (persists across restarts)
   const completed = {
-    pull:     (latestDatasetStats.raw_total || 0) > 0,
-    annotate: annStats.total > 0 && annStats.missing === 0,
-    prepare:  !!(latestOutputs.dataset_yaml || {}).exists,
-    train:    !!(latestOutputs.best_pt || {}).exists,
-    export:   !!(latestOutputs.best_onnx || {}).exists,
-    convert:  !!(latestOutputs.cat_detector_hef || {}).exists,
-    deploy:   latestStepStates['deploy'] === 'done',
+    pull:    hasRaw,
+    label:   latestStepStates['label'] === 'done',
+    crop:    hasCrop,
+    prepare: !!(latestDatasetStats.dataset_ready),
+    train:   !!(latestOutputs.cat_classifier_pt || {}).exists,
+    deploy:  latestStepStates['deploy'] === 'done',
   };
 
-  // If a step is running, block all subsequent steps
   let blocked_by_running = false;
   STEPS.forEach(name => {
     const state = latestStepStates[name] || 'idle';
@@ -1335,6 +1588,7 @@ function updateReadiness() {
     const stateEl = document.getElementById('state-' + name);
     const hintEl = document.getElementById('hint-' + name);
     const r = readiness[name];
+    if (!card) return;
 
     card.classList.remove('ready', 'completed', 'blocked', 'done');
     if (completed[name] && state !== 'running') {
@@ -1345,8 +1599,8 @@ function updateReadiness() {
     } else if (state === 'idle') {
       if (r.ready) {
         card.classList.add('ready');
-        if (name === 'annotate' && annStats.total > 0) {
-          hintEl.textContent = annStats.annotated + '/' + annStats.total + ' annotated';
+        if (name === 'label' && (lblStats.labeled || 0) > 0) {
+          hintEl.textContent = lblStats.labeled + ' labeled, ' + (lblStats.unlabeled || 0) + ' remaining';
         } else {
           hintEl.textContent = 'Ready';
         }
@@ -1359,7 +1613,6 @@ function updateReadiness() {
     }
   });
 
-  // Cache completion state for instant restore on page load
   try { localStorage.setItem('stepCompleted', JSON.stringify(completed)); } catch(e) {}
 }
 
@@ -1369,10 +1622,10 @@ function restoreCachedCompletion() {
     // Restore data sources so updateReadiness() has real data on first run
     const cachedOutputs = JSON.parse(localStorage.getItem('cachedOutputs') || '{}');
     const cachedStats = JSON.parse(localStorage.getItem('cachedDatasetStats') || '{}');
-    const cachedAnnStats = JSON.parse(localStorage.getItem('cachedAnnotationStats') || '{}');
+    const cachedLbStats = JSON.parse(localStorage.getItem('cachedLabelStats') || '{}');
     if (Object.keys(cachedOutputs).length) latestOutputs = cachedOutputs;
     if (Object.keys(cachedStats).length) latestDatasetStats = cachedStats;
-    if (Object.keys(cachedAnnStats).length) latestAnnotationStats = cachedAnnStats;
+    if (Object.keys(cachedLbStats).length) latestLabelStats = cachedLbStats;
 
     // Restore step card styling
     const cached = JSON.parse(localStorage.getItem('stepCompleted') || '{}');
@@ -1395,7 +1648,10 @@ function restoreCachedCompletion() {
 
     // Restore settings form
     const cachedSettings = JSON.parse(localStorage.getItem('cachedSettings') || '{}');
-    if (cachedSettings.training) applySettings(cachedSettings);
+    if (cachedSettings.classifier_training) {
+      applySettings(cachedSettings);
+      applyAugSettings(cachedSettings);
+    }
 
     // Restore sidebar raw image counts
     if (Object.keys(cachedStats).length) renderRawCounts(cachedStats);
@@ -1423,6 +1679,10 @@ function restoreCachedCompletion() {
     if (localStorage.getItem('settingsCollapsed') === 'true') {
       document.getElementById('settings-panel').classList.add('collapsed');
       document.getElementById('settings-arrow').textContent = '▶';
+    }
+    if (localStorage.getItem('augSettingsCollapsed') !== 'false') {
+      document.getElementById('aug-settings-panel').classList.add('collapsed');
+      document.getElementById('aug-settings-arrow').textContent = '▶';
     }
   } catch(e) {}
 }
@@ -1740,9 +2000,307 @@ async function annAutoDetectAll() {
   annLoadImage();
 }
 
+// ═══════════════════════════════════════════════════════════
+// LABEL TAB
+// ── Crop settings ──────────────────────────────────────────
+async function loadCropSettings() {
+  try {
+    const r = await fetch('/api/settings/crop');
+    const d = await r.json();
+    document.getElementById('set-crop-padding').value = d.crop_padding ?? 0.20;
+  } catch(e) { console.error(e); }
+}
+
+function toggleCropSettings() {
+  const panel = document.getElementById('crop-settings-panel');
+  panel.classList.toggle('collapsed');
+  const collapsed = panel.classList.contains('collapsed');
+  document.getElementById('crop-settings-arrow').textContent = collapsed ? '▶' : '▼';
+}
+
+async function saveCropSettings() {
+  const padding = parseFloat(document.getElementById('set-crop-padding').value);
+  try {
+    await fetch('/api/settings/crop', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ crop_padding: padding }),
+    });
+    const btn = event.target;
+    btn.textContent = 'Saved!';
+    setTimeout(() => { btn.textContent = 'Save'; }, 1000);
+  } catch(e) { console.error(e); }
+}
+
+async function saveCropSettingsAndRecrop() {
+  const padding = parseFloat(document.getElementById('set-crop-padding').value);
+  try {
+    await fetch('/api/settings/crop', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ crop_padding: padding }),
+    });
+    runStep('crop');
+  } catch(e) { console.error(e); }
+}
+
+// ── Augmentation & Balance Settings ────────────────────────
+function toggleAugSettings() {
+  const panel = document.getElementById('aug-settings-panel');
+  panel.classList.toggle('collapsed');
+  const collapsed = panel.classList.contains('collapsed');
+  document.getElementById('aug-settings-arrow').textContent = collapsed ? '▶' : '▼';
+  try { localStorage.setItem('augSettingsCollapsed', collapsed); } catch(e) {}
+}
+
+function applyAugSettings(d) {
+  const t = d.classifier_training || {};
+  const aug = t.augmentation || {};
+  document.getElementById('set-balance-classes').checked = t.balance_classes !== false;
+  document.getElementById('set-aug-hflip').checked = aug.horizontal_flip !== false;
+  document.getElementById('set-aug-brightness').checked = aug.brightness_contrast !== false;
+  document.getElementById('set-aug-ssr').checked = aug.shift_scale_rotate !== false;
+  document.getElementById('set-aug-blur').checked = aug.gaussian_blur !== false;
+  document.getElementById('set-aug-noise').checked = aug.gaussian_noise !== false;
+  document.getElementById('set-aug-dropout').checked = aug.coarse_dropout !== false;
+  document.getElementById('set-aug-hue').checked = aug.hue_saturation === true;
+  document.getElementById('set-aug-clahe').checked = aug.clahe === true;
+  document.getElementById('set-aug-bright-limit').value = aug.brightness_limit || 0.3;
+  document.getElementById('set-aug-contrast-limit').value = aug.contrast_limit || 0.3;
+  document.getElementById('set-aug-rotate-limit').value = aug.rotate_limit || 10;
+  document.getElementById('set-cv-folds').value = t.cv_folds || 5;
+}
+
+async function saveAugSettings() {
+  try {
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        classifier_training: {
+          balance_classes: document.getElementById('set-balance-classes').checked,
+          augmentation: {
+            horizontal_flip: document.getElementById('set-aug-hflip').checked,
+            brightness_contrast: document.getElementById('set-aug-brightness').checked,
+            brightness_limit: parseFloat(document.getElementById('set-aug-bright-limit').value),
+            contrast_limit: parseFloat(document.getElementById('set-aug-contrast-limit').value),
+            shift_scale_rotate: document.getElementById('set-aug-ssr').checked,
+            rotate_limit: parseInt(document.getElementById('set-aug-rotate-limit').value),
+            gaussian_blur: document.getElementById('set-aug-blur').checked,
+            gaussian_noise: document.getElementById('set-aug-noise').checked,
+            coarse_dropout: document.getElementById('set-aug-dropout').checked,
+            hue_saturation: document.getElementById('set-aug-hue').checked,
+            clahe: document.getElementById('set-aug-clahe').checked,
+          }
+        }
+      })
+    });
+    const btn = event.target;
+    btn.textContent = 'Saved!';
+    setTimeout(() => { btn.textContent = 'Save Settings'; }, 1000);
+  } catch(e) { console.error(e); }
+}
+
+// ═══════════════════════════════════════════════════════════
+const CAT_COLORS = { Cat3: '#52b788', Cat1: '#6495ED', Cat2: '#FFD700' };
+let labelCurrent = null;
+let labelCurrentMeta = null;          // sidecar JSON for current image
+let unlabeledFilenames = [];          // up to 30 remaining unlabeled filenames
+let recentlyLabeled = [];             // [{filename, catName}] from this session
+
+function _buildLabelButtons() {
+  const container = document.getElementById('label-buttons');
+  if (!container || container.children.length > 0) return;
+  CATS.forEach((cat, i) => {
+    const color = CAT_COLORS[cat] || '#ccd6f6';
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-nav btn-sm';
+    btn.style.borderColor = color;
+    btn.style.color = color;
+    btn.textContent = cat + ' (' + (i + 1) + ')';
+    btn.onclick = () => labelAssign(cat);
+    container.appendChild(btn);
+  });
+}
+
+function labelDrawBbox() {
+  const img = document.getElementById('label-img');
+  const canvas = document.getElementById('label-bbox-canvas');
+  canvas.width = img.offsetWidth;
+  canvas.height = img.offsetHeight;
+  canvas.style.width = img.offsetWidth + 'px';
+  canvas.style.height = img.offsetHeight + 'px';
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!labelCurrentMeta || !labelCurrentMeta.exists) return;
+  const dets = labelCurrentMeta.detections || [];
+  if (!dets.length) return;
+  const best = dets.reduce((a, b) => (b.confidence > a.confidence ? b : a), dets[0]);
+  const bbox = best.bbox_norm;
+  if (!bbox || bbox.length !== 4) return;
+  const [xmin, ymin, bw, bh] = bbox;
+  const x = xmin * canvas.width;
+  const y = ymin * canvas.height;
+  const w = bw * canvas.width;
+  const h = bh * canvas.height;
+  ctx.strokeStyle = 'rgba(255, 180, 0, 0.85)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, w, h);
+  ctx.fillStyle = 'rgba(255, 180, 0, 0.15)';
+  ctx.fillRect(x, y, w, h);
+}
+
+async function _loadLabelMeta(filename) {
+  try {
+    const r = await fetch('/api/label/image-meta/' + encodeURIComponent(filename));
+    labelCurrentMeta = await r.json();
+  } catch(e) {
+    labelCurrentMeta = null;
+  }
+}
+
+async function loadLabelTab() {
+  _buildLabelButtons();
+  try {
+    const r = await fetch('/api/label/images');
+    const d = await r.json();
+    unlabeledFilenames = d.filenames || (d.first ? [d.first] : []);
+    document.getElementById('label-progress').textContent =
+      d.total_labeled + ' labeled, ' + d.count + ' remaining';
+    if (d.first) {
+      labelCurrent = d.first;
+      await _loadLabelMeta(d.first);
+      document.getElementById('label-img').src = '/api/label/image/' + encodeURIComponent(d.first);
+      document.getElementById('label-img-info').textContent = d.first;
+    } else {
+      document.getElementById('label-img').src = '';
+      document.getElementById('label-img-info').textContent = 'No unlabeled images';
+      labelCurrent = null;
+      labelCurrentMeta = null;
+    }
+    renderLabelThumbs();
+  } catch(e) { console.error(e); }
+}
+
+function renderLabelThumbs() {
+  const el = document.getElementById('label-thumbs');
+  let html = '';
+
+  // Recently labeled (cat-colored borders), most recent first
+  for (const item of recentlyLabeled.slice().reverse()) {
+    const color = CAT_COLORS[item.catName] || '#ccd6f6';
+    html += '<div style="border:2px solid ' + color + ';border-radius:3px;overflow:hidden;' +
+      'width:56px;height:56px;flex-shrink:0;cursor:default;" title="' + item.catName + '">' +
+      '<img src="/api/label/image/' + encodeURIComponent(item.filename) + '" ' +
+      'style="width:100%;height:100%;object-fit:cover;" loading="lazy"></div>';
+  }
+
+  // Remaining unlabeled (red border), skip the currently displayed one
+  for (const fname of unlabeledFilenames) {
+    if (fname === labelCurrent) continue;
+    html += '<div style="border:2px solid #e63946;border-radius:3px;overflow:hidden;' +
+      'width:56px;height:56px;flex-shrink:0;cursor:pointer;" title="' + fname + '" ' +
+      'onclick="labelJumpTo(\'' + fname.replace(/'/g, "\\'") + '\')">' +
+      '<img src="/api/label/image/' + encodeURIComponent(fname) + '" ' +
+      'style="width:100%;height:100%;object-fit:cover;" loading="lazy"></div>';
+  }
+
+  el.innerHTML = html;
+}
+
+async function labelJumpTo(filename) {
+  labelCurrent = filename;
+  await _loadLabelMeta(filename);
+  document.getElementById('label-img').src = '/api/label/image/' + encodeURIComponent(filename);
+  document.getElementById('label-img-info').textContent = filename;
+  renderLabelThumbs();
+}
+
+async function labelAssign(catName) {
+  if (!labelCurrent) return;
+  const assigned = labelCurrent;
+  try {
+    const r = await fetch('/api/label/assign', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ filename: assigned, cat_name: catName }),
+    });
+    const d = await r.json();
+    if (d.status !== 'ok') { console.error(d); return; }
+    // Track in recently labeled (max 20)
+    recentlyLabeled.push({ filename: assigned, catName });
+    if (recentlyLabeled.length > 20) recentlyLabeled.shift();
+    // Remove from unlabeled list
+    unlabeledFilenames = unlabeledFilenames.filter(f => f !== assigned);
+    document.getElementById('label-progress').textContent =
+      '-- labeled, ' + d.remaining + ' remaining';
+    if (d.next) {
+      labelCurrent = d.next;
+      await _loadLabelMeta(d.next);
+      document.getElementById('label-img').src = '/api/label/image/' + encodeURIComponent(d.next);
+      document.getElementById('label-img-info').textContent = d.next;
+    } else {
+      document.getElementById('label-img').src = '';
+      document.getElementById('label-img-info').textContent = 'All done!';
+      labelCurrent = null;
+      labelCurrentMeta = null;
+    }
+    renderLabelThumbs();
+  } catch(e) { console.error(e); }
+}
+
+async function labelSkip() {
+  if (!labelCurrent) return;
+  const skipped = labelCurrent;
+  try {
+    const r = await fetch('/api/label/skip', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ filename: skipped }),
+    });
+    const d = await r.json();
+    if (d.status !== 'ok') return;
+    unlabeledFilenames = unlabeledFilenames.filter(f => f !== skipped);
+    if (d.next) {
+      labelCurrent = d.next;
+      await _loadLabelMeta(d.next);
+      document.getElementById('label-img').src = '/api/label/image/' + encodeURIComponent(d.next);
+      document.getElementById('label-img-info').textContent = d.next;
+    } else {
+      document.getElementById('label-img').src = '';
+      labelCurrent = null;
+      labelCurrentMeta = null;
+      document.getElementById('label-img-info').textContent = 'No more images';
+    }
+    document.getElementById('label-progress').textContent = d.remaining + ' remaining';
+    renderLabelThumbs();
+  } catch(e) { console.error(e); }
+}
+
+async function labelUndo() {
+  try {
+    const r = await fetch('/api/label/undo', { method: 'POST' });
+    const d = await r.json();
+    if (d.status !== 'ok') { alert(d.message || 'Nothing to undo'); return; }
+    labelCurrent = d.restored;
+    await _loadLabelMeta(d.restored);
+    document.getElementById('label-img').src = '/api/label/image/' + encodeURIComponent(d.restored);
+    document.getElementById('label-img-info').textContent = d.restored;
+    loadLabelTab();
+  } catch(e) { console.error(e); }
+}
+
 // ── Keyboard shortcuts ─────────────────────────────────────
 document.addEventListener('keydown', (e) => {
   if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+
+  // Label tab shortcuts: 1/2/3=assign cat, s=skip
+  if (activeTab === 'label') {
+    const idx = parseInt(e.key) - 1;
+    if (idx >= 0 && idx < CATS.length) { labelAssign(CATS[idx]); return; }
+    if (e.key === 's') { labelSkip(); return; }
+    return;
+  }
 
   // Annotate tab shortcuts
   if (activeTab === 'annotate') {
@@ -1757,7 +2315,7 @@ document.addEventListener('keydown', (e) => {
 
   // Pipeline tab shortcuts
   const num = parseInt(e.key);
-  if (num >= 1 && num <= 5) {
+  if (num >= 1 && num <= STEPS.length) {
     runStep(STEPS[num - 1]);
     return;
   }
@@ -1774,6 +2332,7 @@ document.getElementById('log-output').addEventListener('scroll', function() {
 });
 restoreCachedCompletion();
 loadSettings();
+loadCropSettings();
 loadVersions();
 pollStatus();
 pollDatasetStats();

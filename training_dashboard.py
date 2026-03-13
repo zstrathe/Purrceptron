@@ -43,20 +43,23 @@ import yaml
 # Training Step Manager
 # ═══════════════════════════════════════════════════════════════════════════
 
-STEP_ORDER = ["pull", "annotate", "prepare", "train", "export", "convert", "deploy"]
+STEP_ORDER = ["pull", "label", "crop", "prepare", "train", "deploy"]
 
 STEP_LABELS = {
-    "pull": "Pull Data from Pi",
-    "annotate": "Review Annotations",
+    "pull":    "Pull Captures from Pi",
+    "label":   "Label Captures",
+    "crop":    "Crop Images",
     "prepare": "Prepare Dataset",
-    "train": "Train Model",
-    "export": "Export ONNX",
-    "convert": "Convert HEF",
-    "deploy": "Deploy to Pi",
+    "train":   "Train Classifier",
+    "deploy":  "Deploy to Pi",
+    "crossval": "Cross-Validate",
 }
 
+# Steps that exist outside the main auto-pipeline
+EXTRA_STEPS = ["crossval"]
+
 # Steps that are interactive (not subprocess-based)
-INTERACTIVE_STEPS = {"annotate"}
+INTERACTIVE_STEPS = {"label"}
 
 
 @dataclass
@@ -85,19 +88,20 @@ class TrainingStepManager:
         self._train_python = str(project_root / "venv_train" / "bin" / "python")
         self._active_version: str = "v1"
         self._version_size_cache: dict[str, float] = {}
-        self._version_size_cache_time: float = 0
         self._ann_stats_cache: dict | None = None
         self._ann_stats_cache_time: float = 0
 
         self._steps: dict[str, TrainingStep] = {
             name: TrainingStep(name=name, label=STEP_LABELS[name])
-            for name in STEP_ORDER
+            for name in STEP_ORDER + EXTRA_STEPS
         }
 
-        # Auto-detect active version from existing versions
-        versions = self.get_versions()
-        if versions:
-            self._active_version = versions[-1]["name"]
+        # Auto-detect active version (lightweight — no size computation)
+        versions_dir = self.project_root / "versions"
+        if versions_dir.is_dir():
+            dirs = sorted(d.name for d in versions_dir.iterdir() if d.is_dir())
+            if dirs:
+                self._active_version = dirs[-1]
 
         # Ensure the active version directory exists
         (self.project_root / "versions" / self._active_version).mkdir(parents=True, exist_ok=True)
@@ -135,29 +139,28 @@ class TrainingStepManager:
         if not versions_dir.is_dir():
             return versions
 
-        # Refresh size cache if stale (> 60s)
-        now = time.time()
-        if now - self._version_size_cache_time > 60:
-            self._version_size_cache.clear()
-            self._version_size_cache_time = now
-
         for d in sorted(versions_dir.iterdir()):
             if d.is_dir():
-                has_best = (d / "training" / "weights" / "best.pt").exists()
-                has_onnx = (d / "training" / "weights" / "best.onnx").exists()
-                has_hef = (d / "cat_detector.hef").exists()
+                has_dataset = (d / "classifier_dataset" / "train").exists()
+                has_model = (d / "cat_classifier.pt").exists()
                 name = d.name
-                if name not in self._version_size_cache:
-                    size_bytes = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
-                    self._version_size_cache[name] = round(size_bytes / 1024 / 1024, 1)
                 versions.append({
                     "name": name,
-                    "has_model": has_best,
-                    "has_onnx": has_onnx,
-                    "has_hef": has_hef,
-                    "size_mb": self._version_size_cache[name],
+                    "has_model": has_model,
+                    "has_dataset": has_dataset,
+                    "size_mb": self._version_size_cache.get(name),
                 })
         return versions
+
+    def _precompute_version_sizes(self) -> None:
+        """Compute version sizes in background thread."""
+        versions_dir = self.project_root / "versions"
+        if not versions_dir.is_dir():
+            return
+        for d in sorted(versions_dir.iterdir()):
+            if d.is_dir() and d.name not in self._version_size_cache:
+                size_bytes = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+                self._version_size_cache[d.name] = round(size_bytes / 1024 / 1024, 1)
 
     def _invalidate_size_cache(self, name: str | None = None) -> None:
         """Clear cached version sizes. Pass a name to clear one, or None to clear all."""
@@ -168,16 +171,8 @@ class TrainingStepManager:
 
     @staticmethod
     def _fix_dataset_yaml_path(version_dir: Path) -> None:
-        """Update the absolute path in dataset.yaml to match the version directory."""
-        dataset_yaml = version_dir / "dataset" / "dataset.yaml"
-        if not dataset_yaml.exists():
-            return
-        with open(dataset_yaml) as f:
-            content = yaml.safe_load(f)
-        if content and "path" in content:
-            content["path"] = str((version_dir / "dataset").resolve())
-            with open(dataset_yaml, "w") as f:
-                yaml.dump(content, f, default_flow_style=False, sort_keys=False)
+        """No-op — retained for compatibility with duplicate/rename. Classifier uses symlinks."""
+        pass
 
     def delete_version(self, name: str) -> dict:
         """Delete a version directory."""
@@ -268,40 +263,47 @@ class TrainingStepManager:
     def _build_command(self, step_name: str) -> list[str]:
         """Build subprocess command for a given step."""
         config_args = ["--config", str(self.config_path)] if self.config_path else []
-        cats = self._config.get("cats", [])
-        deploy_cfg = self._config.get("deployment", {})
         ver_dir = self.get_version_dir()
 
         if step_name == "pull":
-            return ["bash", "scripts/pull_dataset.sh", "", "", str(ver_dir / "raw")]
+            import_cmd = (
+                f"{self._train_python} train/import_captures.py"
+                f" --output-dir {ver_dir / 'raw_images'}"
+            )
+            if self.config_path:
+                import_cmd += f" --config {self.config_path}"
+            return ["bash", "-c", f"bash scripts/pull_dataset.sh && {import_cmd}"]
+        elif step_name == "crop":
+            padding = self._config.get("classifier", {}).get("crop_padding", 0.20)
+            return [
+                self._train_python, "train/crop_images.py",
+                "--input-dir", str(ver_dir / "raw_images"),
+                "--output-dir", str(ver_dir / "cropped_images"),
+                "--padding", str(padding),
+            ] + config_args
         elif step_name == "prepare":
             return [
-                self._train_python, "train/prepare_dataset.py",
-                "--input", str(ver_dir / "raw"),
-                "--output", str(ver_dir / "dataset"),
+                self._train_python, "train/prepare_classifier_dataset.py",
+                "--source-dir", str(ver_dir / "cropped_images"),
+                "--output-dir", str(ver_dir / "classifier_dataset"),
             ] + config_args
         elif step_name == "train":
             return [
-                self._train_python, "train/train.py",
-                "--run-name", "training",
-                "--project", str(ver_dir),
-                "--dataset-yaml", str(ver_dir / "dataset" / "dataset.yaml"),
+                self._train_python, "train/train_classifier.py",
+                "--dataset-dir", str(ver_dir / "classifier_dataset"),
+                "--output-dir", str(ver_dir),
             ] + config_args
-        elif step_name == "export":
-            return [
-                self._train_python, "train/export_onnx.py",
-                "--model", str(ver_dir / "training" / "weights" / "best.pt"),
-            ] + config_args
-        elif step_name == "convert":
-            onnx_path = str(ver_dir / "training" / "weights" / "best.onnx")
-            num_classes = str(len(cats))
-            calib_dir = str(ver_dir / "dataset" / "calibration")
-            hw_arch = deploy_cfg.get("hw_arch", "hailo10h")
-            model_size = self._config.get("training", {}).get("model_size", "yolov8s")
-            return ["bash", "train/convert_hef.sh", onnx_path, num_classes, calib_dir, hw_arch, model_size, str(ver_dir)]
         elif step_name == "deploy":
-            hef_path = str(ver_dir / "cat_detector.hef")
-            return ["bash", "scripts/transfer_model.sh", "", hef_path]
+            model_path = str(ver_dir / "cat_classifier.pt")
+            return ["bash", "scripts/transfer_model.sh", model_path]
+        elif step_name == "crossval":
+            n_folds = self._config.get("classifier_training", {}).get("cv_folds", 5)
+            return [
+                self._train_python, "train/cross_validate.py",
+                "--source-dir", str(ver_dir / "cropped_images"),
+                "--output-dir", str(ver_dir / "cv_results"),
+                "--n-folds", str(n_folds),
+            ] + config_args
         else:
             raise ValueError(f"Unknown step: {step_name}")
 
@@ -440,13 +442,8 @@ class TrainingStepManager:
             self._invalidate_size_cache(self._active_version)
             if exit_code == 0:
                 step.state = "done"
-                # Copy annotations from previous version after pull
                 if step.name == "pull":
-                    self._ensure_background_labels()
-                    msg = self._copy_annotations_from_previous()
-                    if msg:
-                        step.output.append(msg)
-                    self.invalidate_annotation_cache()
+                    self.invalidate_label_cache()
                 self._current_step = None
                 # Auto-chain to next step
                 if self._auto_pipeline:
@@ -475,102 +472,41 @@ class TrainingStepManager:
                 return STEP_ORDER[i]
         return None
 
-    def _ensure_background_labels(self) -> None:
-        """Create empty .txt label files for background images (one-time operation)."""
-        ver_dir = self.get_version_dir()
-        bg_dir = ver_dir / "raw" / "background"
-        if not bg_dir.is_dir():
-            return
-        for img in bg_dir.glob("*.jpg"):
-            txt = img.with_suffix(".txt")
-            if not txt.exists():
-                txt.write_text("")
-
-    def get_annotation_stats(self) -> dict:
-        """Count annotated vs total images in the active version's raw dir (read-only)."""
-        # Return cached result if fresh (< 5s)
+    def get_label_stats(self) -> dict:
+        """Count labeled vs unlabeled images in the active version's raw_images/ directory."""
         now = time.time()
         if self._ann_stats_cache and now - self._ann_stats_cache_time < 5:
             return self._ann_stats_cache
 
-        ver_dir = self.get_version_dir()
-        raw_dir = ver_dir / "raw"
+        raw_dir = self.get_version_dir() / "raw_images"
         cats = self._config.get("cats", [])
-        total = 0
-        annotated = 0
+        labeled = 0
+        per_cat: dict[str, int] = {}
         for cat_name in cats:
             cat_dir = raw_dir / cat_name
-            if not cat_dir.is_dir():
-                continue
-            for img in cat_dir.glob("*.jpg"):
-                total += 1
-                if img.with_suffix(".txt").exists():
-                    annotated += 1
+            count = sum(1 for _ in cat_dir.glob("*.jpg")) if cat_dir.is_dir() else 0
+            per_cat[cat_name] = count
+            labeled += count
+        unlabeled_dir = raw_dir / "unlabeled"
+        unlabeled = sum(1 for _ in unlabeled_dir.glob("*.jpg")) if unlabeled_dir.is_dir() else 0
 
-        # Background images are negative examples — count only (labels created by _ensure_background_labels)
-        bg_dir = raw_dir / "background"
-        if bg_dir.is_dir():
-            for img in bg_dir.glob("*.jpg"):
-                total += 1
-                if img.with_suffix(".txt").exists():
-                    annotated += 1
-
-        result = {"total": total, "annotated": annotated, "missing": total - annotated}
+        result = {
+            "labeled": labeled,
+            "unlabeled": unlabeled,
+            "per_cat": per_cat,
+        }
         self._ann_stats_cache = result
         self._ann_stats_cache_time = now
         return result
 
-    def invalidate_annotation_cache(self) -> None:
-        """Clear cached annotation stats (call after annotation changes)."""
+    def invalidate_label_cache(self) -> None:
+        """Clear cached label stats."""
         self._ann_stats_cache = None
         self._ann_stats_cache_time = 0
 
-    def _copy_annotations_from_previous(self) -> str:
-        """Copy .txt annotation files from the most recent previous version.
-
-        Matches by filename so images that carry over between versions
-        keep their annotations automatically.
-        """
-        import shutil
-
-        ver_dir = self.get_version_dir()
-        raw_dir = ver_dir / "raw"
-        cats = self._config.get("cats", [])
-
-        # Find previous version with raw data
-        versions = self.get_versions()
-        prev_raw = None
-        prev_name = None
-        for v in reversed(versions):
-            if v["name"] == self._active_version:
-                continue
-            candidate = self.project_root / "versions" / v["name"] / "raw"
-            if candidate.is_dir():
-                prev_raw = candidate
-                prev_name = v["name"]
-                break
-
-        if not prev_raw:
-            return ""
-
-        copied = 0
-        for dir_name in cats + ["background"]:
-            cur_dir = raw_dir / dir_name
-            prev_dir = prev_raw / dir_name
-            if not cur_dir.is_dir() or not prev_dir.is_dir():
-                continue
-            for img in cur_dir.glob("*.jpg"):
-                txt = img.with_suffix(".txt")
-                if txt.exists():
-                    continue  # already annotated
-                prev_txt = prev_dir / txt.name
-                if prev_txt.exists():
-                    shutil.copy2(prev_txt, txt)
-                    copied += 1
-
-        if copied:
-            return f"[INFO] Copied {copied} annotations from {prev_name}"
-        return ""
+    # Keep for backward compatibility (annotate tab still functional)
+    def get_annotation_stats(self) -> dict:
+        return self.get_label_stats()
 
     def reload_config(self, config: dict) -> None:
         """Update stored config (after settings change)."""
@@ -593,15 +529,15 @@ class TrainingStepManager:
                     "exit_code": step.exit_code,
                 }
 
-            # Compute annotate step state from annotation completeness
-            ann_stats = self.get_annotation_stats()
-            if ann_stats["total"] == 0:
-                steps["annotate"]["state"] = "idle"
-            elif ann_stats["missing"] == 0:
-                steps["annotate"]["state"] = "done"
+            # Compute label step state from raw_images/ labeling progress.
+            label_stats = self.get_label_stats()
+            if label_stats["labeled"] == 0 and label_stats["unlabeled"] == 0:
+                steps["label"]["state"] = "idle"
+            elif label_stats["unlabeled"] == 0 and label_stats["labeled"] > 0:
+                steps["label"]["state"] = "done"
             else:
-                steps["annotate"]["state"] = "idle"
-            steps["annotate"]["annotation_stats"] = ann_stats
+                steps["label"]["state"] = "idle"
+            steps["label"]["label_stats"] = label_stats
 
             return {
                 "steps": steps,
@@ -651,10 +587,7 @@ class TrainingConfigManager:
     def get_training_settings(self) -> dict:
         cfg = self.read()
         return {
-            "training": cfg.get("training", {}),
-            "deployment": {
-                "hw_arch": cfg.get("deployment", {}).get("hw_arch", "hailo10h"),
-            },
+            "classifier_training": cfg.get("classifier_training", {}),
             "cats": cfg.get("cats", []),
         }
 
@@ -663,13 +596,39 @@ class TrainingConfigManager:
             with open(self.config_path) as f:
                 cfg = yaml.safe_load(f)
 
-            if "training" in settings:
-                for key in ("model_size", "epochs", "batch_size", "image_size",
-                            "patience", "lr0", "lrf", "optimizer",
-                            "val_split", "test_split"):
-                    if key in settings["training"]:
-                        cfg["training"][key] = settings["training"][key]
+            if "classifier_training" in settings:
+                if "classifier_training" not in cfg:
+                    cfg["classifier_training"] = {}
+                for key in ("phase1_epochs", "phase2_epochs", "phase3_epochs",
+                            "phase1_lr", "phase2_backbone_lr", "phase2_head_lr",
+                            "weight_decay", "batch_size", "patience", "optimizer",
+                            "session_gap_minutes", "mixup_alpha", "balance_classes",
+                            "cv_folds"):
+                    if key in settings["classifier_training"]:
+                        cfg["classifier_training"][key] = settings["classifier_training"][key]
 
+                if "augmentation" in settings["classifier_training"]:
+                    if "augmentation" not in cfg["classifier_training"]:
+                        cfg["classifier_training"]["augmentation"] = {}
+                    for aug_key in ("horizontal_flip", "brightness_contrast",
+                                    "brightness_limit", "contrast_limit",
+                                    "shift_scale_rotate", "rotate_limit",
+                                    "gaussian_blur", "gaussian_noise",
+                                    "coarse_dropout", "hue_saturation", "clahe"):
+                        if aug_key in settings["classifier_training"]["augmentation"]:
+                            cfg["classifier_training"]["augmentation"][aug_key] = \
+                                settings["classifier_training"]["augmentation"][aug_key]
+
+            with open(self.config_path, "w") as f:
+                yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+
+    def update_crop_padding(self, padding: float) -> None:
+        with self._lock:
+            with open(self.config_path) as f:
+                cfg = yaml.safe_load(f)
+            if "classifier" not in cfg:
+                cfg["classifier"] = {}
+            cfg["classifier"]["crop_padding"] = round(padding, 4)
             with open(self.config_path, "w") as f:
                 yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
 
@@ -678,102 +637,137 @@ class TrainingConfigManager:
 # Metrics reader
 # ═══════════════════════════════════════════════════════════════════════════
 
-def read_training_metrics(run_dir: Path) -> dict:
-    """Parse results.csv from a training run directory into chart-friendly JSON."""
+def read_training_metrics(run_dir: Path, cats: list[str] | None = None) -> dict:
+    """Parse results.csv from a classifier training run into chart-friendly JSON.
+
+    Columns: epoch, phase, train_loss, val_loss, train_acc, val_acc, acc_<cat>...
+    """
     csv_path = run_dir / "results.csv"
     if not csv_path.exists():
         return {"available": False}
 
-    epochs = []
-    train_box_loss = []
-    train_cls_loss = []
-    val_box_loss = []
-    val_cls_loss = []
-    map50 = []
-    map50_95 = []
+    epochs: list[int] = []
+    phases: list[str] = []
+    train_loss: list[float] = []
+    val_loss: list[float] = []
+    train_acc: list[float] = []
+    val_acc: list[float] = []
+    per_class: dict[str, list[float]] = {}
 
     try:
         with open(csv_path) as f:
             reader = csv.DictReader(f)
             for row in reader:
-                # ultralytics CSV has whitespace-padded headers
-                row = {k.strip(): v.strip() for k, v in row.items()}
-                epoch = int(row.get("epoch", len(epochs) + 1))
-                epochs.append(epoch)
-                train_box_loss.append(float(row.get("train/box_loss", 0)))
-                train_cls_loss.append(float(row.get("train/cls_loss", 0)))
-                val_box_loss.append(float(row.get("val/box_loss", 0)))
-                val_cls_loss.append(float(row.get("val/cls_loss", 0)))
-                map50.append(float(row.get("metrics/mAP50(B)", 0)))
-                map50_95.append(float(row.get("metrics/mAP50-95(B)", 0)))
+                epochs.append(int(row.get("epoch", len(epochs) + 1)))
+                phases.append(row.get("phase", ""))
+                train_loss.append(float(row.get("train_loss", 0)))
+                val_loss.append(float(row.get("val_loss", 0)))
+                train_acc.append(float(row.get("train_acc", 0)))
+                val_acc.append(float(row.get("val_acc", 0)))
+                for key, val in row.items():
+                    if key.startswith("acc_"):
+                        cat_name = key[4:]
+                        per_class.setdefault(cat_name, []).append(float(val or 0))
     except Exception:
         return {"available": False}
 
-    best_map50 = max(map50) if map50 else 0
-    best_epoch = map50.index(best_map50) + 1 if map50 else 0
+    if not epochs:
+        return {"available": False}
+
+    best_val_acc = max(val_acc) if val_acc else 0
+    best_epoch = val_acc.index(best_val_acc) + 1 if val_acc else 0
+
+    # Compute phase boundaries (start epoch of each phase)
+    phase_boundaries: list[dict] = []
+    prev_phase = ""
+    for i, ph in enumerate(phases):
+        if ph != prev_phase:
+            phase_boundaries.append({"phase": ph, "epoch_idx": i})
+            prev_phase = ph
 
     return {
         "available": True,
         "epochs": epochs,
-        "train_box_loss": train_box_loss,
-        "train_cls_loss": train_cls_loss,
-        "val_box_loss": val_box_loss,
-        "val_cls_loss": val_cls_loss,
-        "map50": map50,
-        "map50_95": map50_95,
-        "best_map50": best_map50,
+        "phases": phases,
+        "train_loss": train_loss,
+        "val_loss": val_loss,
+        "train_acc": train_acc,
+        "val_acc": val_acc,
+        "per_class": per_class,
+        "phase_boundaries": phase_boundaries,
+        "best_val_acc": round(best_val_acc, 4),
         "best_epoch": best_epoch,
         "total_epochs": len(epochs),
+        "current_phase": phases[-1] if phases else "",
     }
 
 
-def get_dataset_stats(version_dir: Path, cats: list[str]) -> dict:
-    """Scan raw and dataset directories for image counts (per-version)."""
-    raw_dir = version_dir / "raw"
-    dataset_dir = version_dir / "dataset"
+def get_dataset_stats(version_dir: Path, cats: list[str], project_root: Path | None = None) -> dict:
+    """Scan raw_images/, cropped_images/, and classifier_dataset/ for image counts.
 
-    raw_counts = {}
+    raw_images/ and cropped_images/ are version-specific.
+    The prepared dataset lives in version_dir/classifier_dataset/{train,val}/<cat>/.
+    """
+    def count_jpgs(d: Path) -> int:
+        return sum(1 for _ in d.glob("*.jpg")) if d.is_dir() else 0
+
+    # Version-specific raw_images/
+    raw_dir = version_dir / "raw_images"
+    raw_counts: dict[str, int] = {}
     for cat in cats:
-        cat_dir = raw_dir / cat
-        raw_counts[cat] = sum(1 for _ in cat_dir.glob("*.jpg")) if cat_dir.is_dir() else 0
-    unlabeled_dir = raw_dir / "unlabeled"
-    raw_counts["unlabeled"] = sum(1 for _ in unlabeled_dir.glob("*.jpg")) if unlabeled_dir.is_dir() else 0
+        raw_counts[cat] = count_jpgs(raw_dir / cat)
+    raw_counts["unlabeled"] = count_jpgs(raw_dir / "unlabeled")
 
-    # Dataset split counts
-    split_counts = {}
-    for split in ("train", "val", "test"):
-        img_dir = dataset_dir / "images" / split
-        split_counts[split] = sum(1 for _ in img_dir.glob("*.jpg")) if img_dir.is_dir() else 0
+    # Version-specific cropped_images/
+    crop_dir = version_dir / "cropped_images"
+    crop_counts: dict[str, int] = {}
+    for cat in cats:
+        crop_counts[cat] = count_jpgs(crop_dir / cat)
 
-    calib_dir = dataset_dir / "calibration"
-    split_counts["calibration"] = sum(1 for _ in calib_dir.glob("*.jpg")) if calib_dir.is_dir() else 0
-
-    dataset_yaml = dataset_dir / "dataset.yaml"
+    # Version-specific classifier dataset
+    dataset_dir = version_dir / "classifier_dataset"
+    split_counts: dict[str, int] = {}
+    for split in ("train", "val"):
+        total = 0
+        for cat in cats:
+            total += count_jpgs(dataset_dir / split / cat)
+        split_counts[split] = total
 
     return {
         "raw_counts": raw_counts,
+        "crop_counts": crop_counts,
         "split_counts": split_counts,
-        "raw_total": sum(raw_counts.values()),
-        "dataset_ready": dataset_yaml.exists(),
+        "raw_total": sum(v for k, v in raw_counts.items() if k != "unlabeled"),
+        "crop_total": sum(crop_counts.values()),
+        "dataset_ready": (dataset_dir / "train").is_dir(),
     }
 
 
 def get_output_files(project_root: Path, version_dir: Path) -> dict:
     """Check which output artifacts exist."""
     files = {
-        "dataset_yaml": version_dir / "dataset" / "dataset.yaml",
-        "best_pt": version_dir / "training" / "weights" / "best.pt",
-        "best_onnx": version_dir / "training" / "weights" / "best.onnx",
-        "cat_detector_hef": version_dir / "cat_detector.hef",
-        "labels_json": project_root / "deploy" / "labels.json",
+        "cat_classifier_pt": version_dir / "cat_classifier.pt",
+        "global_model": project_root / "models" / "cat_classifier.pt",
     }
     result = {}
     for key, path in files.items():
         if path.exists():
-            size_mb = path.stat().st_size / 1024 / 1024
-            result[key] = {"exists": True, "size_mb": round(size_mb, 1)}
+            if path.is_file():
+                size_mb = path.stat().st_size / 1024 / 1024
+                result[key] = {"exists": True, "size_mb": round(size_mb, 1)}
+            else:
+                result[key] = {"exists": True, "size_mb": None}
         else:
             result[key] = {"exists": False}
+
+    # Directory artifact counts
+    def count_jpgs(d: Path) -> int:
+        return sum(1 for _ in d.glob("*.jpg")) if d.is_dir() else 0
+
+    raw_dir = version_dir / "raw_images"
+    result["raw_images"] = {"exists": raw_dir.is_dir(), "count": count_jpgs(raw_dir)}
+    crop_dir = version_dir / "cropped_images"
+    result["cropped_images"] = {"exists": crop_dir.is_dir(), "count": count_jpgs(crop_dir)}
     return result
 
 
@@ -828,6 +822,18 @@ def create_app(
     @flask_app.route("/api/metrics")
     def api_metrics():
         return jsonify(read_training_metrics(step_mgr.get_version_dir() / "training"))
+
+    @flask_app.route("/api/cv_results")
+    def api_cv_results():
+        cv_dir = step_mgr.get_version_dir() / "cv_results"
+        summary_path = cv_dir / "cv_summary.json"
+        if not summary_path.exists():
+            return jsonify({"available": False})
+        import json as _json
+        with open(summary_path) as f:
+            data = _json.load(f)
+        data["available"] = True
+        return jsonify(data)
 
     # ── Version API ───────────────────────────────────────────────
     @flask_app.route("/api/versions")
@@ -886,7 +892,7 @@ def create_app(
     # ── Dataset Stats API ─────────────────────────────────────────
     @flask_app.route("/api/dataset_stats")
     def api_dataset_stats():
-        return jsonify(get_dataset_stats(step_mgr.get_version_dir(), cats))
+        return jsonify(get_dataset_stats(step_mgr.get_version_dir(), cats, project_root))
 
     # ── Settings API ──────────────────────────────────────────────
     @flask_app.route("/api/settings", methods=["GET"])
@@ -904,7 +910,133 @@ def create_app(
         step_mgr.reload_config(new_cfg)
         return jsonify({"status": "ok"})
 
-    # ── Annotation API ─────────────────────────────────────────
+    @flask_app.route("/api/settings/crop", methods=["GET"])
+    def api_settings_crop_get():
+        cfg = config_mgr.read()
+        padding = cfg.get("classifier", {}).get("crop_padding", 0.20)
+        return jsonify({"crop_padding": padding})
+
+    @flask_app.route("/api/settings/crop", methods=["POST"])
+    def api_settings_crop_post():
+        data = request.get_json()
+        if not data or "crop_padding" not in data:
+            return jsonify({"status": "error", "message": "crop_padding required"}), 400
+        padding = float(data["crop_padding"])
+        if not (0.0 <= padding <= 1.0):
+            return jsonify({"status": "error", "message": "crop_padding must be 0.0–1.0"}), 400
+        config_mgr.update_crop_padding(padding)
+        new_cfg = config_mgr.read()
+        step_mgr.reload_config(new_cfg)
+        return jsonify({"status": "ok", "crop_padding": padding})
+
+    # ── Label API (classifier labeling on raw_images/) ────────────
+    _label_undo_stack: list[tuple[Path, Path]] = []  # (src, dst) pairs for undo
+
+    def _label_raw_dir() -> Path:
+        return step_mgr.get_version_dir() / "raw_images"
+
+    def _move_with_sidecar(src: Path, dst: Path) -> None:
+        """Move a JPEG and its .json sidecar (if present) from src to dst."""
+        src.rename(dst)
+        src_json = src.with_suffix(".json")
+        if src_json.exists():
+            src_json.rename(dst.with_suffix(".json"))
+
+    @flask_app.route("/api/label/images")
+    def api_label_images():
+        raw_dir = _label_raw_dir()
+        unlabeled_dir = raw_dir / "unlabeled"
+        if not unlabeled_dir.is_dir():
+            return jsonify({"count": 0, "first": None, "total_labeled": 0})
+        images = sorted(unlabeled_dir.glob("*.jpg"), key=lambda p: p.name)
+        labeled_total = sum(
+            sum(1 for _ in (raw_dir / c).glob("*.jpg"))
+            for c in cats
+            if (raw_dir / c).is_dir()
+        )
+        first = images[0].name if images else None
+        filenames = [p.name for p in images[:30]]
+        return jsonify({"count": len(images), "first": first, "total_labeled": labeled_total, "filenames": filenames})
+
+    @flask_app.route("/api/label/image/<filename>")
+    def api_label_image(filename):
+        img_path = _label_raw_dir() / "unlabeled" / filename
+        if not img_path.is_file():
+            return "Not found", 404
+        return send_file(str(img_path), mimetype="image/jpeg")
+
+    @flask_app.route("/api/label/image-meta/<filename>")
+    def api_label_image_meta(filename):
+        """Return sidecar JSON for a given unlabeled image (for bbox overlay)."""
+        sidecar_path = _label_raw_dir() / "unlabeled" / Path(filename).with_suffix(".json").name
+        if not sidecar_path.is_file():
+            return jsonify({"exists": False})
+        try:
+            meta = json.loads(sidecar_path.read_text())
+            return jsonify({"exists": True, **meta})
+        except Exception:
+            return jsonify({"exists": False})
+
+    @flask_app.route("/api/label/assign", methods=["POST"])
+    def api_label_assign():
+        data = request.get_json()
+        filename = data.get("filename", "").strip()
+        cat_name = data.get("cat_name", "").strip()
+        if not filename or cat_name not in cats:
+            return jsonify({"status": "error", "message": "Invalid filename or cat_name"}), 400
+        raw_dir = _label_raw_dir()
+        src = raw_dir / "unlabeled" / filename
+        if not src.is_file():
+            return jsonify({"status": "error", "message": "File not found"}), 404
+        dst_dir = raw_dir / cat_name
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        dst = dst_dir / filename
+        _move_with_sidecar(src, dst)
+        _label_undo_stack.append((dst, src))
+        if len(_label_undo_stack) > 20:
+            _label_undo_stack.pop(0)
+        step_mgr.invalidate_label_cache()
+        # Return next image
+        unlabeled_dir = raw_dir / "unlabeled"
+        remaining = sorted(unlabeled_dir.glob("*.jpg"), key=lambda p: p.name)
+        return jsonify({"status": "ok", "next": remaining[0].name if remaining else None,
+                        "remaining": len(remaining)})
+
+    @flask_app.route("/api/label/skip", methods=["POST"])
+    def api_label_skip():
+        data = request.get_json()
+        filename = data.get("filename", "").strip()
+        if not filename:
+            return jsonify({"status": "error", "message": "No filename"}), 400
+        raw_dir = _label_raw_dir()
+        src = raw_dir / "unlabeled" / filename
+        if not src.is_file():
+            return jsonify({"status": "error", "message": "File not found"}), 404
+        skip_dir = raw_dir / "unlabeled" / "skipped"
+        skip_dir.mkdir(parents=True, exist_ok=True)
+        dst = skip_dir / filename
+        _move_with_sidecar(src, dst)
+        _label_undo_stack.append((dst, src))
+        if len(_label_undo_stack) > 20:
+            _label_undo_stack.pop(0)
+        unlabeled_dir = raw_dir / "unlabeled"
+        remaining = sorted(unlabeled_dir.glob("*.jpg"), key=lambda p: p.name)
+        return jsonify({"status": "ok", "next": remaining[0].name if remaining else None,
+                        "remaining": len(remaining)})
+
+    @flask_app.route("/api/label/undo", methods=["POST"])
+    def api_label_undo():
+        if not _label_undo_stack:
+            return jsonify({"status": "error", "message": "Nothing to undo"}), 400
+        dst, src = _label_undo_stack.pop()
+        if not dst.is_file():
+            return jsonify({"status": "error", "message": "File no longer at expected location"}), 404
+        src.parent.mkdir(parents=True, exist_ok=True)
+        _move_with_sidecar(dst, src)
+        step_mgr.invalidate_label_cache()
+        return jsonify({"status": "ok", "restored": src.name})
+
+    # ── Annotation API (YOLO bbox — kept for Stage 1 compatibility) ──
     @flask_app.route("/api/annotate/images")
     def api_annotate_images():
         ver_dir = step_mgr.get_version_dir()
@@ -967,7 +1099,7 @@ def create_app(
         w = data["w"]
         h = data["h"]
         label_path.write_text(f"{class_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}\n")
-        step_mgr.invalidate_annotation_cache()
+        step_mgr.invalidate_label_cache()
         return jsonify({"status": "ok"})
 
     @flask_app.route("/api/annotate/bbox/<cat>/<filename>", methods=["DELETE"])
@@ -977,7 +1109,7 @@ def create_app(
         label_path = ver_dir / "raw" / cat / label_name
         if label_path.exists():
             label_path.unlink()
-        step_mgr.invalidate_annotation_cache()
+        step_mgr.invalidate_label_cache()
         return jsonify({"status": "ok"})
 
     @flask_app.route("/api/annotate/auto-detect", methods=["POST"])
@@ -1093,18 +1225,19 @@ def main() -> None:
     config_mgr = TrainingConfigManager(yaml_path)
 
     # Check dataset / output state
-    stats = get_dataset_stats(step_mgr.get_version_dir(), cats)
+    stats = get_dataset_stats(step_mgr.get_version_dir(), cats, PROJECT_ROOT)
     outputs = get_output_files(PROJECT_ROOT, step_mgr.get_version_dir())
     print_info(f"Raw images: {stats['raw_total']}")
     if stats["dataset_ready"]:
         sc = stats["split_counts"]
-        print_info(f"Dataset ready: train={sc['train']}, val={sc['val']}, test={sc['test']}")
+        print_info(f"Dataset ready: train={sc['train']}, val={sc['val']}")
     else:
         print_warning("Dataset not prepared yet (run 'Prepare Dataset' step)")
 
     for name, info in outputs.items():
-        if info["exists"]:
-            print_success(f"  {name}: {info['size_mb']} MB")
+        if info.get("exists"):
+            sz = info.get("size_mb")
+            print_success(f"  {name}: {sz} MB" if sz is not None else f"  {name}: present")
 
     # Graceful shutdown
     def shutdown(*_args):
@@ -1121,6 +1254,7 @@ def main() -> None:
         config_mgr=config_mgr,
         cats=cats,
     )
+    threading.Thread(target=step_mgr._precompute_version_sizes, daemon=True).start()
     flask_app.run(host=args.host, port=args.port, threaded=True, use_reloader=False)
 
 

@@ -16,7 +16,7 @@ sudo apt-get install -y python3-opencv python3-yaml python3-pip python3-venv
 # ── Install hailo-apps (Hailo AI detection pipeline) ──────────────────
 # Prerequisites: hailort driver + packages must already be installed.
 # See: https://github.com/hailo-ai/hailo-apps#prerequisites
-HAILO_APPS_DIR="$HOME/hailo-apps"
+HAILO_APPS_DIR="$PROJECT_ROOT/hailo-apps"
 if [ ! -d "$HAILO_APPS_DIR" ]; then
     echo "[INFO] Installing hailo-apps..."
     git clone https://github.com/hailo-ai/hailo-apps.git "$HAILO_APPS_DIR"
@@ -27,27 +27,20 @@ else
     echo "[INFO] hailo-apps already installed at $HAILO_APPS_DIR"
 fi
 
-# Ensure PyYAML is available in hailo-apps venv (needed by detect.py's utils)
-# Note: setup_env.sh looks for venv_hailo_apps relative to cwd, so we must cd first.
-# It also clobbers PROJECT_ROOT, so we save/restore ours.
+# ── Install project dependencies into hailo-apps venv ─────────────────
+# setup_env.sh activates venv_hailo_apps and sets GStreamer/Hailo env vars.
+# We use this single venv for everything (dashboard + detection + classifier).
 SAVE_PROJECT_ROOT="$PROJECT_ROOT"
-echo "[INFO] Installing detect.py dependencies in hailo-apps venv..."
+echo "[INFO] Installing project dependencies in hailo-apps venv..."
 cd "$HAILO_APPS_DIR"
 set +u  # setup_env.sh uses variables that may be unbound (e.g. ZSH_VERSION)
 source setup_env.sh
 set -u
-pip install "PyYAML>=6.0"
+pip install --upgrade pip
+pip install -r "$SAVE_PROJECT_ROOT/requirements-pi.txt"
 deactivate 2>/dev/null || true
 PROJECT_ROOT="$SAVE_PROJECT_ROOT"
 cd "$PROJECT_ROOT"
-
-# ── Dashboard virtual environment ─────────────────────────────────────
-echo "[INFO] Creating data collection virtual environment..."
-cd "$PROJECT_ROOT"
-python3 -m venv venv_collect
-source venv_collect/bin/activate
-pip install --upgrade pip
-pip install -r requirements-pi.txt
 
 echo "[INFO] Creating data directories..."
 mkdir -p data/raw data/trash data/export models
@@ -74,8 +67,8 @@ echo ""
 echo "[OK] Pi setup complete!"
 echo ""
 echo "To start the dashboard (includes live detection + review):"
-echo "  source venv_collect/bin/activate"
+echo "  cd $PROJECT_ROOT"
+echo "  source hailo-apps/setup_env.sh"
 echo "  python dashboard.py"
 echo ""
-echo "The dashboard automatically starts detect.py in the hailo-apps environment."
 echo "Use --no-camera for review-only mode without the detection pipeline."

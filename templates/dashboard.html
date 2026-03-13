@@ -141,19 +141,6 @@
   }
   .log-copy-btn:hover { opacity: 1; background: #0f3460; }
 
-  /* ── Mode Switcher ── */
-  .mode-switcher {
-    display: flex; gap: 6px; margin-bottom: 10px;
-  }
-  .mode-btn {
-    padding: 6px 16px; border: 1px solid #0f3460;
-    background: #0a0a1a; color: #8892b0; cursor: pointer;
-    border-radius: 4px; font-size: 0.85rem; font-family: monospace;
-    font-weight: 600; transition: background 0.2s, color 0.2s;
-  }
-  .mode-btn.active { background: #1b4332; color: #52b788; border-color: #52b788; }
-  .mode-btn:hover:not(.active) { color: #e0e0e0; }
-
   /* ── Auto-Capture ── */
   .auto-row {
     display: flex; align-items: center; gap: 10px; margin-top: 10px;
@@ -186,11 +173,37 @@
   .flash {
     position: absolute; inset: 0; pointer-events: none; opacity: 0; border-radius: 6px;
   }
+  .stream-wrapper canvas {
+    position: absolute; top: 0; left: 0; pointer-events: none;
+  }
+  .stream-wrapper.roi-drawing { cursor: crosshair; }
+  .stream-wrapper.roi-drawing canvas { pointer-events: auto; cursor: crosshair; }
+  #roi-draw-btn.active { background: #5a3600; color: #ffb347; border-color: #ffb347; }
   .flash.capture-flash { background: rgba(82, 183, 136, 0.35); }
   .flash.label-flash { background: rgba(82, 183, 136, 0.35); }
   .flash.delete-flash { background: rgba(230, 57, 70, 0.35); }
   .flash.active { animation: flash-fade 0.3s ease-out; }
   @keyframes flash-fade { from { opacity: 1; } to { opacity: 0; } }
+
+  /* ── Classifier Identity ── */
+  .classifier-identity {
+    display: flex; align-items: center; gap: 10px;
+    background: #16213e; border-radius: 6px; padding: 10px 16px;
+    margin-top: 8px; border: 2px solid #0f3460;
+  }
+  .classifier-identity.pending { opacity: 0.7; }
+  .identity-icon { font-size: 1.1rem; }
+  .identity-label {
+    font-family: monospace; font-size: 1.4rem; font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .identity-votes {
+    font-family: monospace; font-size: 0.75rem; color: #8892b0;
+  }
+  .identity-conf {
+    font-family: monospace; font-size: 0.85rem; color: #8892b0;
+    margin-left: auto;
+  }
 
   /* ── Detection Info Bar ── */
   .detection-bar {
@@ -375,32 +388,6 @@
       <!-- Detection Mode Panel -->
       <div class="inference-panel">
         <h3>Detection Mode</h3>
-        <div class="mode-switcher">
-          <button class="mode-btn active" id="mode-default" onclick="switchDetectionMode('default')">
-            COCO (cat detection)
-          </button>
-          <button class="mode-btn" id="mode-inference" onclick="switchDetectionMode('inference')">
-            Fine-tuned (individual cats)
-          </button>
-        </div>
-
-        <!-- Inference settings (shown only in inference mode) -->
-        <div class="settings-group" id="inf-settings" style="display:none">
-          <h4>Inference Settings</h4>
-          <div class="inference-row">
-            <label>Model:</label>
-            <select id="inf-model" onchange="onModelChange()">
-              <option value="">No models found</option>
-            </select>
-          </div>
-          <div class="inference-row">
-            <label>Track eating:</label>
-            <label class="toggle-switch">
-              <input type="checkbox" id="inf-feeding">
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-        </div>
 
         <div class="status-indicator">
           <span class="status-dot running" id="inf-status-dot"></span>
@@ -441,11 +428,59 @@
         </div>
       </div>
 
+      <!-- Classifier Settings -->
+      <div class="settings-group" id="classifier-settings">
+        <h4>Cat Classifier (Stage 2)</h4>
+        <div class="inference-row">
+          <label title="Start/stop the MobileNetV2 identity classifier subprocess. Restarts the detection pipeline.">Enable classifier:</label>
+          <label class="toggle-switch">
+            <input type="checkbox" id="clf-enabled" onchange="saveClassifierSettings()">
+            <span class="toggle-slider"></span>
+          </label>
+          <span id="clf-model-status" style="font-size:0.7rem;font-family:monospace;margin-left:auto"></span>
+        </div>
+        <div class="inference-row">
+          <label title="Save full frames + bbox sidecar JSON to the labeling directory when a crop is sent to the classifier.">Save crops for labeling:</label>
+          <label class="toggle-switch">
+            <input type="checkbox" id="clf-save-crops" onchange="saveClassifierSettings()">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="inference-row">
+          <label title="Minimum average confidence in the vote window to confirm a cat identity (0-1).">Confidence:</label>
+          <input type="number" id="clf-confidence" min="0" max="1" step="0.05" style="width:70px"
+                 onchange="saveClassifierSettings()">
+        </div>
+        <div class="inference-row">
+          <label title="Draw a rectangle on the preview to define the area where cat detections trigger the classifier (e.g. around the food bowl).">Bowl ROI:</label>
+          <button class="btn btn-nav" id="roi-draw-btn" onclick="toggleROIDrawMode()"
+                  style="font-size:0.75rem;padding:4px 12px">Set ROI</button>
+          <button class="btn btn-nav" id="roi-show-btn" onclick="toggleROIOverlay()"
+                  style="font-size:0.75rem;padding:4px 12px">Show ROI</button>
+          <span id="roi-coords" style="font-size:0.65rem;color:#8892b0;font-family:monospace;margin-left:8px"></span>
+        </div>
+        <div class="inference-row">
+          <label title="How much of the ROI must be overlapped by a cat bounding box to trigger classification. 1% = any overlap, 50% = half the ROI covered, 100% = fully covered.">ROI overlap:</label>
+          <input type="number" id="clf-roi-overlap" min="1" max="100" step="1" style="width:70px"
+                 onchange="saveClassifierSettings()" value="1">
+          <span style="font-size:0.75rem;color:#8892b0;margin-left:4px">%</span>
+        </div>
+      </div>
+
       <!-- Live Video Feed (always visible — reads from detect.py preview) -->
       <div class="stream-wrapper">
         <img id="camera-feed" src="" alt="Detection Feed" style="display:none">
+        <canvas id="roi-canvas"></canvas>
         <div class="no-feed-msg" id="no-feed-msg">Waiting for camera...</div>
         <div class="flash" id="capture-flash"></div>
+      </div>
+
+      <!-- Classifier Identity (Stage 2) -->
+      <div class="classifier-identity" id="classifier-identity" style="display:none">
+        <span class="identity-icon">&#128049;</span>
+        <span class="identity-label" id="identity-label"></span>
+        <span class="identity-votes" id="identity-votes"></span>
+        <span class="identity-conf" id="identity-conf"></span>
       </div>
 
       <!-- Current Detections -->
@@ -470,7 +505,6 @@
         {% for i, cat in cats %}
         <button class="btn btn-cat" onclick="captureAs('{{ cat }}')">{{ i }}: {{ cat }}</button>
         {% endfor %}
-        <button class="btn btn-cat" style="background:#1a1a3e;border-color:#333" onclick="captureAs('background')">BG: No Cat</button>
       </div>
 
       <!-- Auto-Capture Controls -->
@@ -516,7 +550,6 @@
         {% for i, cat in cats %}
         <button class="btn btn-cat" onclick="labelAs('{{ cat }}')">{{ i }}: {{ cat }}</button>
         {% endfor %}
-        <button class="btn btn-cat" style="background:#1a1a3e;border-color:#333" onclick="labelAs('background')">b: background</button>
         <button class="btn btn-delete" onclick="reviewDelete()">d: Delete</button>
       </div>
 
@@ -538,7 +571,6 @@
           {% for i, cat in cats %}
           <option value="{{ cat }}">{{ cat }}</option>
           {% endfor %}
-          <option value="background">background</option>
         </select>
         <button class="btn-sel" style="background:#2d6a4f;border-color:#52b788;color:#fff" onclick="batchLabel(document.getElementById('batch-label-select').value)">Apply Label</button>
         <span style="border-left:1px solid #555;height:18px;margin:0 6px"></span>
@@ -562,11 +594,6 @@
         <span class="count" id="count-{{ cat }}">0</span>
       </div>
       {% endfor %}
-      <div class="cat-stat">
-        <span class="name" style="color:#7a8aaa">background</span>
-        <div class="bar-bg"><div class="bar-fill" id="bar-background" style="width:0%;background:#2a2a4e"></div></div>
-        <span class="count" id="count-background">0</span>
-      </div>
       <div class="cat-stat" id="unlabeled-row">
         <span class="name" style="color:#ffb347">unlabeled</span>
         <div class="bar-bg"><div class="bar-fill" id="bar-unlabeled" style="width:0%;background:#5a3600"></div></div>
@@ -595,7 +622,6 @@
       {% for i, cat in cats %}
       <kbd>{{ i }}</kbd> {{ cat }}<br>
       {% endfor %}
-      <kbd>b</kbd> background<br>
       <kbd>d</kbd> Delete<br>
       <kbd>n</kbd>/<kbd>&rarr;</kbd> Next &nbsp; <kbd>p</kbd>/<kbd>&larr;</kbd> Prev
     </div>
@@ -614,7 +640,6 @@ const CATS = [{% for i, cat in cats %}"{{ cat }}"{% if not loop.last %}, {% endi
 const MIN_IMAGES = {{ min_images }};
 
 let activeTab = 'capture';
-let pipelineMode = 'default';
 let reviewDone = false;
 let lastLogHtml = '';
 let logAutoScroll = true;
@@ -650,6 +675,14 @@ function triggerFlash(id, cls) {
   el.classList.add('active');
 }
 
+// ── ROI drawing state ─────────────────────────────────────
+let roiDrawMode = false;
+let roiStart = null;
+let roiCurrent = null;
+let currentROI = null;
+let showROIOverlay = false;
+const SOURCE_W = 1920, SOURCE_H = 1080;
+
 // ── Live preview polling ──────────────────────────────────
 let previewTimer = null;
 let lastBlobUrl = null;
@@ -667,6 +700,10 @@ async function pollPreview() {
       document.getElementById('no-feed-msg').style.display = 'none';
       if (lastBlobUrl) URL.revokeObjectURL(lastBlobUrl);
       lastBlobUrl = url;
+      // Sync ROI canvas on first load
+      if (!feed._roiSynced) {
+        feed.onload = () => { syncCanvasSize(); feed._roiSynced = true; feed.onload = null; };
+      }
     }
   } catch(e) {}
   if (activeTab === 'capture') {
@@ -678,6 +715,242 @@ function startPreviewLoop() {
   if (previewTimer) clearTimeout(previewTimer);
   pollPreview();
   pollDetections();
+  pollClassifierIdentity();
+}
+
+// ── Classifier identity polling ────────────────────────────
+async function pollClassifierIdentity() {
+  if (activeTab !== 'capture') { setTimeout(pollClassifierIdentity, 1000); return; }
+  try {
+    const r = await fetch('/api/classifier/current');
+    if (r.ok) {
+      const data = await r.json();
+      const el = document.getElementById('classifier-identity');
+      const labelEl = document.getElementById('identity-label');
+      const confEl = document.getElementById('identity-conf');
+      const votesEl = document.getElementById('identity-votes');
+      const clfEnabled = document.getElementById('clf-enabled')?.checked;
+      if (data.error) {
+        if (!clfEnabled) {
+          // Stale error from previous run — hide when classifier is disabled
+          el.style.display = 'none';
+        } else {
+          // Classifier subprocess crashed or failed to start
+          labelEl.textContent = data.error;
+          labelEl.style.color = '#e63946';
+          el.style.borderColor = '#e63946';
+          confEl.textContent = '';
+          votesEl.textContent = '';
+          el.classList.remove('pending');
+          el.style.display = 'flex';
+        }
+      } else if (data.prediction) {
+        const name = data.confirmed_cat || data.prediction;
+        const color = DET_COLORS[name] || DET_DEFAULT_COLOR;
+        labelEl.textContent = name;
+        labelEl.style.color = color;
+        el.style.borderColor = color;
+        confEl.textContent = (data.confidence * 100).toFixed(0) + '%';
+        // Show vote progress
+        if (data.votes) {
+          const parts = Object.entries(data.votes)
+            .sort((a, b) => b[1] - a[1])
+            .map(([cat, n]) => cat + ':' + n);
+          votesEl.textContent = parts.join(' ') + ' / ' + (data.vote_window || 10);
+        } else {
+          votesEl.textContent = '';
+        }
+        el.classList.toggle('pending', !data.confirmed);
+        el.style.display = 'flex';
+      } else if (clfEnabled) {
+        // Classifier enabled but no prediction yet — show waiting state
+        labelEl.textContent = 'Waiting for detection in ROI...';
+        labelEl.style.color = '#8892b0';
+        el.style.borderColor = '#0f3460';
+        confEl.textContent = '';
+        votesEl.textContent = '';
+        el.classList.add('pending');
+        el.style.display = 'flex';
+      } else {
+        el.style.display = 'none';
+      }
+    }
+  } catch(e) {}
+  setTimeout(pollClassifierIdentity, 500);
+}
+
+// ── ROI drawing ───────────────────────────────────────────
+function syncCanvasSize() {
+  const img = document.getElementById('camera-feed');
+  const canvas = document.getElementById('roi-canvas');
+  if (!img || !canvas || img.style.display === 'none') return;
+  const rect = img.getBoundingClientRect();
+  canvas.width = rect.width;
+  canvas.height = rect.height;
+  canvas.style.width = rect.width + 'px';
+  canvas.style.height = rect.height + 'px';
+  drawROI();
+}
+window.addEventListener('resize', syncCanvasSize);
+
+function getDisplayToSourceScale() {
+  const img = document.getElementById('camera-feed');
+  const rect = img.getBoundingClientRect();
+  return { sx: SOURCE_W / rect.width, sy: SOURCE_H / rect.height };
+}
+
+function drawROI() {
+  const canvas = document.getElementById('roi-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Draw in-progress rectangle (yellow solid)
+  if (roiDrawMode && roiStart && roiCurrent) {
+    const x = Math.min(roiStart.x, roiCurrent.x);
+    const y = Math.min(roiStart.y, roiCurrent.y);
+    const w = Math.abs(roiCurrent.x - roiStart.x);
+    const h = Math.abs(roiCurrent.y - roiStart.y);
+    ctx.strokeStyle = '#ffb347';
+    ctx.lineWidth = 2;
+    ctx.fillStyle = 'rgba(255, 179, 71, 0.1)';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeRect(x, y, w, h);
+    return;
+  }
+
+  // Draw saved ROI (green dashed) — only when overlay toggled on
+  if (currentROI && showROIOverlay) {
+    const scale = getDisplayToSourceScale();
+    const [x1, y1, x2, y2] = currentROI;
+    ctx.strokeStyle = '#52b788';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.strokeRect(x1 / scale.sx, y1 / scale.sy, (x2 - x1) / scale.sx, (y2 - y1) / scale.sy);
+    ctx.setLineDash([]);
+    ctx.font = '11px monospace';
+    ctx.fillStyle = '#52b788';
+    ctx.fillText('Bowl ROI', x1 / scale.sx + 4, y1 / scale.sy + 14);
+  }
+}
+
+function toggleROIOverlay() {
+  showROIOverlay = !showROIOverlay;
+  const btn = document.getElementById('roi-show-btn');
+  btn.classList.toggle('active', showROIOverlay);
+  btn.textContent = showROIOverlay ? 'Hide ROI' : 'Show ROI';
+  drawROI();
+}
+
+function toggleROIDrawMode() {
+  roiDrawMode = !roiDrawMode;
+  const btn = document.getElementById('roi-draw-btn');
+  const wrapper = document.querySelector('.stream-wrapper');
+  if (roiDrawMode) {
+    btn.classList.add('active');
+    btn.textContent = 'Cancel';
+    wrapper.classList.add('roi-drawing');
+    syncCanvasSize();
+  } else {
+    btn.classList.remove('active');
+    btn.textContent = 'Set ROI';
+    wrapper.classList.remove('roi-drawing');
+    roiStart = null;
+    roiCurrent = null;
+    drawROI();
+  }
+}
+
+async function finishROIDraw() {
+  const scale = getDisplayToSourceScale();
+  const x1 = Math.round(Math.min(roiStart.x, roiCurrent.x) * scale.sx);
+  const y1 = Math.round(Math.min(roiStart.y, roiCurrent.y) * scale.sy);
+  const x2 = Math.round(Math.max(roiStart.x, roiCurrent.x) * scale.sx);
+  const y2 = Math.round(Math.max(roiStart.y, roiCurrent.y) * scale.sy);
+  const roi = [
+    Math.max(0, x1), Math.max(0, y1),
+    Math.min(SOURCE_W, x2), Math.min(SOURCE_H, y2),
+  ];
+  if (roi[2] - roi[0] < 50 || roi[3] - roi[1] < 50) {
+    roiStart = null; roiCurrent = null; drawROI();
+    return;
+  }
+  currentROI = roi;
+  localStorage.setItem('bowlROI', JSON.stringify(roi));
+  await fetch('/api/inference/settings', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ classifier: { bowl_roi: roi } }),
+  });
+  toggleROIDrawMode();
+  if (showROIOverlay) toggleROIOverlay();
+  updateROICoordsDisplay();
+}
+
+function updateROICoordsDisplay() {
+  const el = document.getElementById('roi-coords');
+  if (currentROI) {
+    el.textContent = '[' + currentROI.join(', ') + ']';
+  } else {
+    el.textContent = 'Not set';
+  }
+}
+
+function drawCrosshairs(ctx, mx, my, canvas) {
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath();
+  ctx.moveTo(mx, 0); ctx.lineTo(mx, canvas.height);
+  ctx.moveTo(0, my); ctx.lineTo(canvas.width, my);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+function initROIDrawing() {
+  const canvas = document.getElementById('roi-canvas');
+  // Hover crosshairs (only in draw mode, not during drag)
+  canvas.addEventListener('mousemove', (e) => {
+    if (!roiDrawMode || roiStart) return;
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    drawROI();
+    drawCrosshairs(canvas.getContext('2d'), mx, my, canvas);
+  });
+  canvas.addEventListener('mouseleave', () => {
+    if (!roiDrawMode || roiStart) return;
+    drawROI();
+  });
+  // Drag start
+  canvas.addEventListener('mousedown', (e) => {
+    if (!roiDrawMode) return;
+    const rect = canvas.getBoundingClientRect();
+    roiStart = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    roiCurrent = { ...roiStart };
+  });
+  // Drag move (on document — works outside canvas)
+  document.addEventListener('mousemove', (e) => {
+    if (!roiDrawMode || !roiStart) return;
+    const canvas = document.getElementById('roi-canvas');
+    const rect = canvas.getBoundingClientRect();
+    roiCurrent = {
+      x: Math.max(0, Math.min(canvas.width, e.clientX - rect.left)),
+      y: Math.max(0, Math.min(canvas.height, e.clientY - rect.top)),
+    };
+    drawROI();
+    drawCrosshairs(canvas.getContext('2d'), roiCurrent.x, roiCurrent.y, canvas);
+  });
+  // Drag end (on document)
+  document.addEventListener('mouseup', (e) => {
+    if (!roiDrawMode || !roiStart) return;
+    const canvas = document.getElementById('roi-canvas');
+    const rect = canvas.getBoundingClientRect();
+    roiCurrent = {
+      x: Math.max(0, Math.min(canvas.width, e.clientX - rect.left)),
+      y: Math.max(0, Math.min(canvas.height, e.clientY - rect.top)),
+    };
+    finishROIDraw();
+  });
 }
 
 // ── Detection pills polling ────────────────────────────────
@@ -820,44 +1093,11 @@ function closeLogBrowser() {
   document.getElementById('log-modal').style.display = 'none';
 }
 
-async function switchDetectionMode(mode) {
-  if (mode === pipelineMode) return;
-
-  document.getElementById('inf-status-text').textContent = 'Switching...';
-  document.getElementById('inf-status-dot').className = 'status-dot stopped';
-
-  try {
-    let endpoint;
-    if (mode === 'inference') {
-      await saveInferenceSettings();
-      endpoint = '/api/inference/start';
-    } else {
-      endpoint = '/api/inference/stop';
-    }
-
-    const r = await fetch(endpoint, {method: 'POST'});
-    const d = await r.json();
-    if (d.status === 'ok') {
-      pipelineMode = mode;
-    } else {
-      alert('Mode switch failed: ' + (d.message || 'unknown'));
-    }
-  } catch(e) {
-    console.error(e);
-  }
-  updateModeUI();
-  updateCaptureLabelsForMode();
-}
-
 function updateModeUI() {
-  document.getElementById('mode-default').classList.toggle('active', pipelineMode === 'default');
-  document.getElementById('mode-inference').classList.toggle('active', pipelineMode === 'inference');
-  document.getElementById('inf-settings').style.display = pipelineMode === 'inference' ? 'block' : 'none';
-
   const dot = document.getElementById('inf-status-dot');
   const text = document.getElementById('inf-status-text');
   dot.className = 'status-dot running';
-  text.textContent = pipelineMode === 'inference' ? 'Running (Fine-tuned)' : 'Running (COCO)';
+  text.textContent = 'Running (COCO)';
 }
 
 // ── Capture functions ──────────────────────────────────────
@@ -1194,59 +1434,6 @@ async function gotoThumbnail(originalIndex) {
   } catch(e) { console.error(e); }
 }
 
-// ── Inference Settings ─────────────────────────────────────
-async function loadInferenceSettings() {
-  try {
-    const [modelsResp, settingsResp] = await Promise.all([
-      fetch('/api/inference/models'),
-      fetch('/api/inference/settings'),
-    ]);
-    const models = await modelsResp.json();
-    const settings = await settingsResp.json();
-
-    // Populate model dropdown
-    const sel = document.getElementById('inf-model');
-    sel.innerHTML = '';
-    if (models.models.length === 0) {
-      sel.innerHTML = '<option value="">No models found</option>';
-    } else {
-      sel.innerHTML = '<option value="">-- select model --</option>';
-      models.models.forEach(m => {
-        const opt = document.createElement('option');
-        opt.value = m; opt.textContent = m;
-        if (m === settings.deployment.hef_path) opt.selected = true;
-        sel.appendChild(opt);
-      });
-    }
-
-    // Populate settings
-    document.getElementById('inf-feeding').checked = (settings.feeding || {}).enabled || false;
-  } catch(e) { console.error(e); }
-}
-
-async function saveInferenceSettings() {
-  const model = document.getElementById('inf-model').value;
-  const feedingEnabled = document.getElementById('inf-feeding').checked;
-  await fetch('/api/inference/settings', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({
-      deployment: { hef_path: model, labels_json: model ? 'deploy/labels.json' : '' },
-      feeding: { enabled: feedingEnabled },
-    })
-  });
-}
-
-async function onModelChange() {
-  if (pipelineMode !== 'inference') return;
-  await saveInferenceSettings();
-  const r = await fetch('/api/inference/start', {method: 'POST'});
-  const d = await r.json();
-  if (d.status !== 'ok') {
-    alert('Model switch failed: ' + (d.message || 'unknown'));
-  }
-}
-
 // ── Detection Capture Settings ─────────────────────────────
 async function loadCaptureSettings() {
   try {
@@ -1277,23 +1464,49 @@ async function saveCaptureSettings() {
   } catch(e) { console.error(e); }
 }
 
-// ── Mode-aware capture label defaults ─────────────────────
-async function updateCaptureLabelsForMode() {
-  const input = document.getElementById('cap-labels');
-  if (pipelineMode === 'inference') {
-    // Cache current COCO-mode labels before overwriting
-    localStorage.setItem('cocoCapLabels', input.value);
-    // Fetch fine-tuned model labels
-    try {
-      const r = await fetch('/api/inference/labels');
-      const d = await r.json();
-      input.value = (d.labels || []).join(', ');
-    } catch(e) { console.error(e); }
-  } else {
-    // Restore cached COCO labels, or default to "cat"
-    input.value = localStorage.getItem('cocoCapLabels') || 'cat';
-  }
-  saveCaptureSettings();
+// ── Classifier settings ────────────────────────────────────
+async function loadClassifierSettings() {
+  try {
+    const resp = await fetch('/api/inference/settings');
+    const settings = await resp.json();
+    const clf = settings.classifier || {};
+    document.getElementById('clf-enabled').checked = clf.enabled || false;
+    document.getElementById('clf-save-crops').checked = clf.save_crops_for_labeling || false;
+    document.getElementById('clf-confidence').value = clf.confidence_threshold || 0.85;
+    document.getElementById('clf-roi-overlap').value = Math.round((clf.roi_overlap_threshold || 0.01) * 100);
+    _lastClfEnabled = clf.enabled || false;
+    currentROI = clf.bowl_roi || JSON.parse(localStorage.getItem('bowlROI') || 'null');
+    updateROICoordsDisplay();
+    syncCanvasSize();
+  } catch(e) { console.error(e); }
+}
+
+let _lastClfEnabled = null;
+
+async function saveClassifierSettings() {
+  const enabled = document.getElementById('clf-enabled').checked;
+  const saveCrops = document.getElementById('clf-save-crops').checked;
+  const confidence = parseFloat(document.getElementById('clf-confidence').value) || 0.85;
+  const roiOverlap = (parseInt(document.getElementById('clf-roi-overlap').value) || 1) / 100;
+  try {
+    await fetch('/api/inference/settings', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        classifier: {
+          enabled: enabled,
+          save_crops_for_labeling: saveCrops,
+          confidence_threshold: confidence,
+          roi_overlap_threshold: roiOverlap,
+        }
+      })
+    });
+    // Auto-restart pipeline when enabled state changes
+    if (_lastClfEnabled !== null && enabled !== _lastClfEnabled) {
+      await fetch('/api/pipeline/restart', { method: 'POST' });
+    }
+    _lastClfEnabled = enabled;
+  } catch(e) { console.error(e); }
 }
 
 // ── Status polling ─────────────────────────────────────────
@@ -1328,15 +1541,10 @@ async function pollStatus() {
       document.getElementById('count-unlabeled').style.color = '';
     }
     topParts.push('unlabeled:' + uc);
-    const bc = counts.background || 0;
-    document.getElementById('count-background').textContent = bc;
     document.getElementById('top-counts').innerHTML = topParts.map(s => '<span>' + s + '</span>').join('');
 
     // Pipeline status
     if (d.pipeline) {
-      const wasMode = pipelineMode;
-      pipelineMode = d.pipeline.mode || 'default';
-      if (wasMode !== pipelineMode) updateModeUI();
 
       // Log output — skip DOM update if user has text selected (preserves copy ability)
       if (d.pipeline.output) {
@@ -1362,7 +1570,7 @@ async function pollStatus() {
       const ri = d.pipeline.restart_info;
       if (d.pipeline.running) {
         dot.className = 'status-dot running';
-        text.textContent = pipelineMode === 'inference' ? 'Running (Fine-tuned)' : 'Running (COCO)';
+        text.textContent = 'Running (COCO)';
       } else if (ri && ri.exhausted) {
         dot.className = 'status-dot stopped';
         text.textContent = 'Crashed (restart failed after ' + ri.count + ' attempts)';
@@ -1374,9 +1582,20 @@ async function pollStatus() {
         text.textContent = 'Pipeline stopped';
       }
 
+    // Classifier model status
+    if (d.classifier) {
+      const statusEl = document.getElementById('clf-model-status');
+      if (d.classifier.model_exists) {
+        statusEl.textContent = d.classifier.enabled ? 'Active' : 'Model ready';
+        statusEl.style.color = d.classifier.enabled ? '#52b788' : '#8892b0';
+      } else {
+        statusEl.textContent = 'No model found';
+        statusEl.style.color = '#e63946';
+      }
+    }
+
       // Sidebar
-      document.getElementById('sidebar-mode').textContent =
-        pipelineMode === 'inference' ? 'INFERENCE' : 'DETECTION';
+      document.getElementById('sidebar-mode').textContent = 'DETECTION';
       document.getElementById('sidebar-pipeline').textContent =
         d.pipeline.running ? 'Running' : (ri && !ri.exhausted ? 'Restarting...' : 'Stopped');
     }
@@ -1405,7 +1624,6 @@ document.addEventListener('keydown', (e) => {
 
   if (activeTab === 'review') {
     switch (e.key) {
-      case 'b': labelAs('background'); break;
       case 'd': reviewDelete(); break;
       case 'n': case 'ArrowRight': reviewSkip(); break;
       case 'p': case 'ArrowLeft': reviewPrev(); break;
@@ -1415,13 +1633,15 @@ document.addEventListener('keydown', (e) => {
 
 // ── Init ───────────────────────────────────────────────────
 startPreviewLoop();
-loadInferenceSettings();
 loadCaptureSettings().then(() => {
-  // If labels field is empty after loading config, apply mode-aware defaults
+  // If labels field is empty after loading config, default to "cat"
   if (!document.getElementById('cap-labels').value.trim()) {
-    updateCaptureLabelsForMode();
+    document.getElementById('cap-labels').value = 'cat';
+    saveCaptureSettings();
   }
 });
+loadClassifierSettings();
+initROIDrawing();
 // Restore cached ignore filter
 const cachedIgnore = localStorage.getItem('ignoreLabels');
 if (cachedIgnore) {

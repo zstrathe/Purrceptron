@@ -16,6 +16,7 @@ import collections
 import json
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -31,7 +32,7 @@ from flask import Flask, Response, jsonify, render_template, request, send_file
 # ---------------------------------------------------------------------------
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from utils import PROJECT_ROOT, add_common_args, get_config_with_args, load_config, resolve_path
+from utils import PROJECT_ROOT, add_common_args, load_config, resolve_path
 from utils.display import print_info, print_success, print_error, print_warning, print_header
 
 from collect.label_review import LabelReviewApp
@@ -95,12 +96,7 @@ def _auto_capture_loop(state: AutoCaptureState, pipeline_mgr: 'DetectionPipeline
 # ═══════════════════════════════════════════════════════════════════════════
 
 class DetectionPipelineManager:
-    """Manages the always-running detect.py subprocess.
-
-    Two modes:
-    - "default": COCO yolov8m HEF, filter_classes=["cat"], labels=coco_labels.json
-    - "inference": fine-tuned cat_detector.hef, filter_classes=[], labels=labels.json
-    """
+    """Manages the always-running detect.py subprocess in default/COCO mode."""
 
     PREVIEW_PATH = "/tmp/cat_detection_preview.jpg"
 
@@ -113,11 +109,8 @@ class DetectionPipelineManager:
         self._output_lines: collections.deque[str] = collections.deque(maxlen=100)
         self._reader_thread: threading.Thread | None = None
         self._lock = threading.Lock()
-        self.mode: str = "default"  # "default" or "inference"
+        self.mode: str = "default"
         self._config: dict | None = None
-        # Original inference paths — preserved before mode switching can overwrite them
-        self._inference_hef = "models/cat_detector.hef"
-        self._inference_labels = "deploy/labels.json"
         # Watchdog auto-restart state
         self._intentional_stop = False
         self._watchdog_thread: threading.Thread | None = None
@@ -128,20 +121,6 @@ class DetectionPipelineManager:
 
     def set_config(self, config: dict) -> None:
         self._config = config
-        # Preserve original inference paths before mode switching can contaminate them
-        deploy = config.get("deployment", {})
-        self._inference_hef = deploy.get("hef_path") or "models/cat_detector.hef"
-        self._inference_labels = deploy.get("labels_json") or "deploy/labels.json"
-
-    def scan_models(self) -> list[str]:
-        """Scan models/ for .hef files, return relative paths."""
-        models_dir = self.project_root / "models"
-        if not models_dir.is_dir():
-            return []
-        return sorted(
-            str(p.relative_to(self.project_root))
-            for p in models_dir.glob("*.hef")
-        )
 
     def is_running(self) -> bool:
         with self._lock:
@@ -149,25 +128,8 @@ class DetectionPipelineManager:
                 return False
             return self.process.poll() is None
 
-    def _write_mode_config(self, mode: str) -> None:
-        """Update project.yaml with model paths for the given mode."""
-        if not self._config:
-            return
-        yaml_path = self.config_path or (self.project_root / "configs" / "project.yaml")
-        with open(yaml_path) as f:
-            yaml_cfg = yaml.safe_load(f)
-        if mode == "default":
-            yaml_cfg["deployment"]["hef_path"] = ""
-            yaml_cfg["deployment"]["labels_json"] = ""
-            yaml_cfg["deployment"]["filter_classes"] = []
-        else:  # "inference"
-            # hef_path and labels_json already set by saveInferenceSettings
-            yaml_cfg["deployment"]["filter_classes"] = []
-        with open(yaml_path, "w") as f:
-            yaml.dump(yaml_cfg, f, default_flow_style=False, sort_keys=False)
-
-    def start(self, mode: str = "default") -> dict:
-        """Start detect.py subprocess in the given mode.
+    def start(self) -> dict:
+        """Start detect.py subprocess in default/COCO mode.
 
         Launches detect.py inside the hailo-apps environment by sourcing
         setup_env.sh first, which activates the hailo-apps venv and sets
@@ -176,10 +138,8 @@ class DetectionPipelineManager:
         if self.is_running():
             return {"status": "error", "message": "Already running"}
 
-        self.mode = mode
         self._intentional_stop = False
         self._restart_info = None
-        self._write_mode_config(mode)
 
         # Build the detect.py command with absolute paths.
         # IMPORTANT: cwd must stay at hailo-apps dir — hailo-apps resolves
@@ -223,7 +183,7 @@ class DetectionPipelineManager:
         self._close_log_file()
         self._log_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self._log_file = open(self._log_dir / f"{mode}_{ts}.log", "w")
+        self._log_file = open(self._log_dir / f"default_{ts}.log", "w")
 
         self._reader_thread = threading.Thread(
             target=self._read_output, daemon=True
@@ -236,7 +196,7 @@ class DetectionPipelineManager:
         )
         self._watchdog_thread.start()
 
-        return {"status": "ok", "pid": self.process.pid, "mode": mode}
+        return {"status": "ok", "pid": self.process.pid, "mode": "default"}
 
     def stop(self) -> dict:
         """Stop the detect.py subprocess."""
@@ -264,6 +224,14 @@ class DetectionPipelineManager:
             self._close_log_file()
             return {"status": "ok"}
 
+    def restart(self) -> dict:
+        """Stop and restart the pipeline with a delay for device release."""
+        self.stop()
+        if self._watchdog_thread and self._watchdog_thread.is_alive():
+            self._watchdog_thread.join(timeout=3)
+        time.sleep(3)  # kernel needs time to release /dev/video0 and Hailo NPU
+        return self.start()
+
     def _close_log_file(self) -> None:
         if self._log_file and not self._log_file.closed:
             try:
@@ -285,13 +253,6 @@ class DetectionPipelineManager:
                 "modified": st.st_mtime,
             })
         return logs
-
-    def switch_mode(self, new_mode: str) -> dict:
-        """Stop detect.py, update config for new mode, restart."""
-        self.stop()
-        # Brief pause for camera release
-        time.sleep(1)
-        return self.start(mode=new_mode)
 
     def send_command(self, cmd: dict) -> bool:
         """Send a JSON command to detect.py via stdin pipe."""
@@ -317,7 +278,6 @@ class DetectionPipelineManager:
             "mode": self.mode,
             "pid": self.process.pid if self.process and self.is_running() else None,
             "output": self.get_output(),
-            "models": self.scan_models(),
         }
         if self._restart_info:
             status["restart_info"] = self._restart_info
@@ -346,11 +306,10 @@ class DetectionPipelineManager:
                 return
             self.process = None
             self._restart_info = None
-            result = self.start(mode=self.mode)
+            result = self.start()
             if result["status"] != "ok":
                 self._restart_info = {"exhausted": True, "count": restarts}
-                return
-            backoff = min(backoff * 2, 30)
+            return  # start() created a new watchdog; exit this one
         self._restart_info = {"exhausted": True, "count": restarts}
 
     def _read_output(self) -> None:
@@ -377,16 +336,51 @@ class DetectionPipelineManager:
 # ═══════════════════════════════════════════════════════════════════════════
 
 class ConfigManager:
-    """Read/write inference-related settings in project.yaml."""
+    """Read/write inference-related settings.
 
-    def __init__(self, config_path: Path):
+    Reads from project.yaml (shared defaults) merged with runtime.yaml
+    (Pi-local overrides).  Writes only to runtime.yaml so that project.yaml
+    can be synced freely without overwriting Pi-specific state like ROI,
+    enabled flags, etc.
+    """
+
+    # Keys that get saved to runtime.yaml when changed via the dashboard UI.
+    _RUNTIME_KEYS: dict[str, tuple[str, ...]] = {
+        "deployment": ("hef_path", "labels_json", "track_all", "filter_classes"),
+        "detection_capture": ("enabled", "unlabeled_classes", "min_interval_seconds",
+                              "max_captures_per_session", "filter_labels"),
+        "feeding": ("enabled", "cooldown_seconds", "min_detection_frames"),
+        "classifier": ("enabled", "save_crops_for_labeling",
+                        "confidence_threshold", "stability_frames",
+                        "classify_interval_seconds", "bowl_roi",
+                        "roi_overlap_threshold"),
+    }
+
+    def __init__(self, config_path: Path, runtime_path: Path | None = None):
         self.config_path = config_path
+        self.runtime_path = runtime_path or config_path.parent / "runtime.yaml"
         self._lock = threading.Lock()
 
+    def _read_runtime(self) -> dict:
+        """Read runtime overrides (empty dict if file doesn't exist)."""
+        if self.runtime_path.exists():
+            with open(self.runtime_path) as f:
+                return yaml.safe_load(f) or {}
+        return {}
+
     def read(self) -> dict:
+        """Return project config with runtime overrides merged in."""
         with self._lock:
             with open(self.config_path) as f:
-                return yaml.safe_load(f)
+                cfg = yaml.safe_load(f)
+            runtime = self._read_runtime()
+            # Deep-merge runtime overrides into config
+            for section, overrides in runtime.items():
+                if isinstance(overrides, dict) and section in cfg and isinstance(cfg[section], dict):
+                    cfg[section].update(overrides)
+                else:
+                    cfg[section] = overrides
+            return cfg
 
     def get_inference_settings(self) -> dict:
         """Return the subset of config relevant to inference UI controls."""
@@ -395,35 +389,24 @@ class ConfigManager:
             "deployment": cfg.get("deployment", {}),
             "detection_capture": cfg.get("detection_capture", {}),
             "feeding": cfg.get("feeding", {}),
+            "classifier": cfg.get("classifier", {}),
         }
 
     def update_inference_settings(self, settings: dict) -> None:
-        """Update inference-related fields in project.yaml."""
+        """Update inference-related fields in runtime.yaml only."""
         with self._lock:
-            with open(self.config_path) as f:
-                cfg = yaml.safe_load(f)
+            runtime = self._read_runtime()
 
-            # Update deployment section
-            if "deployment" in settings:
-                for key in ("hef_path", "labels_json", "track_all", "filter_classes"):
-                    if key in settings["deployment"]:
-                        cfg["deployment"][key] = settings["deployment"][key]
+            for section, keys in self._RUNTIME_KEYS.items():
+                if section in settings:
+                    runtime.setdefault(section, {})
+                    for key in keys:
+                        if key in settings[section]:
+                            runtime[section][key] = settings[section][key]
 
-            # Update detection_capture section
-            if "detection_capture" in settings:
-                for key in ("enabled", "unlabeled_classes", "min_interval_seconds",
-                            "max_captures_per_session", "filter_labels"):
-                    if key in settings["detection_capture"]:
-                        cfg["detection_capture"][key] = settings["detection_capture"][key]
-
-            # Update feeding section
-            if "feeding" in settings:
-                for key in ("enabled", "cooldown_seconds", "min_detection_frames"):
-                    if key in settings["feeding"]:
-                        cfg["feeding"][key] = settings["feeding"][key]
-
-            with open(self.config_path, "w") as f:
-                yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+            self.runtime_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.runtime_path, "w") as f:
+                yaml.dump(runtime, f, default_flow_style=False, sort_keys=False)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -493,7 +476,7 @@ def create_app(
     # ── Capture API (sends command to detect.py via stdin) ───────
     @flask_app.route("/api/capture/<cat_name>", methods=["POST"])
     def api_capture(cat_name):
-        if cat_name not in cats and cat_name not in ("unlabeled", "background"):
+        if cat_name not in cats and cat_name != "unlabeled":
             return jsonify({"status": "error", "message": f"Unknown cat: {cat_name}"}), 400
         if not pipeline_mgr.is_running():
             return jsonify({"status": "error", "message": "Detection pipeline not running"}), 503
@@ -538,9 +521,19 @@ def create_app(
             counts[cat] = len(list(cat_dir.glob("*.jpg"))) if cat_dir.is_dir() else 0
         unlabeled_dir = data_dir / "unlabeled"
         counts["unlabeled"] = len(list(unlabeled_dir.glob("*.jpg"))) if unlabeled_dir.is_dir() else 0
-        bg_dir = data_dir / "background"
-        counts["background"] = len(list(bg_dir.glob("*.jpg"))) if bg_dir.is_dir() else 0
         result["image_counts"] = counts
+
+        # Classifier state
+        cfg = config_mgr.read()
+        classifier_cfg = cfg.get("classifier", {})
+        model_path = resolve_path(
+            classifier_cfg.get("model_path", "models/cat_classifier.pt"),
+            PROJECT_ROOT,
+        )
+        result["classifier"] = {
+            "enabled": classifier_cfg.get("enabled", False),
+            "model_exists": model_path.is_file(),
+        }
 
         # Review state
         result["review"] = {
@@ -660,14 +653,14 @@ def create_app(
         result["current"] = reviewer.get_current()
         return jsonify(result)
 
-    # ── Inference API (mode switching) ────────────────────────────
+    # ── Detection Pipeline API ─────────────────────────────────────
     @flask_app.route("/api/inference/status")
     def api_inference_status():
         return jsonify(pipeline_mgr.get_status())
 
-    @flask_app.route("/api/inference/models")
-    def api_inference_models():
-        return jsonify({"models": pipeline_mgr.scan_models()})
+    @flask_app.route("/api/pipeline/restart", methods=["POST"])
+    def api_pipeline_restart():
+        return jsonify(pipeline_mgr.restart())
 
     @flask_app.route("/api/inference/settings", methods=["GET"])
     def api_inference_settings_get():
@@ -687,31 +680,50 @@ def create_app(
                 "enabled": dc.get("enabled", False),
                 "filter_labels": dc.get("filter_labels", []),
             })
+        # Push bowl_roi changes live to classifier gate
+        if "classifier" in data and "bowl_roi" in data["classifier"]:
+            pipeline_mgr.send_command({
+                "cmd": "set_bowl_roi",
+                "bowl_roi": data["classifier"]["bowl_roi"],
+            })
+        # Push ROI overlap threshold live
+        if "classifier" in data and "roi_overlap_threshold" in data["classifier"]:
+            pipeline_mgr.send_command({
+                "cmd": "set_roi_overlap_threshold",
+                "roi_overlap_threshold": data["classifier"]["roi_overlap_threshold"],
+            })
         return jsonify({"status": "ok"})
 
-    @flask_app.route("/api/inference/labels")
-    def api_inference_labels():
-        """Return the labels list from the currently configured labels JSON."""
+    # ── Classifier ─────────────────────────────────────────────────
+    @flask_app.route("/api/classifier/current")
+    def api_classifier_current():
+        """Return live classifier status from the status file."""
+        status_path = Path("/tmp/cat_classifier_status.json")
+        if not status_path.is_file():
+            return jsonify({"prediction": None})
+        try:
+            with open(status_path) as f:
+                return jsonify(json.load(f))
+        except (json.JSONDecodeError, OSError):
+            return jsonify({"prediction": None})
+
+    @flask_app.route("/api/classifier/events")
+    def api_classifier_events():
         cfg = config_mgr.read()
-        labels_path = cfg.get("deployment", {}).get("labels_json", "")
-        full_path = project_root / labels_path
-        if full_path.exists():
-            with open(full_path) as f:
-                data = json.load(f)
-            return jsonify({"labels": data.get("labels", [])})
-        return jsonify({"labels": []})
-
-    @flask_app.route("/api/inference/start", methods=["POST"])
-    def api_inference_start():
-        """Switch to inference mode (fine-tuned model)."""
-        result = pipeline_mgr.switch_mode("inference")
-        return jsonify(result)
-
-    @flask_app.route("/api/inference/stop", methods=["POST"])
-    def api_inference_stop():
-        """Switch back to default mode (COCO model)."""
-        result = pipeline_mgr.switch_mode("default")
-        return jsonify(result)
+        db_path = resolve_path(
+            cfg.get("classifier", {}).get("db_path", "data/classifier_log.db"),
+            PROJECT_ROOT,
+        )
+        if not db_path.is_file():
+            return jsonify({"events": []})
+        limit = request.args.get("limit", 50, type=int)
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT * FROM classifier_events ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return jsonify({"events": [dict(r) for r in rows]})
 
     # ── Logs ───────────────────────────────────────────────────────
     @flask_app.route("/api/logs")
@@ -753,7 +765,10 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    config = get_config_with_args(args)
+    # Load base config from project.yaml, then merge runtime.yaml overrides
+    yaml_path = Path(args.config) if args.config else PROJECT_ROOT / "configs" / "project.yaml"
+    config_mgr = ConfigManager(yaml_path)
+    config = config_mgr.read()
 
     cats: list[str] = config["cats"]
     web_cfg = config["web_ui"]
@@ -781,9 +796,11 @@ def main() -> None:
     config_path = args.config if args.config else None
     deploy_cfg = config.get("deployment", {})
 
-    # Resolve hailo-apps directory (expand ~ to home dir)
-    hailo_apps_dir_str = deploy_cfg.get("hailo_apps_dir", "~/hailo-apps")
+    # Resolve hailo-apps directory (expand ~ and resolve relative to project root)
+    hailo_apps_dir_str = deploy_cfg.get("hailo_apps_dir", "./hailo-apps")
     hailo_apps_dir = Path(os.path.expanduser(hailo_apps_dir_str))
+    if not hailo_apps_dir.is_absolute():
+        hailo_apps_dir = PROJECT_ROOT / hailo_apps_dir
     if not (hailo_apps_dir / "setup_env.sh").exists():
         print_warning(f"hailo-apps setup_env.sh not found at {hailo_apps_dir}/setup_env.sh")
         print_warning("Detection pipeline may fail. Install hailo-apps or set deployment.hailo_apps_dir in project.yaml")
@@ -800,15 +817,11 @@ def main() -> None:
     )
     auto_thread.start()
 
-    # Config manager
-    yaml_path = args.config if args.config else PROJECT_ROOT / "configs" / "project.yaml"
-    config_mgr = ConfigManager(yaml_path)
-
-    # Start detection pipeline in default mode (unless --no-camera)
+    # Start detection pipeline (unless --no-camera)
     if not args.no_camera:
-        result = pipeline_mgr.switch_mode("default")
+        result = pipeline_mgr.start()
         if result["status"] == "ok":
-            print_success(f"Detection pipeline started (default/COCO mode), PID: {result['pid']}")
+            print_success(f"Detection pipeline started (COCO mode), PID: {result['pid']}")
         else:
             print_warning(f"Failed to start detection pipeline: {result.get('message', '?')}")
             print_warning("Running in review-only mode")
@@ -821,8 +834,6 @@ def main() -> None:
 
     signal.signal(signal.SIGINT, shutdown)
 
-    models = pipeline_mgr.scan_models()
-    print_info(f"Models found: {len(models)}" + (f" ({', '.join(models)})" if models else ""))
     print_info(f"Review images: {reviewer.total()} ({reviewer.unreviewed_count()} unreviewed)")
     print_success(f"Dashboard: http://{host}:{port}")
 

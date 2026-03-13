@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import csv
+import json
 import queue
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
@@ -111,10 +112,8 @@ class DetectionCapturer:
         self._session_capture_count: dict[str, int] = {cat: 0 for cat in cats}
         self._active_session_ids: dict[str, str | None] = {cat: None for cat in cats}
 
-        # Async save queue
-        self._queue: queue.Queue[tuple[np.ndarray, Path, int] | None] = queue.Queue(
-            maxsize=queue_size
-        )
+        # Async save queue: (frame, filepath, quality, detections, ts_iso, session_id)
+        self._queue: queue.Queue[tuple | None] = queue.Queue(maxsize=queue_size)
         self._thread = threading.Thread(target=self._save_loop, daemon=True)
         self._lock = threading.Lock()
 
@@ -151,10 +150,13 @@ class DetectionCapturer:
         cat_name: str,
         frame: np.ndarray,
         session_id: str | None = None,
+        detections: list[dict] | None = None,
     ) -> bool:
         """Attempt to capture a frame for the given cat.
 
         Returns True if the frame was enqueued for saving, False if throttled/limited.
+        If detections is provided, a JSON sidecar is written alongside the JPEG with
+        normalized bounding box coordinates of the triggering detections.
         """
         now = time.time()
         with self._lock:
@@ -179,12 +181,14 @@ class DetectionCapturer:
 
             # Build filename and path
             ts = datetime.now()
+            ts_iso = datetime.now(timezone.utc).isoformat()
             filename = f"{cat_name}_{ts.strftime('%Y%m%d_%H%M%S_%f')[:-3]}.jpg"
             filepath = self.output_dir / cat_name / filename
 
             # Enqueue (non-blocking: drop frame if queue full)
             try:
-                self._queue.put_nowait((frame, filepath, self.jpeg_quality))
+                self._queue.put_nowait((frame, filepath, self.jpeg_quality,
+                                        detections, ts_iso, session_id or ""))
             except queue.Full:
                 return False
 
@@ -211,15 +215,31 @@ class DetectionCapturer:
             self._active_session_ids[cat_name] = None
 
     def _save_loop(self) -> None:
-        """Background thread: dequeue frames and write JPEGs."""
+        """Background thread: dequeue frames, write JPEGs and optional JSON sidecars."""
         while True:
             item = self._queue.get()
             if item is None:
                 break
-            frame, filepath, quality = item
+            frame, filepath, quality, detections, ts_iso, session_id = item
             try:
                 filepath.parent.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(filepath), frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+                if detections is not None:
+                    sidecar = {
+                        "timestamp": ts_iso,
+                        "session_id": session_id,
+                        "image_size": [frame.shape[1], frame.shape[0]],
+                        "detections": [
+                            {
+                                "label": d["label"],
+                                "confidence": round(float(d["confidence"]), 4),
+                                "bbox_norm": [round(float(v), 6) for v in d["bbox_norm"]],
+                            }
+                            for d in detections
+                        ],
+                    }
+                    with open(filepath.with_suffix(".json"), "w") as f:
+                        json.dump(sidecar, f)
             except Exception as exc:
                 print_error(f"Detection capture save failed {filepath.name}: {exc}")
             self._queue.task_done()

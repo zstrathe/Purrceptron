@@ -35,11 +35,22 @@ def resolve_path(path_str: str, root: Path) -> Path:
 
 
 def load_config(config_path: Path | None = None) -> dict[str, Any]:
-    """Load and return the project YAML config as a plain dict (no path resolution)."""
+    """Load project YAML config, merging any runtime.yaml overrides."""
     if config_path is None:
         config_path = PROJECT_ROOT / "configs" / "project.yaml"
     with open(config_path) as f:
-        return yaml.safe_load(f)
+        cfg = yaml.safe_load(f)
+    # Merge runtime overrides if present (Pi-only file written by dashboard)
+    runtime_path = config_path.parent / "runtime.yaml"
+    if runtime_path.exists():
+        with open(runtime_path) as f:
+            runtime = yaml.safe_load(f) or {}
+        for section, overrides in runtime.items():
+            if isinstance(overrides, dict) and section in cfg and isinstance(cfg[section], dict):
+                cfg[section].update(overrides)
+            else:
+                cfg[section] = overrides
+    return cfg
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
