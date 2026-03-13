@@ -36,7 +36,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from utils import PROJECT_ROOT, get_config_with_args, load_config, resolve_path, add_common_args
+from utils import PROJECT_ROOT, get_config_with_args, load_config, resolve_path, add_common_args, get_cat_colors_bgr
 from utils.display import print_info, print_error, print_success, print_warning
 
 # Hailo imports — only available on the Raspberry Pi
@@ -371,12 +371,10 @@ class ClassifierGate:
 # Bounding Box Drawing
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Color palette for different labels (BGR)
-_BBOX_COLORS = {
-    "cat":     (0, 165, 255),   # orange
-    "Cat3":  (0, 255, 0),     # green
-    "Cat1":  (255, 100, 100), # blue
-    "Cat2":   (0, 200, 255),   # yellow
+# Color palette for different labels (BGR).
+# "cat" is a fixed COCO label; per-cat colors are added at startup from config.
+_BBOX_COLORS: dict[str, tuple[int, int, int]] = {
+    "cat": (0, 165, 255),   # orange
 }
 _BBOX_DEFAULT_COLOR = (200, 200, 200)
 
@@ -788,6 +786,9 @@ def main():
     capture_cfg = cfg.get("detection_capture", {})
     feeding_cfg = cfg.get("feeding", {})
     web_cfg = cfg.get("web_ui", {})
+
+    # Populate per-cat bbox colors from config
+    _BBOX_COLORS.update(get_cat_colors_bgr(cfg.get("cats", [])))
 
     # Build Hailo sys.argv from config; CLI args in remaining_argv override.
     # If model/labels are empty or files don't exist, omit the flags so

@@ -66,3 +66,28 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
 def get_config_with_args(args: argparse.Namespace) -> dict[str, Any]:
     """Convenience wrapper: load config using the ``--config`` arg if provided."""
     return load_config(args.config)
+
+
+# ── Cat color palette ─────────────────────────────────────────────────────
+# Distinguishable colors assigned to cats by index.  Hex (for JS/HTML) and
+# BGR (for OpenCV drawing) variants.
+
+CAT_COLOR_PALETTE_HEX = ["#52b788", "#6495ED", "#FFD700", "#FF6B6B", "#9B59B6", "#E67E22"]
+CAT_COLOR_PALETTE_BGR = [
+    (136, 183, 82),   # #52b788
+    (237, 149, 100),  # #6495ED
+    (0, 215, 255),    # #FFD700
+    (107, 107, 255),  # #FF6B6B
+    (182, 89, 155),   # #9B59B6
+    (34, 126, 230),   # #E67E22
+]
+
+
+def get_cat_colors_hex(cats: list[str]) -> dict[str, str]:
+    """Return {cat_name: hex_color} for each cat, cycling the palette."""
+    return {cat: CAT_COLOR_PALETTE_HEX[i % len(CAT_COLOR_PALETTE_HEX)] for i, cat in enumerate(cats)}
+
+
+def get_cat_colors_bgr(cats: list[str]) -> dict[str, tuple[int, int, int]]:
+    """Return {cat_name: (B, G, R)} for each cat, cycling the palette."""
+    return {cat: CAT_COLOR_PALETTE_BGR[i % len(CAT_COLOR_PALETTE_BGR)] for i, cat in enumerate(cats)}

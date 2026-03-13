@@ -50,7 +50,7 @@ echo ""
 echo "[INFO] Downloading $ARCHIVE_NAME ..."
 scp "$PI_TARGET:$REMOTE_ARCHIVE" "$PROJECT_ROOT/$ARCHIVE_NAME"
 
-# Extract into data/raw/ where prepare_dataset.py expects it ({cat_name}/image.jpg)
+# Extract into data/raw/ ({cat_name}/image.jpg)
 echo "[INFO] Extracting to $LOCAL_RAW_DIR ..."
 tar -xzf "$PROJECT_ROOT/$ARCHIVE_NAME" -C "$LOCAL_RAW_DIR"
 rm "$PROJECT_ROOT/$ARCHIVE_NAME"
@@ -58,6 +58,6 @@ rm "$PROJECT_ROOT/$ARCHIVE_NAME"
 echo ""
 echo "[OK] Dataset pulled and extracted to $LOCAL_RAW_DIR"
 echo ""
-echo "Next step — prepare for training:"
+echo "Next step — open the training dashboard or run:"
 echo "  source venv_train/bin/activate"
-echo "  python train/prepare_dataset.py"
+echo "  python train/import_captures.py"

@@ -32,7 +32,7 @@ from flask import Flask, Response, jsonify, render_template, request, send_file
 # ---------------------------------------------------------------------------
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from utils import PROJECT_ROOT, add_common_args, load_config, resolve_path
+from utils import PROJECT_ROOT, add_common_args, load_config, resolve_path, get_cat_colors_hex
 from utils.display import print_info, print_success, print_error, print_warning, print_header
 
 from collect.label_review import LabelReviewApp
@@ -428,10 +428,12 @@ def create_app(
     @flask_app.route("/")
     def index():
         cats_indexed = list(enumerate(cats, start=1))
+        cat_colors = get_cat_colors_hex(cats)
         return render_template(
             "dashboard.html",
             cats=cats_indexed,
             cat_names=cats,
+            cat_colors=cat_colors,
             min_images=min_images,
         )
 

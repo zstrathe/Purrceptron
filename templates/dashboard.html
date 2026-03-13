@@ -954,9 +954,7 @@ function initROIDrawing() {
 }
 
 // ── Detection pills polling ────────────────────────────────
-const DET_COLORS = {
-  'cat': '#ffa500', 'Cat3': '#00ff00', 'Cat1': '#6464ff', 'Cat2': '#00c8ff'
-};
+const DET_COLORS = Object.assign({'cat': '#ffa500'}, {{ cat_colors | tojson }});
 const DET_DEFAULT_COLOR = '#c8c8c8';
 
 async function pollDetections() {

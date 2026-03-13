@@ -2102,7 +2102,7 @@ async function saveAugSettings() {
 }
 
 // ═══════════════════════════════════════════════════════════
-const CAT_COLORS = { Cat3: '#52b788', Cat1: '#6495ED', Cat2: '#FFD700' };
+const CAT_COLORS = {{ cat_colors | tojson }};
 let labelCurrent = null;
 let labelCurrentMeta = null;          // sidecar JSON for current image
 let unlabeledFilenames = [];          // up to 30 remaining unlabeled filenames

@@ -1,0 +1,109 @@
+cats:
+- Cat1
+- Cat2
+- Cat3
+camera:
+  device: /dev/video0
+  width: 1920
+  height: 1080
+  fps: 30
+  format: MJPG
+collection:
+  output_dir: data/raw
+  images_per_session: 200
+  capture_interval_ms: 500
+  auto_capture_interval_sec: 3
+  min_images_per_cat: 300
+  jpeg_quality: 95
+web_ui:
+  host: 0.0.0.0
+  port: 5003
+  preview_width: 960
+  preview_height: 540
+training:
+  model_size: yolov8m
+  image_size: 640
+  epochs: 2000
+  batch_size: -1
+  patience: 30
+  lr0: 0.01
+  lrf: 0.01
+  optimizer: AdamW
+  val_split: 0.15
+  test_split: 0.05
+  seed: 42
+deployment:
+  hailo_apps_dir: ./hailo-apps
+  hef_path: ""
+  labels_json: ""
+  detection_threshold: 0.5
+  hw_arch: hailo10h
+  track_all: true
+  filter_classes: []
+  preview_path: /tmp/cat_detection_preview.jpg
+  preview_fps: 15
+feeding:
+  enabled: false
+  db_path: data/feeding_log.db
+  cooldown_seconds: 30
+  min_detection_frames: 3
+  log_interval_seconds: 60
+detection_capture:
+  enabled: false
+  output_dir: data/raw
+  filter_labels: []
+  unlabeled_classes:
+  - cat
+  min_interval_seconds: 15
+  max_captures_per_session: 0
+  jpeg_quality: 95
+  csv_logging: true
+label_review:
+  host: 0.0.0.0
+  port: 5001
+  trash_dir: data/trash
+classifier:
+  enabled: false
+  model_path: models/cat_classifier.pt
+  bowl_roi:
+  - 760
+  - 390
+  - 1160
+  - 790
+  stability_frames: 5
+  classify_interval_seconds: 1.0
+  confidence_threshold: 0.85
+  vote_window_size: 10
+  db_path: data/classifier_log.db
+  crop_padding: 0.2
+  roi_overlap_threshold: 0.01
+  cpu_core: 3
+  save_crops_for_labeling: false
+  labeling_output_dir: data/raw/unlabeled
+classifier_training:
+  phase1_epochs: 20
+  phase2_epochs: 40
+  phase3_epochs: 10
+  phase1_lr: 0.001
+  phase2_backbone_lr: 1.0e-05
+  phase2_head_lr: 0.0001
+  weight_decay: 0.005
+  batch_size: 32
+  patience: 15
+  optimizer: AdamW
+  session_gap_minutes: 5
+  mixup_alpha: 0.2
+  balance_classes: true
+  cv_folds: 5
+  augmentation:
+    horizontal_flip: true
+    brightness_contrast: true
+    brightness_limit: 0.3
+    contrast_limit: 0.3
+    shift_scale_rotate: true
+    rotate_limit: 10
+    gaussian_blur: true
+    gaussian_noise: true
+    coarse_dropout: true
+    hue_saturation: true
+    clahe: true

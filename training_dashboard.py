@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Training dashboard — web UI for the full YOLOv8 training pipeline.
+"""Training dashboard — web UI for the cat classifier training pipeline.
 
-Manages training steps (prepare dataset, train, export ONNX, convert HEF)
+Manages training steps (pull, label, crop, prepare, train, deploy)
 as subprocesses with live output, metrics charts, and config editing.
 
 Usage:
@@ -33,7 +33,7 @@ from flask import Flask, Response, jsonify, render_template, request, send_file
 # ---------------------------------------------------------------------------
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from utils import PROJECT_ROOT, add_common_args, get_config_with_args, load_config, resolve_path
+from utils import PROJECT_ROOT, add_common_args, get_config_with_args, load_config, resolve_path, get_cat_colors_hex
 from utils.display import print_info, print_success, print_error, print_warning, print_header
 
 import yaml
@@ -787,9 +787,11 @@ def create_app(
     # ── Page ──────────────────────────────────────────────────────
     @flask_app.route("/")
     def index():
+        cat_colors = get_cat_colors_hex(cats)
         return render_template(
             "training_dashboard.html",
             cat_names=cats,
+            cat_colors=cat_colors,
         )
 
     # ── Pipeline Control API ──────────────────────────────────────

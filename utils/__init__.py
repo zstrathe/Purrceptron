@@ -5,6 +5,8 @@ from utils.config import (
     add_common_args,
     get_config_with_args,
     resolve_path,
+    get_cat_colors_hex,
+    get_cat_colors_bgr,
 )
 from utils.display import (
     print_info,
