@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Label review classes for iterating through captured images and assigning cat labels.
 
-Provides LabelReviewApp class for use by the unified dashboard (dashboard.py).
+Provides LabelReviewApp class for use by the unified dashboard (pi_dashboard.py).
 Includes review state tracking and thumbnail caching.
 """
 from __future__ import annotations

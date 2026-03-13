@@ -2,7 +2,7 @@
 """Camera capture classes for cat data collection.
 
 Provides CameraThread, SaveWorker, and CaptureApp classes for use by the
-unified dashboard (dashboard.py).
+unified dashboard (pi_dashboard.py).
 """
 from __future__ import annotations
 

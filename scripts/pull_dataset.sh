@@ -27,7 +27,7 @@ echo "[INFO] Running export on $PI_TARGET ..."
 # Run export.py on the Pi and capture the archive filename
 REMOTE_OUTPUT=$(ssh "$PI_TARGET" "
     cd $REMOTE_DIR
-    source venv_collect/bin/activate 2>/dev/null || true
+    source hailo-apps/setup_env.sh 2>/dev/null || true
     python collect/export.py 2>&1
 ")
 
@@ -58,6 +58,6 @@ rm "$PROJECT_ROOT/$ARCHIVE_NAME"
 echo ""
 echo "[OK] Dataset pulled and extracted to $LOCAL_RAW_DIR"
 echo ""
-echo "Next step — open the training dashboard or run:"
+echo "Next step: open the training dashboard or run:"
 echo "  source venv_train/bin/activate"
 echo "  python train/import_captures.py"

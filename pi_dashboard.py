@@ -6,8 +6,8 @@ Single-page tabbed web UI for the full data collection workflow:
 - Review tab: iterate images, assign labels, delete bad captures, thumbnail navigation
 
 Usage:
-    python dashboard.py                   # reads configs/project.yaml
-    python dashboard.py --config alt.yaml
+    python pi_dashboard.py                   # reads configs/project.yaml
+    python pi_dashboard.py --config alt.yaml
 """
 from __future__ import annotations
 
@@ -118,6 +118,9 @@ class DetectionPipelineManager:
         # Log file for persisting full output to disk
         self._log_file = None
         self._log_dir = self.project_root / "logs" / "detection"
+        # Model file watcher: auto-restart when classifier model changes
+        self._model_watcher_thread: threading.Thread | None = None
+        self._model_watcher_stop = threading.Event()
 
     def set_config(self, config: dict) -> None:
         self._config = config
@@ -196,11 +199,15 @@ class DetectionPipelineManager:
         )
         self._watchdog_thread.start()
 
+        # Start model file watcher for auto-restart on new model deployment
+        self._start_model_watcher()
+
         return {"status": "ok", "pid": self.process.pid, "mode": "default"}
 
     def stop(self) -> dict:
         """Stop the detect.py subprocess."""
         self._intentional_stop = True
+        self._model_watcher_stop.set()
         with self._lock:
             if self.process is None or self.process.poll() is not None:
                 self.process = None
@@ -223,6 +230,46 @@ class DetectionPipelineManager:
             self.process = None
             self._close_log_file()
             return {"status": "ok"}
+
+    def _start_model_watcher(self) -> None:
+        """Watch the classifier model file for changes and auto-restart."""
+        if not self._config:
+            return
+        clf_cfg = self._config.get("classifier", {})
+        if not clf_cfg.get("enabled", False):
+            return
+        model_path = Path(clf_cfg.get("model_path", "models/cat_classifier.pt"))
+        if not model_path.is_absolute():
+            model_path = self.project_root / model_path
+
+        self._model_watcher_stop.clear()
+        self._model_watcher_thread = threading.Thread(
+            target=self._watch_model_file,
+            args=(model_path,),
+            daemon=True,
+        )
+        self._model_watcher_thread.start()
+
+    def _watch_model_file(self, model_path: Path) -> None:
+        """Poll model file mtime and trigger restart on change."""
+        try:
+            last_mtime = model_path.stat().st_mtime if model_path.exists() else None
+        except OSError:
+            last_mtime = None
+
+        while not self._model_watcher_stop.wait(timeout=5):
+            try:
+                if not model_path.exists():
+                    continue
+                mtime = model_path.stat().st_mtime
+                if last_mtime is not None and mtime != last_mtime:
+                    print(f"[model-watcher] Model file changed, restarting pipeline...",
+                          flush=True)
+                    self.restart()
+                    return  # restart() starts a new watcher
+                last_mtime = mtime
+            except OSError:
+                continue
 
     def restart(self) -> dict:
         """Stop and restart the pipeline with a delay for device release."""
