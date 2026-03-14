@@ -33,16 +33,12 @@ requirements-training.txt
 
 # Hailo SDK (installed on Pi via setup_pi.sh, not synced)
 hailo-apps/
-hailo_ai_sw_suite_2026-01_docker/
 
 # Dev-only scripts
 scripts/setup_training.sh
 scripts/transfer_model.sh
 scripts/sync_to_pi.sh
 scripts/pull_dataset.sh
-
-# Hailo intermediate artifacts (Pi uses .hef files)
-*.har
 
 # Pi-only runtime state (written by dashboard, not synced)
 configs/runtime.yaml

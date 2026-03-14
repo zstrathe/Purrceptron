@@ -317,14 +317,7 @@ labeling and cropping. Named cats are saved to their own directories.
 
 When `feeding.enabled` is `true`, the system tracks when cats are at the bowl and logs
 sessions to a SQLite database on the Pi. The classifier provides per-cat identification,
-so feeding logs include which specific cat was eating. Generate reports on the Pi with:
-
-```bash
-# On the Pi
-python scripts/feeding_report.py
-# or
-./scripts/feeding_report.sh --days 7 --format table
-```
+so feeding logs include which specific cat was eating.
 
 ## Configuration Reference
 
@@ -441,8 +434,7 @@ cat_detection/
 │   ├── setup_training.sh              # Training machine setup
 │   ├── sync_to_pi.sh                  # Sync code to Pi via SSH
 │   ├── transfer_model.sh             # Transfer model to Pi
-│   ├── feeding_report.py             # Feeding session reports
-│   └── feeding_report.sh             # Shell wrapper for feeding reports
+│   └── pull_dataset.sh               # Pull training data from Pi
 ├── utils/                              # Shared utilities
 │   ├── __init__.py
 │   ├── config.py                       # YAML config loading, path resolution
@@ -503,3 +495,7 @@ cat_detection/
   weak classes
 - **Iterate**: use detection capture to collect more labeled data automatically,
   review in the dashboard, then retrain with the expanded dataset
+
+## License
+
+This project is source-available under the [Purrceptron Source-Available License 1.0](LICENSE.md). See LICENSE.md for the terms.
