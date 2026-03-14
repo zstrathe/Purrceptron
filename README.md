@@ -234,18 +234,25 @@ Training runs in four phases:
 1. **Phase 1 - Head warmup (FP32):** Only train the classification head while the
    backbone is frozen. This teaches the new head to map visual features to your
    specific cats without disrupting the backbone's learned representations.
-   (20 epochs, lr=0.001)
+   (default: 20 epochs, lr=0.001). This phase converges quickly since only a small
+   layer is training. 10-20 epochs is usually enough; more won't help much.
 2. **Phase 2 - Partial fine-tune (FP32):** Unfreeze the last 3 backbone blocks and
    train them alongside the head. This adapts the deeper feature extraction to
    cat-specific details (fur patterns, face shapes) while keeping earlier layers
    (basic edges, textures) intact. Uses a smaller learning rate for the backbone
-   than the head to avoid overwriting useful pre-trained features. (40 epochs)
+   than the head to avoid overwriting useful pre-trained features. (default: 40
+   epochs). **This is the most impactful phase to increase** - if accuracy is low,
+   try 60-100 epochs here first. Early stopping (patience: 15) will cut it short
+   if the model stops improving.
 3. **Phase 3 - Quantization-aware training (QAT):** The Pi's CPU runs faster with
    INT8 math (8-bit integers) than FP32 (32-bit floats), but converting directly
    loses accuracy. QAT simulates the rounding errors of INT8 during training so
-   the model learns to be robust to them. (10 epochs)
+   the model learns to be robust to them. (default: 10 epochs). If you notice a
+   significant accuracy drop between your FP32 validation results and the final
+   INT8 model, increase this to 15-25 epochs.
 4. **Phase 4 - INT8 export:** Export the final model as a TorchScript file with INT8
-   weights, ready for fast inference on the Pi's CPU.
+   weights, ready for fast inference on the Pi's CPU. This is not a training phase,
+   just a conversion step.
 
 **Output:** `models/cat_classifier.pt`, a self-contained TorchScript model with the
 class name list embedded, ready for deployment.

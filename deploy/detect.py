@@ -234,6 +234,7 @@ class ClassifierGate:
         labeling_dir: Path | None,
         roi_overlap_threshold: float = 0.01,
         trigger_labels: set[str] | None = None,
+        miss_tolerance: int = 15,
     ):
         self._queue = queue
         self._bowl_roi = bowl_roi          # (x_min, y_min, x_max, y_max) in pixels
@@ -246,7 +247,9 @@ class ClassifierGate:
         self._labeling_dir = labeling_dir
         self._roi_overlap_threshold = roi_overlap_threshold
         self._trigger_labels = trigger_labels or {"cat"}
+        self._miss_tolerance = miss_tolerance
         self._roi_consecutive_frames: int = 0
+        self._consecutive_misses: int = 0
         self._last_classify_time: float = 0.0
         self._was_tracking: bool = False
         self.pending_bbox: tuple | None = None  # normalized (xmin, ymin, w, h)
@@ -293,13 +296,15 @@ class ClassifierGate:
                 self._last_log_time = now
 
         if not roi_hit:
-            if self._was_tracking:
+            self._consecutive_misses += 1
+            if self._was_tracking and self._consecutive_misses >= self._miss_tolerance:
                 print("[classifier-gate] Cat left ROI — sending departure", flush=True)
                 self.send_reset()
-            self._roi_consecutive_frames = 0
-            self._was_tracking = False
+                self._roi_consecutive_frames = 0
+                self._was_tracking = False
             return False
 
+        self._consecutive_misses = 0
         self._roi_consecutive_frames += 1
         self._was_tracking = True
 
@@ -547,7 +552,7 @@ if HAILO_AVAILABLE:
         # ── Classifier gate (Stage 2) ──────────────────────────────────
         needs_classify = False
         classify_bbox = None
-        if user_data.classifier_gate and frame_detections:
+        if user_data.classifier_gate:
             needs_classify = user_data.classifier_gate.update(frame_detections)
             if needs_classify:
                 classify_bbox = user_data.classifier_gate.pending_bbox
@@ -910,6 +915,7 @@ def main():
             labeling_dir=labeling_dir,
             roi_overlap_threshold=classifier_cfg.get("roi_overlap_threshold", 0.01),
             trigger_labels=set(classifier_cfg.get("trigger_labels", ["cat"])),
+            miss_tolerance=classifier_cfg.get("miss_tolerance", 15),
         )
         print_info(f"Classifier gate active — ROI={bowl_roi}, save_crops={save_crops}")
 

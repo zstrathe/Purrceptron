@@ -603,7 +603,7 @@ class TrainingConfigManager:
                             "phase1_lr", "phase2_backbone_lr", "phase2_head_lr",
                             "weight_decay", "batch_size", "patience", "optimizer",
                             "session_gap_minutes", "mixup_alpha", "balance_classes",
-                            "cv_folds"):
+                            "cv_folds", "energy_ood_percentile"):
                     if key in settings["classifier_training"]:
                         cfg["classifier_training"][key] = settings["classifier_training"][key]
 

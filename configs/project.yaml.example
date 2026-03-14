@@ -77,7 +77,10 @@ classifier:
   db_path: data/classifier_log.db
   crop_padding: 0.2
   roi_overlap_threshold: 0.01
+  miss_tolerance: 15
   cpu_core: 3
+  energy_ood_enabled: true
+  energy_ood_threshold:  # auto-calibrated at training time; set manually to override
   save_crops_for_labeling: false
   labeling_output_dir: data/raw/unlabeled
 classifier_training:
@@ -95,6 +98,7 @@ classifier_training:
   mixup_alpha: 0.2
   balance_classes: true
   cv_folds: 5
+  energy_ood_percentile: 0.99
   augmentation:
     horizontal_flip: true
     brightness_contrast: true

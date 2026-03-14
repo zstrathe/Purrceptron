@@ -223,7 +223,7 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
         _write_status({"error": msg, "prediction": None})
         return
 
-    extra_files = {"classes.json": ""}
+    extra_files = {"classes.json": "", "energy_threshold": ""}
     model = torch.jit.load(str(model_path), map_location="cpu",
                            _extra_files=extra_files)
     model.eval()
@@ -235,6 +235,35 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
     else:
         cats: list[str] = cfg.get("cats", [])
         print(f"[classifier] WARNING: no class order in model, using config: {cats}", flush=True)
+
+    # Energy-based OOD rejection
+    energy_ood_enabled = cfg.get("energy_ood_enabled", True)
+    energy_threshold: float | None = None
+    if energy_ood_enabled:
+        # Config override takes priority over model-embedded threshold
+        cfg_threshold = cfg.get("energy_ood_threshold")
+        if cfg_threshold is not None:
+            energy_threshold = float(cfg_threshold)
+            print(f"[classifier] Energy OOD threshold from config: {energy_threshold:.4f}", flush=True)
+        elif extra_files["energy_threshold"]:
+            et_data = json.loads(extra_files["energy_threshold"])
+            # Prefer explicit threshold key, fall back to p99/p95 for older models
+            if "threshold" in et_data:
+                energy_threshold = float(et_data["threshold"])
+                pct = et_data.get("percentile", "?")
+                print(f"[classifier] Energy OOD threshold from model (p{pct}): {energy_threshold:.4f}", flush=True)
+            elif "p99" in et_data:
+                energy_threshold = float(et_data["p99"])
+                print(f"[classifier] Energy OOD threshold from model (p99): {energy_threshold:.4f}", flush=True)
+            else:
+                energy_threshold = float(et_data["p95"])
+                print(f"[classifier] Energy OOD threshold from model (p95): {energy_threshold:.4f}", flush=True)
+        else:
+            energy_ood_enabled = False
+            print("[classifier] Energy OOD: no threshold available, disabled", flush=True)
+    else:
+        print("[classifier] Energy OOD: disabled by config", flush=True)
+
     vote_window = VoteWindow(
         window_size=cfg.get("vote_window_size", 10),
         confidence_threshold=cfg.get("confidence_threshold", 0.85),
@@ -244,7 +273,10 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
         cats=cats,
     )
 
-    print(f"[classifier] Ready — {len(cats)} classes: {cats}", flush=True)
+    ood_consecutive_min = max(1, vote_window._window_size // 2)
+    print(f"[classifier] Ready -- {len(cats)} classes: {cats}", flush=True)
+
+    consecutive_ood = 0
 
     while True:
         try:
@@ -253,15 +285,37 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
             continue
 
         if item is None:
-            # Departure sentinel — finalise active event, reset votes
+            # Departure sentinel -- finalise active event, reset votes
             vote_window.reset()
             logger.on_departure()
+            consecutive_ood = 0
             _write_status({"prediction": None})
             continue
 
         tensor = _preprocess(item)
         with torch.no_grad():
             logits = model(tensor)
+
+        # Energy-based OOD rejection (before voting)
+        energy = float(-torch.logsumexp(logits, dim=1).item())
+        if energy_ood_enabled and energy_threshold is not None and energy > energy_threshold:
+            consecutive_ood += 1
+            # Only show "Unknown" after sustained rejection, not isolated noisy frames
+            if consecutive_ood >= ood_consecutive_min:
+                vote_counts = vote_window.get_counts()
+                _write_status({
+                    "prediction": None,
+                    "confidence": 0.0,
+                    "confirmed": logger._active_row_id is not None,
+                    "confirmed_cat": None,
+                    "votes": {cats[k] if k < len(cats) else "unknown": v for k, v in vote_counts.items()},
+                    "vote_window": vote_window._window_size,
+                    "energy": round(energy, 3),
+                    "ood_rejected": True,
+                })
+            continue
+
+        consecutive_ood = 0
         probs = F.softmax(logits, dim=1)[0]
         class_idx = int(torch.argmax(probs).item())
         confidence = float(probs[class_idx].item())
@@ -284,4 +338,6 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
             "confirmed_cat": confirmed_cat,
             "votes": {cats[k] if k < len(cats) else "unknown": v for k, v in vote_counts.items()},
             "vote_window": vote_window._window_size,
+            "energy": round(energy, 3),
+            "ood_rejected": False,
         })

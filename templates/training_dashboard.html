@@ -541,6 +541,9 @@
             <option value="Adam">Adam</option>
             <option value="AdamW" selected>AdamW</option>
           </select>
+          <label>Energy OOD percentile:</label>
+          <span class="tip">?<span class="tip-text">Percentile of known-cat energy scores used as the OOD rejection threshold. 0.99 = only reject the most extreme 1% of energy scores (permissive). 0.95 = reject 5% (aggressive). Lower values catch more unknowns but risk rejecting legitimate cats.</span></span>
+          <input type="number" id="set-energy-pct" value="0.99" min="0.9" max="1" step="0.01">
         </div>
         <div style="margin-top:8px">
           <button class="btn btn-nav btn-sm" onclick="saveSettings()">Save Settings</button>
@@ -1052,6 +1055,7 @@ function applySettings(d) {
   document.getElementById('set-mixup').value = t.mixup_alpha || 0.2;
   document.getElementById('set-session-gap').value = t.session_gap_minutes || 5;
   document.getElementById('set-optimizer').value = t.optimizer || 'AdamW';
+  document.getElementById('set-energy-pct').value = t.energy_ood_percentile || 0.99;
 }
 
 async function loadSettings() {
@@ -1083,6 +1087,7 @@ async function saveSettings() {
           mixup_alpha: parseFloat(document.getElementById('set-mixup').value),
           session_gap_minutes: parseInt(document.getElementById('set-session-gap').value),
           optimizer: document.getElementById('set-optimizer').value,
+          energy_ood_percentile: parseFloat(document.getElementById('set-energy-pct').value),
         }
       })
     });

@@ -269,6 +269,7 @@ def main() -> None:
     patience        = tc.get("patience", 15)
     mixup_alpha     = tc.get("mixup_alpha", 0.2)
     balance_classes = tc.get("balance_classes", True)
+    energy_ood_pct  = tc.get("energy_ood_percentile", 0.99)
     aug_cfg         = tc.get("augmentation", {})
 
     dataset_dir = args.dataset_dir or (PROJECT_ROOT / "data" / "classifier_dataset")
@@ -535,10 +536,41 @@ def main() -> None:
             traced = torch.jit.trace(qat_model2, example_input)
         traced = torch.jit.freeze(traced)
 
+        # ── Energy threshold calibration ───────────────────────────────
+        print("\n  Calibrating energy threshold on val set...")
+        all_energies = []
+        with torch.no_grad():
+            for images, _ in qat_val_loader:
+                logits = traced(images.cpu())
+                energies = -torch.logsumexp(logits, dim=1)
+                all_energies.append(energies)
+        all_energies = torch.cat(all_energies)
+        energy_threshold = float(torch.quantile(all_energies, energy_ood_pct).item())
+        energy_p95 = float(torch.quantile(all_energies, 0.95).item())
+        energy_p99 = float(torch.quantile(all_energies, 0.99).item())
+        energy_mean = float(all_energies.mean().item())
+        energy_std = float(all_energies.std().item())
+        print(f"  Energy stats (val set, n={len(all_energies)}):")
+        print(f"    mean={energy_mean:.3f}  std={energy_std:.3f}  "
+              f"p95={energy_p95:.3f}  p99={energy_p99:.3f}")
+        print(f"  Using p{energy_ood_pct*100:.0f} threshold: {energy_threshold:.4f}")
+        energy_threshold_data = {
+            "threshold": round(energy_threshold, 4),
+            "percentile": energy_ood_pct,
+            "p95": round(energy_p95, 4),
+            "p99": round(energy_p99, 4),
+            "mean": round(energy_mean, 4),
+            "std": round(energy_std, 4),
+            "n_samples": len(all_energies),
+        }
+
         model_out = PROJECT_ROOT / "models" / "cat_classifier.pt"
         model_out.parent.mkdir(parents=True, exist_ok=True)
         torch.jit.save(traced, str(model_out),
-                       _extra_files={"classes.json": json.dumps(class_names)})
+                       _extra_files={
+                           "classes.json": json.dumps(class_names),
+                           "energy_threshold": json.dumps(energy_threshold_data),
+                       })
 
         # Verify
         loaded = torch.jit.load(str(model_out), map_location="cpu")

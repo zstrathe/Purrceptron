@@ -762,6 +762,15 @@ async function pollClassifierIdentity() {
         }
         el.classList.toggle('pending', !data.confirmed);
         el.style.display = 'flex';
+      } else if (data.ood_rejected) {
+        // Energy filter is rejecting frames — show unknown indicator
+        labelEl.textContent = 'Unknown';
+        labelEl.style.color = '#e6b800';
+        el.style.borderColor = '#e6b800';
+        confEl.textContent = '';
+        votesEl.textContent = '';
+        el.classList.add('pending');
+        el.style.display = 'flex';
       } else if (clfEnabled) {
         // Classifier enabled but no prediction yet — show waiting state
         labelEl.textContent = 'Waiting for detection in ROI...';
