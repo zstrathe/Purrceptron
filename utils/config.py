@@ -72,14 +72,14 @@ def get_config_with_args(args: argparse.Namespace) -> dict[str, Any]:
 # Distinguishable colors assigned to cats by index.  Hex (for JS/HTML) and
 # BGR (for OpenCV drawing) variants.
 
-CAT_COLOR_PALETTE_HEX = ["#52b788", "#6495ED", "#FFD700", "#FF6B6B", "#9B59B6", "#E67E22"]
+CAT_COLOR_PALETTE_HEX = ["#6b85a8", "#7ba87a", "#a87272", "#8a7a9e", "#b8896a", "#8e7a65"]
 CAT_COLOR_PALETTE_BGR = [
-    (136, 183, 82),   # #52b788
-    (237, 149, 100),  # #6495ED
-    (0, 215, 255),    # #FFD700
-    (107, 107, 255),  # #FF6B6B
-    (182, 89, 155),   # #9B59B6
-    (34, 126, 230),   # #E67E22
+    (168, 133, 107),  # #6b85a8  slate blue
+    (122, 168, 123),  # #7ba87a  faded sage
+    (114, 114, 168),  # #a87272  muted rose
+    (158, 122, 138),  # #8a7a9e  dusty violet
+    (106, 137, 184),  # #b8896a  warm copper
+    (101, 122, 142),  # #8e7a65  driftwood
 ]
 
 

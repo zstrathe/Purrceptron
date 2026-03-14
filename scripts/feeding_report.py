@@ -6,7 +6,7 @@ import argparse
 import json
 import sqlite3
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -56,7 +56,7 @@ def main() -> None:
         sys.exit(1)
 
     conn = sqlite3.connect(db_path)
-    cutoff = (datetime.now() - timedelta(days=args.days)).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=args.days)).isoformat()
     query = (
         "SELECT cat_name, start_time, end_time, duration_seconds, detection_count "
         "FROM feeding_sessions WHERE start_time > ?"

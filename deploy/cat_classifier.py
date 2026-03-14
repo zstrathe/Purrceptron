@@ -13,7 +13,7 @@ import os
 import sqlite3
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from queue import Empty
 
@@ -130,7 +130,7 @@ class FeedingEventLogger:
         """Insert a new in-progress event row."""
         if self._active_row_id is not None:
             return  # Already tracking; ignore duplicate confirmation
-        self._start_time = datetime.now()
+        self._start_time = datetime.now(timezone.utc)
         self._confidence_sum = confidence
         self._frame_count = 1
         with self._connect() as conn:
@@ -153,7 +153,7 @@ class FeedingEventLogger:
         """Finalise the active event row and reset state."""
         if self._active_row_id is None:
             return
-        end_time = datetime.now()
+        end_time = datetime.now(timezone.utc)
         duration = (end_time - self._start_time).total_seconds() if self._start_time else None
         avg_conf = self._confidence_sum / max(self._frame_count, 1)
         with self._connect() as conn:

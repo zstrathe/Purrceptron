@@ -8,14 +8,14 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    background: #1a1a2e; color: #e0e0e0;
+    background: #181a28; color: #e0e0e0;
     font-family: 'Segoe UI', system-ui, sans-serif;
     height: 100vh; display: flex; flex-direction: column; overflow: hidden;
   }
 
   /* Top bar */
   .top-bar {
-    background: #16213e; border-bottom: 1px solid #0f3460;
+    background: #161d30; border-bottom: 1px solid #0f2a4a;
   }
   .top-bar-inner {
     display: flex; justify-content: space-between; align-items: center;
@@ -23,12 +23,12 @@
   }
   .tab-bar { display: flex; gap: 4px; }
   .tab-btn {
-    padding: 6px 18px; border: 1px solid #0f3460; border-bottom: none;
+    padding: 6px 18px; border: 1px solid #0f2a4a; border-bottom: none;
     background: #0a0a1a; color: #8892b0; cursor: pointer;
     border-radius: 6px 6px 0 0; font-size: 0.9rem; font-weight: 600;
     font-family: monospace;
   }
-  .tab-btn.active { background: #1a1a2e; color: #e0e0e0; border-color: #0f3460; }
+  .tab-btn.active { background: #181a28; color: #e0e0e0; border-color: #0f2a4a; }
   .tab-btn:hover { color: #e0e0e0; }
   .top-status {
     font-family: monospace; font-size: 0.85rem; color: #8892b0;
@@ -57,9 +57,9 @@
   .btn:active { transform: scale(0.96); }
   .btn:hover:not(:disabled) { filter: brightness(1.15); }
   .btn:disabled { opacity: 0.35; cursor: not-allowed; }
-  .btn-primary { background: #1b4332; color: #52b788; }
+  .btn-primary { background: #2a3d2e; color: #7ba87a; }
   .btn-danger { background: #3d0000; color: #e63946; }
-  .btn-nav { background: #16213e; color: #8892b0; border: 1px solid #0f3460; }
+  .btn-nav { background: #161d30; color: #8892b0; border: 1px solid #0f2a4a; }
   .btn-sm { padding: 6px 14px; font-size: 0.85rem; }
 
   /* ── Version Bar ── */
@@ -69,7 +69,7 @@
   }
   .version-bar label { color: #8892b0; font-weight: 600; }
   .version-bar select {
-    background: #0a0a1a; color: #e0e0e0; border: 1px solid #0f3460;
+    background: #0a0a1a; color: #e0e0e0; border: 1px solid #0f2a4a;
     padding: 6px 10px; border-radius: 4px; font-family: monospace;
   }
 
@@ -78,29 +78,29 @@
     display: flex; gap: 8px; margin-bottom: 12px;
   }
   .step-card {
-    background: #16213e; border-radius: 6px; padding: 12px 16px;
-    margin-bottom: 6px; border: 1px solid #0f3460;
+    background: #161d30; border-radius: 6px; padding: 12px 16px;
+    margin-bottom: 6px; border: 1px solid #0f2a4a;
     display: flex; align-items: center; gap: 12px;
   }
-  .step-card.active { border-color: #52b788; }
-  .step-card.done { border-color: #1b4332; }
+  .step-card.active { border-color: #7ba87a; }
+  .step-card.done { border-color: #2a3d2e; }
   .step-card.error { border-color: #3d0000; }
-  .step-card.ready { border-left: 3px solid #52b788; }
-  .step-card.completed { border-left: 3px solid #1b4332; }
+  .step-card.ready { border-left: 3px solid #7ba87a; }
+  .step-card.completed { border-left: 3px solid #2a3d2e; }
   .step-card.blocked { opacity: 0.45; }
   .step-hint {
     font-family: monospace; font-size: 0.7rem; color: #555; margin-top: 2px;
     display: none;
   }
-  .step-card.ready .step-hint { display: block; color: #52b788; }
-  .step-card.completed .step-hint { display: block; color: #1b4332; }
+  .step-card.ready .step-hint { display: block; color: #7ba87a; }
+  .step-card.completed .step-hint { display: block; color: #2a3d2e; }
   .step-card.blocked .step-hint { display: block; }
   .step-num {
     font-family: monospace; font-size: 1.1rem; font-weight: 700;
     color: #555; width: 24px; text-align: center;
   }
-  .step-card.done .step-num { color: #52b788; }
-  .step-card.active .step-num { color: #52b788; }
+  .step-card.done .step-num { color: #7ba87a; }
+  .step-card.active .step-num { color: #7ba87a; }
   .step-card.error .step-num { color: #e63946; }
   .step-info { flex: 1; }
   .step-name { font-weight: 600; font-size: 0.95rem; }
@@ -115,15 +115,15 @@
     width: 8px; height: 8px; border-radius: 50%; display: inline-block;
   }
   .step-dot.idle { background: #555; }
-  .step-dot.running { background: #52b788; animation: pulse 1.5s infinite; }
-  .step-dot.done { background: #52b788; }
+  .step-dot.running { background: #7ba87a; animation: pulse 1.5s infinite; }
+  .step-dot.done { background: #7ba87a; }
   .step-dot.error { background: #e63946; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
   /* ── Settings Panel ── */
   .settings-panel {
-    background: #16213e; border-radius: 6px; padding: 14px;
-    margin-top: 12px; border: 1px solid #0f3460;
+    background: #161d30; border-radius: 6px; padding: 14px;
+    margin-top: 12px; border: 1px solid #0f2a4a;
   }
   .settings-panel h3 {
     font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
@@ -140,14 +140,14 @@
     font-size: 0.85rem; color: #8892b0; min-width: 80px; font-family: monospace;
   }
   .settings-row select, .settings-row input[type="number"] {
-    background: #0a0a1a; color: #e0e0e0; border: 1px solid #0f3460;
+    background: #0a0a1a; color: #e0e0e0; border: 1px solid #0f2a4a;
     padding: 6px 10px; border-radius: 4px; font-size: 0.85rem;
     font-family: monospace;
   }
   .settings-row select { min-width: 140px; }
   .settings-row input[type="number"] { width: 80px; }
   .settings-row input[type="checkbox"] {
-    width: 16px; height: 16px; accent-color: #52b788; cursor: pointer;
+    width: 16px; height: 16px; accent-color: #7ba87a; cursor: pointer;
   }
 
   /* ── Tooltips ── */
@@ -155,13 +155,13 @@
     position: relative; display: inline-block; cursor: help;
     width: 15px; height: 15px; line-height: 15px; text-align: center;
     font-size: 0.65rem; font-weight: 700; color: #8892b0;
-    border: 1px solid #0f3460; border-radius: 50%; flex-shrink: 0;
+    border: 1px solid #0f2a4a; border-radius: 50%; flex-shrink: 0;
     font-family: sans-serif;
   }
   .tip .tip-text {
     display: none; position: absolute; bottom: 120%; left: 50%;
     transform: translateX(-50%); width: 240px; padding: 8px 10px;
-    background: #0a0a1a; color: #c0c0c0; border: 1px solid #0f3460;
+    background: #0a0a1a; color: #c0c0c0; border: 1px solid #0f2a4a;
     border-radius: 6px; font-size: 0.78rem; line-height: 1.4;
     font-weight: 400; font-family: system-ui, sans-serif; z-index: 100;
     pointer-events: none; white-space: normal;
@@ -175,7 +175,7 @@
     flex-wrap: wrap; font-family: monospace; font-size: 0.85rem;
   }
   .ann-toolbar .ann-progress { color: #8892b0; }
-  .ann-toolbar .ann-img-info { color: #52b788; flex: 1; text-align: right; }
+  .ann-toolbar .ann-img-info { color: #7ba87a; flex: 1; text-align: right; }
   .ann-canvas-wrap {
     position: relative; flex: 1; min-height: 200px; background: #000;
     display: flex; align-items: center; justify-content: center;
@@ -201,10 +201,10 @@
     border: 2px solid transparent; aspect-ratio: 4/3;
   }
   .ann-thumb img { width: 100%; height: 100%; object-fit: cover; }
-  .ann-thumb.has-bbox { border-color: #52b788; }
+  .ann-thumb.has-bbox { border-color: #7ba87a; }
   .ann-thumb.has-bbox::after {
     content: ''; position: absolute; inset: 0;
-    background: rgba(82,183,136,0.15); pointer-events: none;
+    background: rgba(123,168,122,0.15); pointer-events: none;
   }
   .ann-thumb.no-bbox { border-color: #e63946; }
   .ann-thumb.active { border-color: #4cc9f0; border-width: 3px; }
@@ -214,7 +214,7 @@
     background: rgba(0,0,0,0.7); padding: 1px 3px;
     border-radius: 2px; z-index: 1;
   }
-  .ann-thumb .ann-thumb-flag.done { color: #52b788; }
+  .ann-thumb .ann-thumb-flag.done { color: #7ba87a; }
   .ann-thumb .ann-thumb-flag.missing { color: #e63946; }
 
   /* ── Output Log ── */
@@ -236,19 +236,19 @@
   }
   .log-copy-btn {
     position: absolute; top: 4px; right: 4px;
-    background: #1a1a2e; border: 1px solid #333; color: #8892b0;
+    background: #181a28; border: 1px solid #333; color: #8892b0;
     font-size: 0.65rem; padding: 2px 8px; border-radius: 3px;
     cursor: pointer; opacity: 0.7; z-index: 1;
   }
-  .log-copy-btn:hover { opacity: 1; background: #0f3460; }
+  .log-copy-btn:hover { opacity: 1; background: #0f2a4a; }
 
   /* ── Charts ── */
   .charts-row {
     display: flex; gap: 12px; margin-bottom: 16px;
   }
   .chart-box {
-    flex: 1; background: #16213e; border-radius: 6px; padding: 14px;
-    border: 1px solid #0f3460; min-width: 0;
+    flex: 1; background: #161d30; border-radius: 6px; padding: 14px;
+    border: 1px solid #0f2a4a; min-width: 0;
   }
   .chart-box h3 {
     font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
@@ -263,8 +263,8 @@
 
   /* ── Summary Stats ── */
   .metrics-summary {
-    background: #16213e; border-radius: 6px; padding: 14px;
-    margin-bottom: 12px; border: 1px solid #0f3460;
+    background: #161d30; border-radius: 6px; padding: 14px;
+    margin-bottom: 12px; border: 1px solid #0f2a4a;
   }
   .metrics-summary h3 {
     font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
@@ -280,9 +280,9 @@
   }
   .metric-value {
     font-family: monospace; font-size: 1.3rem; font-weight: 700;
-    color: #52b788;
+    color: #7ba87a;
   }
-  .metric-value.warn { color: #f4a261; }
+  .metric-value.warn { color: #b8896a; }
   .metric-value.bad { color: #e63946; }
   .metric-label {
     font-size: 0.75rem; color: #8892b0; margin-top: 2px;
@@ -291,8 +291,8 @@
 
   /* ── Dataset Stats ── */
   .dataset-panel {
-    background: #16213e; border-radius: 6px; padding: 14px;
-    border: 1px solid #0f3460;
+    background: #161d30; border-radius: 6px; padding: 14px;
+    border: 1px solid #0f2a4a;
   }
   .dataset-panel h3 {
     font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
@@ -301,7 +301,7 @@
 
   /* ── Sidebar ── */
   .sidebar-card {
-    background: #16213e; border-radius: 6px; padding: 14px;
+    background: #161d30; border-radius: 6px; padding: 14px;
     margin-bottom: 10px;
   }
   .sidebar-card h3 {
@@ -318,8 +318,8 @@
     width: 50px; text-align: right; font-family: monospace; font-size: 0.85rem;
   }
   .bar-low { background: #e63946; }
-  .bar-mid { background: #f4a261; }
-  .bar-good { background: #52b788; }
+  .bar-mid { background: #b8896a; }
+  .bar-good { background: #7ba87a; }
 
   .stat-row {
     display: flex; justify-content: space-between; padding: 3px 0;
@@ -331,14 +331,14 @@
     display: flex; align-items: center; gap: 8px; padding: 3px 0;
     font-family: monospace; font-size: 0.8rem;
   }
-  .file-check { color: #52b788; }
+  .file-check { color: #7ba87a; }
   .file-missing { color: #555; }
 
   .hints {
     font-size: 0.75rem; color: #555; font-family: monospace; line-height: 1.6;
   }
   .hints kbd {
-    background: #0f3460; padding: 1px 5px; border-radius: 3px; color: #8892b0;
+    background: #0f2a4a; padding: 1px 5px; border-radius: 3px; color: #8892b0;
   }
 
   @media (max-width: 900px) {
@@ -473,7 +473,7 @@
           </div>
           <button class="btn btn-nav btn-sm" onclick="runStep('deploy')">Run</button>
         </div>
-        <div class="step-card" id="step-crossval" data-step="crossval" style="margin-top:12px; border-top:2px dashed #0f3460; padding-top:14px;">
+        <div class="step-card" id="step-crossval" data-step="crossval" style="margin-top:12px; border-top:2px dashed #0f2a4a; padding-top:14px;">
           <span class="step-num" style="font-size:0.8rem; min-width:22px;">CV</span>
           <div class="step-info">
             <div class="step-name">Cross-Validate</div>
@@ -563,7 +563,7 @@
         </div>
         <div style="margin-top:8px; display:flex; gap:8px;">
           <button class="btn btn-nav btn-sm" onclick="saveCropSettings()">Save</button>
-          <button class="btn btn-nav btn-sm" onclick="saveCropSettingsAndRecrop()" style="color:#52b788">Save &amp; Re-crop</button>
+          <button class="btn btn-nav btn-sm" onclick="saveCropSettingsAndRecrop()" style="color:#7ba87a">Save &amp; Re-crop</button>
         </div>
         </div>
       </div>
@@ -665,7 +665,7 @@
       </div>
       <div style="text-align:center; padding:12px 0; position:relative; display:inline-block; width:100%;">
         <div style="position:relative; display:inline-block; max-width:100%;">
-          <img id="label-img" style="max-width:100%; max-height:500px; object-fit:contain; border:2px solid #1a1a2e; border-radius:4px; display:block;" onload="labelDrawBbox()">
+          <img id="label-img" style="max-width:100%; max-height:500px; object-fit:contain; border:2px solid #181a28; border-radius:4px; display:block;" onload="labelDrawBbox()">
           <canvas id="label-bbox-canvas" style="position:absolute; top:0; left:0; pointer-events:none; border-radius:4px;"></canvas>
         </div>
       </div>
@@ -825,8 +825,8 @@ const phaseBgPlugin = {
     const xAxis = chart.scales.x;
     const yAxis = chart.scales.y;
     const colors = {
-      phase1: 'rgba(82,183,136,0.07)',
-      phase2: 'rgba(244,162,97,0.07)',
+      phase1: 'rgba(123,168,122,0.07)',
+      phase2: 'rgba(184,137,106,0.07)',
       phase3: 'rgba(230,57,70,0.07)',
     };
     boundaries.forEach((b, i) => {
@@ -1141,10 +1141,10 @@ async function openLogBrowser() {
     });
     let html = '';
     for (const [ver, logs] of Object.entries(groups)) {
-      html += `<div style="color:#64ffda; margin-top:10px; font-weight:600;">${ver}</div>`;
+      html += `<div style="color:#7ba87a; margin-top:10px; font-weight:600;">${ver}</div>`;
       html += logs.map(l => {
         const date = new Date(l.modified * 1000).toLocaleString();
-        return `<div style="padding:4px 0 4px 12px; border-bottom:1px solid #1a1a2e;">
+        return `<div style="padding:4px 0 4px 12px; border-bottom:1px solid #181a28;">
           <a href="/api/logs/${l.path}" target="_blank" style="color:#ccd6f6; text-decoration:none;">${l.name}</a>
           <span style="color:#555; margin-left:8px;">${l.size_kb} KB &middot; ${date}</span>
         </div>`;
@@ -1354,7 +1354,7 @@ async function pollMetrics() {
       pcEl.innerHTML = Object.entries(d.per_class).map(([cat, accs]) => {
         const last = accs[accs.length - 1] || 0;
         const pct = Math.round(last * 100);
-        const color = pct >= 90 ? '#52b788' : pct >= 75 ? '#f4a261' : '#e63946';
+        const color = pct >= 90 ? '#7ba87a' : pct >= 75 ? '#b8896a' : '#e63946';
         return '<div class="cat-stat"><span class="name">' + cat + '</span>' +
           '<div class="bar-bg"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div>' +
           '<span class="count">' + pct + '%</span></div>';
@@ -1413,7 +1413,7 @@ function updateCharts(data) {
 
   // Build phase boundary annotations for shading
   const phases = data.phases || [];
-  const phaseColors = { phase1: 'rgba(82,183,136,0.06)', phase2: 'rgba(244,162,97,0.06)', phase3: 'rgba(230,57,70,0.06)' };
+  const phaseColors = { phase1: 'rgba(123,168,122,0.06)', phase2: 'rgba(184,137,106,0.06)', phase3: 'rgba(230,57,70,0.06)' };
 
   const chartOpts = {
     responsive: true,
@@ -1422,10 +1422,10 @@ function updateCharts(data) {
     scales: {
       x: {
         title: { display: true, text: 'Epoch', color: '#8892b0' },
-        ticks: { color: '#555' }, grid: { color: '#1a1a2e' },
+        ticks: { color: '#555' }, grid: { color: '#181a28' },
       },
       y: {
-        ticks: { color: '#555' }, grid: { color: '#0f3460' },
+        ticks: { color: '#555' }, grid: { color: '#0f2a4a' },
       },
     },
     plugins: {
@@ -1452,7 +1452,7 @@ function updateCharts(data) {
           {
             label: 'Train Loss',
             data: data.train_loss,
-            borderColor: '#52b788', backgroundColor: 'transparent',
+            borderColor: '#7ba87a', backgroundColor: 'transparent',
             borderWidth: 1.5, pointRadius: 0, tension: 0.3,
           },
           {
@@ -1484,13 +1484,13 @@ function updateCharts(data) {
           {
             label: 'Train Acc',
             data: data.train_acc,
-            borderColor: '#52b788', backgroundColor: 'transparent',
+            borderColor: '#7ba87a', backgroundColor: 'transparent',
             borderWidth: 1.5, pointRadius: 0, tension: 0.3,
           },
           {
             label: 'Val Acc',
             data: data.val_acc,
-            borderColor: '#f4a261', backgroundColor: 'transparent',
+            borderColor: '#b8896a', backgroundColor: 'transparent',
             borderWidth: 1.5, pointRadius: 0, tension: 0.3,
           },
         ],
@@ -1524,8 +1524,8 @@ function renderRawCounts(d) {
   const uc = d.raw_counts.unlabeled || 0;
   if (uc > 0) {
     rawEl.innerHTML += '<div class="cat-stat">' +
-      '<span class="name" style="color:#ffb347">unlbl</span>' +
-      '<div class="bar-bg"><div class="bar-fill" style="width:10%;background:#5a3600"></div></div>' +
+      '<span class="name" style="color:#c49a6c">unlbl</span>' +
+      '<div class="bar-bg"><div class="bar-fill" style="width:10%;background:#4a3828"></div></div>' +
       '<span class="count">' + uc + '</span></div>';
   }
 }
@@ -1788,13 +1788,13 @@ function annDrawBbox() {
   const y = (cy - h/2) * canvas.height;
   const bw = w * canvas.width;
   const bh = h * canvas.height;
-  ctx.strokeStyle = '#52b788';
+  ctx.strokeStyle = '#7ba87a';
   ctx.lineWidth = 2;
   ctx.strokeRect(x, y, bw, bh);
   // Label
   const img = annImages[annIndex];
   if (img) {
-    ctx.fillStyle = 'rgba(82,183,136,0.8)';
+    ctx.fillStyle = 'rgba(123,168,122,0.8)';
     ctx.font = '12px monospace';
     const label = img.cat;
     const tw = ctx.measureText(label).width;
@@ -2148,10 +2148,10 @@ function labelDrawBbox() {
   const y = ymin * canvas.height;
   const w = bw * canvas.width;
   const h = bh * canvas.height;
-  ctx.strokeStyle = 'rgba(255, 180, 0, 0.85)';
+  ctx.strokeStyle = 'rgba(196, 154, 108, 0.85)';
   ctx.lineWidth = 2;
   ctx.strokeRect(x, y, w, h);
-  ctx.fillStyle = 'rgba(255, 180, 0, 0.15)';
+  ctx.fillStyle = 'rgba(196, 154, 108, 0.15)';
   ctx.fillRect(x, y, w, h);
 }
 

@@ -6,7 +6,7 @@ import sqlite3
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum, auto
 from pathlib import Path
 
@@ -153,8 +153,8 @@ class FeedingTracker:
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     cat,
-                    datetime.fromtimestamp(s.start_time).isoformat(),
-                    datetime.fromtimestamp(end_time).isoformat(),
+                    datetime.fromtimestamp(s.start_time, tz=timezone.utc).isoformat(),
+                    datetime.fromtimestamp(end_time, tz=timezone.utc).isoformat(),
                     duration,
                     s.detection_count,
                     track_ids_str,

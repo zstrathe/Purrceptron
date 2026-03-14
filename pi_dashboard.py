@@ -23,7 +23,7 @@ import threading
 import time
 from pathlib import Path
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from flask import Flask, Response, jsonify, render_template, request, send_file
 
@@ -38,6 +38,49 @@ from utils.display import print_info, print_success, print_error, print_warning,
 from collect.label_review import LabelReviewApp
 
 import yaml
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Classifier Events Cache
+# ═══════════════════════════════════════════════════════════════════════════
+
+_EVENTS_CACHE_TTL = 30  # seconds
+
+_events_cache: dict = {}  # {cache_key: {"data": [...], "expires": float}, "_db_path": Path}
+
+
+def _refresh_events_cache(db_path=None, start=None, end=None):
+    """Refresh the in-memory classifier events cache from SQLite."""
+    path = db_path or _events_cache.get("_db_path")
+    if path:
+        _events_cache["_db_path"] = path
+    if not path or not Path(str(path)).is_file():
+        return []
+    # Evict oldest entry if cache grows beyond 7 keys
+    cache_keys = [k for k in _events_cache if k != "_db_path"]
+    if len(cache_keys) > 7:
+        oldest = min(cache_keys, key=lambda k: _events_cache[k].get("expires", 0))
+        del _events_cache[oldest]
+    with sqlite3.connect(str(path)) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.row_factory = sqlite3.Row
+        if start and end:
+            rows = conn.execute(
+                "SELECT * FROM classifier_events "
+                "WHERE start_time >= ? AND start_time < ? ORDER BY id DESC",
+                (start, end),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM classifier_events ORDER BY id DESC LIMIT 50",
+            ).fetchall()
+    data = [dict(r) for r in rows]
+    if start:
+        _events_cache[start] = {
+            "data": data,
+            "expires": time.monotonic() + _EVENTS_CACHE_TTL,
+        }
+    return data
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -393,9 +436,9 @@ class ConfigManager:
 
     # Keys that get saved to runtime.yaml when changed via the dashboard UI.
     _RUNTIME_KEYS: dict[str, tuple[str, ...]] = {
-        "deployment": ("hef_path", "labels_json", "track_all", "filter_classes"),
+        "deployment": ("hef_path", "labels_json", "track_all", "tracking_objects"),
         "detection_capture": ("enabled", "unlabeled_classes", "min_interval_seconds",
-                              "max_captures_per_session", "filter_labels"),
+                              "max_captures_per_session"),
         "feeding": ("enabled", "cooldown_seconds", "min_detection_frames"),
         "classifier": ("enabled", "save_crops_for_labeling",
                         "confidence_threshold", "stability_frames",
@@ -514,13 +557,6 @@ def create_app(
                                 headers={'Cache-Control': 'no-cache, no-store, must-revalidate'})
         except (FileNotFoundError, OSError):
             return Response("[]", mimetype="application/json")
-
-    @flask_app.route("/api/ignore_labels", methods=["POST"])
-    def api_ignore_labels():
-        """Send ignore labels list to detect.py to hide from video overlay."""
-        labels = request.json.get("labels", [])
-        pipeline_mgr.send_command({"cmd": "set_ignore_labels", "labels": labels})
-        return jsonify({"status": "ok"})
 
     # ── Capture API (sends command to detect.py via stdin) ───────
     @flask_app.route("/api/capture/<cat_name>", methods=["POST"])
@@ -727,7 +763,7 @@ def create_app(
             pipeline_mgr.send_command({
                 "cmd": "set_detection_capture",
                 "enabled": dc.get("enabled", False),
-                "filter_labels": dc.get("filter_labels", []),
+                "min_interval_seconds": dc.get("min_interval_seconds", 15),
             })
         # Push bowl_roi changes live to classifier gate
         if "classifier" in data and "bowl_roi" in data["classifier"]:
@@ -758,21 +794,14 @@ def create_app(
 
     @flask_app.route("/api/classifier/events")
     def api_classifier_events():
-        cfg = config_mgr.read()
-        db_path = resolve_path(
-            cfg.get("classifier", {}).get("db_path", "data/classifier_log.db"),
-            PROJECT_ROOT,
-        )
-        if not db_path.is_file():
-            return jsonify({"events": []})
-        limit = request.args.get("limit", 50, type=int)
-        with sqlite3.connect(str(db_path)) as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                "SELECT * FROM classifier_events ORDER BY id DESC LIMIT ?", (limit,)
-            ).fetchall()
-        return jsonify({"events": [dict(r) for r in rows]})
+        start = request.args.get("start")  # UTC ISO string
+        end = request.args.get("end")      # UTC ISO string
+        if start and start in _events_cache:
+            entry = _events_cache[start]
+            if time.monotonic() < entry["expires"]:
+                return jsonify({"events": entry["data"]})
+        events = _refresh_events_cache(start=start, end=end)
+        return jsonify({"events": events})
 
     # ── Logs ───────────────────────────────────────────────────────
     @flask_app.route("/api/logs")
@@ -885,6 +914,19 @@ def main() -> None:
 
     print_info(f"Review images: {reviewer.total()} ({reviewer.unreviewed_count()} unreviewed)")
     print_success(f"Dashboard: http://{host}:{port}")
+
+    # Warm classifier events cache so first dashboard load is instant
+    today_local = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start_utc = today_local.astimezone(timezone.utc).isoformat()
+    tomorrow_start_utc = (today_local + timedelta(days=1)).astimezone(timezone.utc).isoformat()
+    _refresh_events_cache(
+        resolve_path(
+            config.get("classifier", {}).get("db_path", "data/classifier_log.db"),
+            PROJECT_ROOT,
+        ),
+        start=today_start_utc,
+        end=tomorrow_start_utc,
+    )
 
     flask_app = create_app(
         reviewer=reviewer,

@@ -7,14 +7,14 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    background: #1a1a2e; color: #e0e0e0;
+    background: #181a28; color: #e0e0e0;
     font-family: 'Segoe UI', system-ui, sans-serif;
     min-height: 100vh;
   }
 
   /* Top bar */
   .top-bar {
-    background: #16213e; border-bottom: 1px solid #0f3460;
+    background: #161d30; border-bottom: 1px solid #0f2a4a;
   }
   .top-bar-inner {
     display: flex; justify-content: space-between; align-items: center;
@@ -22,12 +22,12 @@
   }
   .tab-bar { display: flex; gap: 4px; }
   .tab-btn {
-    padding: 6px 18px; border: 1px solid #0f3460; border-bottom: none;
+    padding: 6px 18px; border: 1px solid #0f2a4a; border-bottom: none;
     background: #0a0a1a; color: #8892b0; cursor: pointer;
     border-radius: 6px 6px 0 0; font-size: 0.9rem; font-weight: 600;
     font-family: monospace;
   }
-  .tab-btn.active { background: #1a1a2e; color: #e0e0e0; border-color: #0f3460; }
+  .tab-btn.active { background: #181a28; color: #e0e0e0; border-color: #0f2a4a; }
   .tab-btn:hover { color: #e0e0e0; }
   .top-counts {
     font-family: monospace; font-size: 0.85rem; color: #8892b0;
@@ -52,15 +52,15 @@
   .btn:active { transform: scale(0.96); }
   .btn:hover:not(:disabled) { filter: brightness(1.15); }
   .btn:disabled { opacity: 0.35; cursor: not-allowed; }
-  .btn-cat { background: #0f3460; color: #e0e0e0; flex: 1; min-width: 100px; }
-  .btn-nav { background: #16213e; color: #8892b0; border: 1px solid #0f3460; }
+  .btn-cat { background: #0f2a4a; color: #e0e0e0; flex: 1; min-width: 100px; }
+  .btn-nav { background: #161d30; color: #8892b0; border: 1px solid #0f2a4a; }
   .btn-delete { background: #3d0000; color: #e63946; }
-  .btn-unlabeled { background: #5a3600; color: #ffb347; }
+  .btn-unlabeled { background: #4a3828; color: #c49a6c; }
 
   /* ── Detection Mode Panel ── */
   .inference-panel {
-    background: #16213e; border-radius: 6px; padding: 14px;
-    margin-bottom: 12px; border: 1px solid #0f3460;
+    background: #161d30; border-radius: 6px; padding: 14px;
+    margin-bottom: 12px; border: 1px solid #0f2a4a;
   }
   .inference-panel h3 {
     font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
@@ -77,7 +77,7 @@
     min-width: 44px;
   }
   .inference-row select, .inference-row input[type="number"], .inference-row input[type="text"] {
-    background: #0a0a1a; color: #e0e0e0; border: 1px solid #0f3460;
+    background: #0a0a1a; color: #e0e0e0; border: 1px solid #0f2a4a;
     padding: 6px 10px; border-radius: 4px; font-size: 0.85rem;
     font-family: monospace;
   }
@@ -90,7 +90,7 @@
   }
   .toggle-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
   .toggle-slider {
-    position: absolute; inset: 0; background: #162447;
+    position: absolute; inset: 0; background: #162040;
     border-radius: 20px; cursor: pointer;
     transition: background 0.2s;
   }
@@ -99,8 +99,8 @@
     top: 3px; left: 3px; background: #8892b0;
     border-radius: 50%; transition: transform 0.2s;
   }
-  .toggle-switch input:checked + .toggle-slider { background: #1b4332; }
-  .toggle-switch input:checked + .toggle-slider::before { transform: translateX(24px); background: #52b788; }
+  .toggle-switch input:checked + .toggle-slider { background: #2a3d2e; }
+  .toggle-switch input:checked + .toggle-slider::before { transform: translateX(24px); background: #7ba87a; }
 
   .settings-group {
     background: #0a0a1a; border-radius: 4px; padding: 10px;
@@ -120,8 +120,8 @@
     display: inline-block;
   }
   .status-dot.stopped { background: #e63946; }
-  .status-dot.running { background: #52b788; animation: pulse 1.5s infinite; }
-  .status-dot.restarting { background: #f4a261; animation: pulse 1s infinite; }
+  .status-dot.running { background: #7ba87a; animation: pulse 1.5s infinite; }
+  .status-dot.restarting { background: #b8896a; animation: pulse 1s infinite; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 
   .inference-log-wrap {
@@ -135,11 +135,11 @@
   }
   .log-copy-btn {
     position: absolute; top: 4px; right: 4px;
-    background: #1a1a2e; border: 1px solid #333; color: #8892b0;
+    background: #181a28; border: 1px solid #333; color: #8892b0;
     font-size: 0.65rem; padding: 2px 8px; border-radius: 3px;
     cursor: pointer; opacity: 0.7; z-index: 1;
   }
-  .log-copy-btn:hover { opacity: 1; background: #0f3460; }
+  .log-copy-btn:hover { opacity: 1; background: #0f2a4a; }
 
   /* ── Auto-Capture ── */
   .auto-row {
@@ -147,17 +147,17 @@
   }
   .auto-row label { font-size: 0.85rem; color: #8892b0; font-family: monospace; }
   .auto-row select {
-    background: #0a0a1a; color: #e0e0e0; border: 1px solid #0f3460;
+    background: #0a0a1a; color: #e0e0e0; border: 1px solid #0f2a4a;
     padding: 6px 10px; border-radius: 4px; font-size: 0.85rem; font-family: monospace;
   }
   .btn-toggle {
-    padding: 8px 16px; border: 1px solid #0f3460;
-    background: #16213e; color: #8892b0; cursor: pointer;
+    padding: 8px 16px; border: 1px solid #0f2a4a;
+    background: #161d30; color: #8892b0; cursor: pointer;
     border-radius: 6px; font-size: 0.9rem; font-weight: 600;
     font-family: monospace; transition: background 0.2s, color 0.2s;
   }
   .btn-toggle:hover { color: #e0e0e0; }
-  .btn-toggle.auto-on { background: #5a3600; color: #ffb347; border-color: #ffb347; }
+  .btn-toggle.auto-on { background: #4a3828; color: #c49a6c; border-color: #c49a6c; }
 
   /* ── Camera / Capture ── */
   .stream-wrapper {
@@ -178,9 +178,9 @@
   }
   .stream-wrapper.roi-drawing { cursor: crosshair; }
   .stream-wrapper.roi-drawing canvas { pointer-events: auto; cursor: crosshair; }
-  #roi-draw-btn.active { background: #5a3600; color: #ffb347; border-color: #ffb347; }
-  .flash.capture-flash { background: rgba(82, 183, 136, 0.35); }
-  .flash.label-flash { background: rgba(82, 183, 136, 0.35); }
+  #roi-draw-btn.active { background: #4a3828; color: #c49a6c; border-color: #c49a6c; }
+  .flash.capture-flash { background: rgba(123, 168, 122, 0.35); }
+  .flash.label-flash { background: rgba(123, 168, 122, 0.35); }
   .flash.delete-flash { background: rgba(230, 57, 70, 0.35); }
   .flash.active { animation: flash-fade 0.3s ease-out; }
   @keyframes flash-fade { from { opacity: 1; } to { opacity: 0; } }
@@ -188,8 +188,8 @@
   /* ── Classifier Identity ── */
   .classifier-identity {
     display: flex; align-items: center; gap: 10px;
-    background: #16213e; border-radius: 6px; padding: 10px 16px;
-    margin-top: 8px; border: 2px solid #0f3460;
+    background: #161d30; border-radius: 6px; padding: 10px 16px;
+    margin-top: 8px; border: 2px solid #0f2a4a;
   }
   .classifier-identity.pending { opacity: 0.7; }
   .identity-icon { font-size: 1.1rem; }
@@ -207,8 +207,8 @@
 
   /* ── Detection Info Bar ── */
   .detection-bar {
-    background: #16213e; border-radius: 6px; padding: 8px 12px;
-    margin-top: 8px; border: 1px solid #0f3460;
+    background: #161d30; border-radius: 6px; padding: 8px 12px;
+    margin-top: 8px; border: 1px solid #0f2a4a;
   }
   .detection-pills {
     display: flex; flex-wrap: wrap; gap: 6px;
@@ -243,8 +243,8 @@
     font-family: monospace; font-size: 0.85rem; font-weight: bold;
     padding: 3px 10px; border-radius: 4px; display: inline-block;
   }
-  .label-badge.unlabeled { background: #5a3600; color: #ffb347; }
-  .label-badge.labeled { background: #1b4332; color: #52b788; }
+  .label-badge.unlabeled { background: #4a3828; color: #c49a6c; }
+  .label-badge.labeled { background: #2a3d2e; color: #7ba87a; }
   .filename-display {
     font-family: monospace; font-size: 0.7rem; color: #555;
     margin-top: 4px; word-break: break-all;
@@ -254,7 +254,7 @@
   .no-review-msg {
     display: none; flex-direction: column; align-items: center;
     justify-content: center; min-height: 300px; text-align: center;
-    color: #52b788; font-family: monospace;
+    color: #7ba87a; font-family: monospace;
   }
   .no-review-msg h2 { margin-bottom: 10px; }
 
@@ -262,7 +262,7 @@
     display: none; flex-direction: column; align-items: center;
     justify-content: center; min-height: 300px; text-align: center;
   }
-  .done-screen h2 { color: #52b788; margin-bottom: 16px; }
+  .done-screen h2 { color: #7ba87a; margin-bottom: 16px; }
 
   /* ── Thumbnail Grid ── */
   .thumb-sort-row {
@@ -272,23 +272,23 @@
     font-size: 0.8rem; color: #8892b0; font-family: monospace;
   }
   .sort-btn {
-    padding: 4px 12px; border: 1px solid #0f3460;
+    padding: 4px 12px; border: 1px solid #0f2a4a;
     background: #0a0a1a; color: #8892b0; cursor: pointer;
     border-radius: 4px; font-size: 0.8rem; font-family: monospace;
     font-weight: 600; transition: background 0.2s, color 0.2s;
   }
-  .sort-btn.active { background: #1b4332; color: #52b788; border-color: #52b788; }
+  .sort-btn.active { background: #2a3d2e; color: #7ba87a; border-color: #7ba87a; }
   .sort-btn:hover:not(.active) { color: #e0e0e0; }
   .thumbnail-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 4px; padding: 8px 0; margin-top: 4px;
     max-height: 50vh; overflow-y: auto;
-    scrollbar-width: thin; scrollbar-color: #0f3460 #0a0a1a;
+    scrollbar-width: thin; scrollbar-color: #0f2a4a #0a0a1a;
   }
   .thumbnail-grid::-webkit-scrollbar { width: 6px; }
   .thumbnail-grid::-webkit-scrollbar-track { background: #0a0a1a; }
-  .thumbnail-grid::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 3px; }
+  .thumbnail-grid::-webkit-scrollbar-thumb { background: #0f2a4a; border-radius: 3px; }
   .thumb-item {
     height: 100px;
     border-radius: 4px; overflow: hidden; cursor: pointer;
@@ -297,7 +297,7 @@
     position: relative;
   }
   .thumb-item img { width: 100%; height: 100%; object-fit: cover; }
-  .thumb-item.active { border-color: #52b788; }
+  .thumb-item.active { border-color: #7ba87a; }
   .thumb-item.selected { border-color: #4a90d9; background: rgba(74,144,217,0.15); }
   .thumb-item.selected::after {
     content: '\2713'; position: absolute; top: 2px; right: 4px;
@@ -327,7 +327,7 @@
 
   /* ── Sidebar ── */
   .sidebar-card {
-    background: #16213e; border-radius: 6px; padding: 14px;
+    background: #161d30; border-radius: 6px; padding: 14px;
     margin-bottom: 10px;
   }
   .sidebar-card h3 {
@@ -344,8 +344,8 @@
     width: 70px; text-align: right; font-family: monospace; font-size: 0.85rem;
   }
   .bar-low { background: #e63946; }
-  .bar-mid { background: #f4a261; }
-  .bar-good { background: #52b788; }
+  .bar-mid { background: #b8896a; }
+  .bar-good { background: #7ba87a; }
 
   .stat-row {
     display: flex; justify-content: space-between; padding: 3px 0;
@@ -357,7 +357,7 @@
     font-size: 0.75rem; color: #555; font-family: monospace; line-height: 1.6;
   }
   .hints kbd {
-    background: #0f3460; padding: 1px 5px; border-radius: 3px; color: #8892b0;
+    background: #0f2a4a; padding: 1px 5px; border-radius: 3px; color: #8892b0;
   }
 
   @media (max-width: 900px) {
@@ -391,7 +391,7 @@
 
         <div class="status-indicator">
           <span class="status-dot running" id="inf-status-dot"></span>
-          <span id="inf-status-text">Running (COCO)</span>
+          <span id="inf-status-text">Running</span>
         </div>
 
         <div class="inference-log-wrap" id="inf-log-wrap">
@@ -423,8 +423,8 @@
           </label>
         </div>
         <div class="inference-row">
-          <label>Labels:</label>
-          <input type="text" id="cap-labels" onchange="saveCaptureSettings()">
+          <label>Interval (s):</label>
+          <input type="number" id="cap-interval" min="1" step="1" style="width:70px" onchange="saveCaptureSettings()">
         </div>
       </div>
 
@@ -488,23 +488,6 @@
         <div class="detection-pills" id="detection-pills">
           <span class="det-none">No detections</span>
         </div>
-        <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
-          <span style="font-size:0.75rem;color:#8892b0;font-family:monospace">Ignore:</span>
-          <div style="flex:1;display:flex;align-items:center;background:#0a0a1a;border:1px solid #0f3460;border-radius:4px;overflow:hidden">
-            <input type="text" id="ignore-labels" placeholder="e.g. person, dog"
-                   onkeydown="if(event.key==='Enter')sendIgnoreLabels()"
-                   style="flex:1;font-size:0.75rem;padding:4px 8px;background:transparent;color:#e0e0e0;border:none;outline:none;font-family:monospace">
-            <button onclick="sendIgnoreLabels()"
-                    style="font-size:0.65rem;font-weight:700;padding:3px 10px;margin:2px 3px 2px 2px;background:#0f3460;color:#e0e0e0;border:none;border-radius:3px;cursor:pointer;font-family:monospace;white-space:nowrap;letter-spacing:0.5px">Apply</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Manual Capture Buttons -->
-      <div class="controls">
-        {% for i, cat in cats %}
-        <button class="btn btn-cat" onclick="captureAs('{{ cat }}')">{{ i }}: {{ cat }}</button>
-        {% endfor %}
       </div>
 
       <!-- Auto-Capture Controls -->
@@ -572,7 +555,7 @@
           <option value="{{ cat }}">{{ cat }}</option>
           {% endfor %}
         </select>
-        <button class="btn-sel" style="background:#2d6a4f;border-color:#52b788;color:#fff" onclick="batchLabel(document.getElementById('batch-label-select').value)">Apply Label</button>
+        <button class="btn-sel" style="background:#3d5a42;border-color:#7ba87a;color:#fff" onclick="batchLabel(document.getElementById('batch-label-select').value)">Apply Label</button>
         <span style="border-left:1px solid #555;height:18px;margin:0 6px"></span>
         <button class="btn-sel btn-sel-del" onclick="batchDelete()">Delete Selected</button>
         <span style="flex:1"></span>
@@ -595,8 +578,8 @@
       </div>
       {% endfor %}
       <div class="cat-stat" id="unlabeled-row">
-        <span class="name" style="color:#ffb347">unlabeled</span>
-        <div class="bar-bg"><div class="bar-fill" id="bar-unlabeled" style="width:0%;background:#5a3600"></div></div>
+        <span class="name" style="color:#c49a6c">unlabeled</span>
+        <div class="bar-bg"><div class="bar-fill" id="bar-unlabeled" style="width:0%;background:#4a3828"></div></div>
         <span class="count" id="count-unlabeled">0</span>
       </div>
     </div>
@@ -605,18 +588,11 @@
       <h3>Session</h3>
       <div class="stat-row"><span class="label">Mode:</span><span id="sidebar-mode">DETECTION</span></div>
       <div class="stat-row"><span class="label">Pipeline:</span><span id="sidebar-pipeline">--</span></div>
-      <hr style="border-color:#0f3460; margin:6px 0;">
+      <hr style="border-color:#0f2a4a; margin:6px 0;">
       <div class="stat-row"><span class="label">Labeled:</span><span id="sidebar-labeled">0</span></div>
       <div class="stat-row"><span class="label">Deleted:</span><span id="sidebar-deleted">0</span></div>
     </div>
 
-    <div class="sidebar-card hints" id="hints-capture">
-      <h3>Capture Shortcuts</h3>
-      {% for i, cat in cats %}
-      <kbd>{{ i }}</kbd> {{ cat }}<br>
-      {% endfor %}
-      <kbd>a</kbd> Toggle auto-capture
-    </div>
     <div class="sidebar-card hints" id="hints-review" style="display:none">
       <h3>Review Shortcuts</h3>
       {% for i, cat in cats %}
@@ -631,6 +607,33 @@
       <div id="recent-detections" style="font-family:monospace;font-size:0.8rem;color:#e0e0e0">
         <span style="color:#8892b0">No detections yet</span>
       </div>
+    </div>
+
+    <div class="sidebar-card" id="tracked-card" style="display:none">
+      <h3 style="display:flex;align-items:center;justify-content:space-between;margin:0">
+        <span style="cursor:pointer;padding:0 6px" onclick="changeTrackedDate(-1)">&larr;</span>
+        <span id="tracked-date"></span>
+        <span style="cursor:pointer;padding:0 6px" onclick="changeTrackedDate(1)">&rarr;</span>
+      </h3>
+      <div style="overflow-x:auto;margin-top:6px">
+        <table style="width:100%;font-family:monospace;font-size:0.75rem;color:#e0e0e0;border-collapse:collapse">
+          <thead>
+            <tr style="color:#8892b0;text-align:left">
+              <th style="padding:2px 4px">Cat</th>
+              <th style="padding:2px 4px">Start</th>
+              <th style="padding:2px 4px">End</th>
+              <th style="padding:2px 4px">Duration</th>
+            </tr>
+          </thead>
+          <tbody id="tracked-tbody"></tbody>
+        </table>
+        <div id="tracked-empty" style="color:#8892b0;font-size:0.8rem;padding:4px;display:none">No events</div>
+      </div>
+    </div>
+
+    <div class="sidebar-card" id="tracked-totals-card" style="display:none">
+      <h3>Total Tracked Time</h3>
+      <div id="tracked-totals" style="font-family:monospace;font-size:0.8rem;color:#e0e0e0"></div>
     </div>
   </div>
 </div>
@@ -650,7 +653,6 @@ function switchTab(tab) {
   activeTab = tab;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + tab));
-  document.getElementById('hints-capture').style.display = tab === 'capture' ? 'block' : 'none';
   document.getElementById('hints-review').style.display = tab === 'review' ? 'block' : 'none';
 
   // Start preview polling when entering capture tab
@@ -765,8 +767,8 @@ async function pollClassifierIdentity() {
       } else if (data.ood_rejected) {
         // Energy filter is rejecting frames — show unknown indicator
         labelEl.textContent = 'Unknown';
-        labelEl.style.color = '#e6b800';
-        el.style.borderColor = '#e6b800';
+        labelEl.style.color = '#b8896a';
+        el.style.borderColor = '#b8896a';
         confEl.textContent = '';
         votesEl.textContent = '';
         el.classList.add('pending');
@@ -775,7 +777,7 @@ async function pollClassifierIdentity() {
         // Classifier enabled but no prediction yet — show waiting state
         labelEl.textContent = 'Waiting for detection in ROI...';
         labelEl.style.color = '#8892b0';
-        el.style.borderColor = '#0f3460';
+        el.style.borderColor = '#0f2a4a';
         confEl.textContent = '';
         votesEl.textContent = '';
         el.classList.add('pending');
@@ -786,6 +788,98 @@ async function pollClassifierIdentity() {
     }
   } catch(e) {}
   setTimeout(pollClassifierIdentity, 500);
+}
+
+// ── Tracked events (date-navigable) ──────────────────────
+let trackedDate = new Date();
+
+function formatTrackedDate(d) {
+  return (d.getMonth()+1) + '/' + d.getDate() + '/' + String(d.getFullYear()).slice(2);
+}
+
+function changeTrackedDate(delta) {
+  trackedDate.setDate(trackedDate.getDate() + delta);
+  document.getElementById('tracked-date').textContent = formatTrackedDate(trackedDate);
+  fetchTrackedEvents();
+}
+
+function formatTime(isoStr) {
+  if (!isoStr) return '--';
+  const d = new Date(isoStr);
+  return d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+}
+
+function formatDuration(sec) {
+  if (sec == null) return '--';
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  return m > 0 ? m + 'm ' + s + 's' : s + 's';
+}
+
+async function fetchTrackedEvents() {
+  const card = document.getElementById('tracked-card');
+  const totalsCard = document.getElementById('tracked-totals-card');
+  const clfEnabled = document.getElementById('clf-enabled')?.checked;
+  if (!clfEnabled) { card.style.display = 'none'; totalsCard.style.display = 'none'; return; }
+
+  const dayStart = new Date(trackedDate);
+  dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(dayStart);
+  dayEnd.setDate(dayEnd.getDate() + 1);
+  const params = 'start=' + encodeURIComponent(dayStart.toISOString()) +
+                 '&end=' + encodeURIComponent(dayEnd.toISOString());
+  try {
+    const r = await fetch('/api/classifier/events?' + params);
+    if (!r.ok) { card.style.display = 'none'; totalsCard.style.display = 'none'; return; }
+    const data = await r.json();
+    const events = data.events || [];
+
+    const tbody = document.getElementById('tracked-tbody');
+    const empty = document.getElementById('tracked-empty');
+    tbody.innerHTML = '';
+    if (events.length === 0) {
+      empty.style.display = 'block';
+    } else {
+      empty.style.display = 'none';
+      for (let i = 0; i < events.length; i++) {
+        const ev = events[i];
+        const tr = document.createElement('tr');
+        if (i % 2 === 1) tr.style.background = 'rgba(255,255,255,0.03)';
+        const color = DET_COLORS[ev.cat_name] || DET_DEFAULT_COLOR;
+        tr.innerHTML =
+          '<td style="padding:2px 4px;color:' + color + ';font-weight:700">' + ev.cat_name + '</td>' +
+          '<td style="padding:2px 4px;color:#8892b0">' + formatTime(ev.start_time) + '</td>' +
+          '<td style="padding:2px 4px;color:#8892b0">' + formatTime(ev.end_time) + '</td>' +
+          '<td style="padding:2px 4px;color:#8892b0">' + formatDuration(ev.duration_seconds) + '</td>';
+        tbody.appendChild(tr);
+      }
+    }
+    card.style.display = 'block';
+
+    // Compute per-cat totals
+    const totals = {};
+    for (const ev of events) {
+      if (ev.duration_seconds != null) {
+        totals[ev.cat_name] = (totals[ev.cat_name] || 0) + ev.duration_seconds;
+      }
+    }
+    const totalsDiv = document.getElementById('tracked-totals');
+    totalsDiv.innerHTML = '';
+    const cats = Object.keys(totals).sort();
+    if (cats.length === 0) {
+      totalsCard.style.display = 'none';
+    } else {
+      for (const cat of cats) {
+        const div = document.createElement('div');
+        div.style.cssText = 'display:flex;justify-content:space-between;padding:2px 0';
+        const color = DET_COLORS[cat] || DET_DEFAULT_COLOR;
+        div.innerHTML = '<span style="color:' + color + ';font-weight:700">' + cat + '</span>' +
+                        '<span style="color:#8892b0">' + formatDuration(totals[cat]) + '</span>';
+        totalsDiv.appendChild(div);
+      }
+      totalsCard.style.display = 'block';
+    }
+  } catch(e) { card.style.display = 'none'; totalsCard.style.display = 'none'; }
 }
 
 // ── ROI drawing ───────────────────────────────────────────
@@ -820,9 +914,9 @@ function drawROI() {
     const y = Math.min(roiStart.y, roiCurrent.y);
     const w = Math.abs(roiCurrent.x - roiStart.x);
     const h = Math.abs(roiCurrent.y - roiStart.y);
-    ctx.strokeStyle = '#ffb347';
+    ctx.strokeStyle = '#c49a6c';
     ctx.lineWidth = 2;
-    ctx.fillStyle = 'rgba(255, 179, 71, 0.1)';
+    ctx.fillStyle = 'rgba(196, 154, 108, 0.1)';
     ctx.fillRect(x, y, w, h);
     ctx.strokeRect(x, y, w, h);
     return;
@@ -832,13 +926,13 @@ function drawROI() {
   if (currentROI && showROIOverlay) {
     const scale = getDisplayToSourceScale();
     const [x1, y1, x2, y2] = currentROI;
-    ctx.strokeStyle = '#52b788';
+    ctx.strokeStyle = '#7ba87a';
     ctx.lineWidth = 2;
     ctx.setLineDash([6, 4]);
     ctx.strokeRect(x1 / scale.sx, y1 / scale.sy, (x2 - x1) / scale.sx, (y2 - y1) / scale.sy);
     ctx.setLineDash([]);
     ctx.font = '11px monospace';
-    ctx.fillStyle = '#52b788';
+    ctx.fillStyle = '#7ba87a';
     ctx.fillText('Bowl ROI', x1 / scale.sx + 4, y1 / scale.sy + 14);
   }
 }
@@ -982,13 +1076,8 @@ async function pollDetections() {
 
 function renderDetectionPills(dets) {
   const container = document.getElementById('detection-pills');
-  // Parse ignore list
-  const ignoreRaw = document.getElementById('ignore-labels').value;
-  const ignoreSet = new Set(ignoreRaw.split(',').map(s => s.trim().toLowerCase()).filter(s => s));
-  // Group by label, skipping ignored
   const groups = {};
   for (const d of dets) {
-    if (ignoreSet.has(d.label.toLowerCase())) continue;
     if (!groups[d.label]) groups[d.label] = {count: 0, confs: [], ids: []};
     groups[d.label].count++;
     groups[d.label].confs.push(d.confidence);
@@ -1010,12 +1099,10 @@ function renderDetectionPills(dets) {
 // ── Recent detections tracking ────────────────────────────
 const recentLabels = [];  // ordered most-recent first, max 20 unique
 function updateRecentLabels(dets) {
-  const ignoreRaw = document.getElementById('ignore-labels').value;
-  const ignoreSet = new Set(ignoreRaw.split(',').map(s => s.trim().toLowerCase()).filter(s => s));
   const seen = new Set();
   for (const d of dets) {
     const label = d.label;
-    if (ignoreSet.has(label.toLowerCase()) || seen.has(label)) continue;
+    if (seen.has(label)) continue;
     seen.add(label);
     const idx = recentLabels.indexOf(label);
     if (idx !== -1) recentLabels.splice(idx, 1);
@@ -1034,18 +1121,6 @@ function renderRecentDetections() {
     const color = DET_COLORS[label] || DET_DEFAULT_COLOR;
     return `<div style="padding:2px 0;display:flex;align-items:center;gap:6px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color}"></span>${label}</div>`;
   }).join('');
-}
-
-// ── Ignore labels (send to backend to hide from video) ────
-function sendIgnoreLabels() {
-  const raw = document.getElementById('ignore-labels').value;
-  const labels = raw.split(',').map(s => s.trim()).filter(s => s.length > 0);
-  localStorage.setItem('ignoreLabels', raw);
-  fetch('/api/ignore_labels', {
-    method: 'POST',
-    headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({labels})
-  }).catch(() => {});
 }
 
 // ── Detection Mode Switching ───────────────────────────────
@@ -1086,8 +1161,8 @@ async function openLogBrowser() {
     }
     listEl.innerHTML = d.logs.map(l => {
       const date = new Date(l.modified * 1000).toLocaleString();
-      return `<div style="padding:6px 0; border-bottom:1px solid #1a1a2e;">
-        <a href="/api/logs/${l.name}" target="_blank" style="color:#64ffda; text-decoration:none;">${l.name}</a>
+      return `<div style="padding:6px 0; border-bottom:1px solid #181a28;">
+        <a href="/api/logs/${l.name}" target="_blank" style="color:#7ba87a; text-decoration:none;">${l.name}</a>
         <span style="color:#555; margin-left:8px;">${l.size_kb} KB &middot; ${date}</span>
       </div>`;
     }).join('');
@@ -1104,16 +1179,7 @@ function updateModeUI() {
   const dot = document.getElementById('inf-status-dot');
   const text = document.getElementById('inf-status-text');
   dot.className = 'status-dot running';
-  text.textContent = 'Running (COCO)';
-}
-
-// ── Capture functions ──────────────────────────────────────
-async function captureAs(cat) {
-  try {
-    const r = await fetch('/api/capture/' + encodeURIComponent(cat), {method:'POST'});
-    const d = await r.json();
-    if (d.status === 'ok') triggerFlash('capture-flash', 'capture-flash');
-  } catch(e) { console.error(e); }
+  text.textContent = 'Running';
 }
 
 // ── Auto-Capture ──────────────────────────────────────────
@@ -1448,24 +1514,19 @@ async function loadCaptureSettings() {
     const settings = await resp.json();
     const dc = settings.detection_capture || {};
     document.getElementById('cap-enabled').checked = dc.enabled || false;
-    const labels = dc.filter_labels || [];
-    document.getElementById('cap-labels').value = labels.join(', ');
+    document.getElementById('cap-interval').value = dc.min_interval_seconds || 15;
   } catch(e) { console.error(e); }
 }
 
 async function saveCaptureSettings() {
   const enabled = document.getElementById('cap-enabled').checked;
-  const raw = document.getElementById('cap-labels').value;
-  const labels = raw.split(',').map(s => s.trim()).filter(s => s.length > 0);
+  const interval = parseFloat(document.getElementById('cap-interval').value) || 15;
   try {
     await fetch('/api/inference/settings', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
-        detection_capture: {
-          enabled: enabled,
-          filter_labels: labels,
-        }
+        detection_capture: { enabled, min_interval_seconds: interval }
       })
     });
   } catch(e) { console.error(e); }
@@ -1540,9 +1601,9 @@ async function pollStatus() {
     document.getElementById('count-unlabeled').textContent = uc;
     const unlabeledRow = document.getElementById('unlabeled-row');
     if (uc > 0) {
-      unlabeledRow.style.background = 'rgba(255,179,71,0.12)';
+      unlabeledRow.style.background = 'rgba(196,154,108,0.12)';
       unlabeledRow.style.borderRadius = '4px';
-      document.getElementById('count-unlabeled').style.color = '#ffb347';
+      document.getElementById('count-unlabeled').style.color = '#c49a6c';
     } else {
       unlabeledRow.style.background = '';
       document.getElementById('count-unlabeled').style.color = '';
@@ -1577,7 +1638,7 @@ async function pollStatus() {
       const ri = d.pipeline.restart_info;
       if (d.pipeline.running) {
         dot.className = 'status-dot running';
-        text.textContent = 'Running (COCO)';
+        text.textContent = 'Running';
       } else if (ri && ri.exhausted) {
         dot.className = 'status-dot stopped';
         text.textContent = 'Crashed (restart failed after ' + ri.count + ' attempts)';
@@ -1594,7 +1655,7 @@ async function pollStatus() {
       const statusEl = document.getElementById('clf-model-status');
       if (d.classifier.model_exists) {
         statusEl.textContent = d.classifier.enabled ? 'Active' : 'Model ready';
-        statusEl.style.color = d.classifier.enabled ? '#52b788' : '#8892b0';
+        statusEl.style.color = d.classifier.enabled ? '#7ba87a' : '#8892b0';
       } else {
         statusEl.textContent = 'No model found';
         statusEl.style.color = '#e63946';
@@ -1620,13 +1681,8 @@ document.addEventListener('keydown', (e) => {
 
   const num = parseInt(e.key);
   if (num >= 1 && num <= CATS.length) {
-    if (activeTab === 'capture') captureAs(CATS[num-1]);
-    else if (activeTab === 'review') labelAs(CATS[num-1]);
+    if (activeTab === 'review') labelAs(CATS[num-1]);
     return;
-  }
-
-  if (activeTab === 'capture') {
-    if (e.key === 'a') { toggleAutoCapture(); return; }
   }
 
   if (activeTab === 'review') {
@@ -1639,27 +1695,20 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ── Init ───────────────────────────────────────────────────
-startPreviewLoop();
-loadCaptureSettings().then(() => {
-  // If labels field is empty after loading config, default to "cat"
-  if (!document.getElementById('cap-labels').value.trim()) {
-    document.getElementById('cap-labels').value = 'cat';
-    saveCaptureSettings();
-  }
-});
-loadClassifierSettings();
-initROIDrawing();
-// Restore cached ignore filter
-const cachedIgnore = localStorage.getItem('ignoreLabels');
-if (cachedIgnore) {
-  document.getElementById('ignore-labels').value = cachedIgnore;
-  sendIgnoreLabels();
-}
-document.getElementById('inf-log').addEventListener('scroll', function() {
-  if (logUpdating) return;
-  logAutoScroll = (this.scrollHeight - this.scrollTop - this.clientHeight) < 30;
-});
-setInterval(pollStatus, 1000);
+(async function init() {
+  startPreviewLoop();
+  await loadCaptureSettings();
+  await loadClassifierSettings();
+  initROIDrawing();
+  document.getElementById('inf-log').addEventListener('scroll', function() {
+    if (logUpdating) return;
+    logAutoScroll = (this.scrollHeight - this.scrollTop - this.clientHeight) < 30;
+  });
+  setInterval(pollStatus, 1000);
+  document.getElementById('tracked-date').textContent = formatTrackedDate(trackedDate);
+  fetchTrackedEvents();
+  setInterval(fetchTrackedEvents, 30000);
+})();
 </script>
 </body>
 </html>

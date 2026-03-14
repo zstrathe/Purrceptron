@@ -180,8 +180,8 @@ class DetectionCapturer:
                 return False
 
             # Build filename and path
-            ts = datetime.now()
-            ts_iso = datetime.now(timezone.utc).isoformat()
+            ts = datetime.now(timezone.utc)
+            ts_iso = ts.isoformat()
             filename = f"{cat_name}_{ts.strftime('%Y%m%d_%H%M%S_%f')[:-3]}.jpg"
             filepath = self.output_dir / cat_name / filename
 

@@ -434,9 +434,7 @@ if HAILO_AVAILABLE:
             self.feeding_tracker = None  # Optional FeedingTracker instance
             self.detection_capturer = None  # Optional DetectionCapturer instance
             self.capture_mode = None  # "eating" or "detections"
-            self.capture_filter_labels: set[str] | None = None  # labels to auto-capture
             self.unlabeled_classes: set[str] = set()  # COCO classes to save as "unlabeled"
-            self.ignore_labels: set[str] = set()  # labels hidden from video/pills
             self.preview_writer: PreviewFrameWriter | None = None
             self.command_listener: StdinCommandListener | None = None
             self.manual_capture_dir: Path | None = None
@@ -481,16 +479,6 @@ if HAILO_AVAILABLE:
                 roi.remove_object(detection)
                 continue
 
-            # Hide ignored labels from video overlay and pills
-            if user_data.ignore_labels and label in user_data.ignore_labels:
-                roi.remove_object(detection)
-                continue
-
-            # Hide labels not in capture filter from overlay and preview
-            if user_data.capture_filter_labels and label not in user_data.capture_filter_labels:
-                roi.remove_object(detection)
-                continue
-
             # Track unique IDs if tracker is active
             track_objs = detection.get_objects_typed(hailo.HAILO_UNIQUE_ID)
             track_id = track_objs[0].get_id() if track_objs else None
@@ -522,8 +510,6 @@ if HAILO_AVAILABLE:
             if cmd:
                 if cmd.get("cmd") == "capture":
                     _handle_capture_command(element, buffer, user_data, cmd, frame_detections)
-                elif cmd.get("cmd") == "set_ignore_labels":
-                    user_data.ignore_labels = set(cmd.get("labels", []))
                 elif cmd.get("cmd") == "set_detection_capture":
                     _handle_set_detection_capture(user_data, cmd)
                 elif cmd.get("cmd") == "set_bowl_roi":
@@ -566,11 +552,7 @@ if HAILO_AVAILABLE:
         needs_capture = False
         if user_data.detection_capturer and detected_cats:
             if user_data.capture_mode == "detections":
-                # Filter to only configured labels (if set)
-                capture_cats = detected_cats
-                if user_data.capture_filter_labels:
-                    capture_cats = detected_cats & user_data.capture_filter_labels
-                for cat in capture_cats:
+                for cat in detected_cats:
                     save_label = ("unlabeled" if user_data.unlabeled_classes
                                   and cat in user_data.unlabeled_classes else cat)
                     if user_data.detection_capturer.should_capture(save_label):
@@ -659,6 +641,16 @@ if HAILO_AVAILABLE:
                   flush=True)
 
 
+    def _get_classifier_identity():
+        """Read confirmed cat identity from the classifier status file."""
+        try:
+            with open("/tmp/cat_classifier_status.json") as f:
+                status = json.load(f)
+            return status.get("confirmed_cat")
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return None
+
+
     def _maybe_capture_detections(user_data, detected_cats, frame, frame_detections=None):
         """Capture a frame for each detected class (no feeding tracker required).
 
@@ -668,15 +660,12 @@ if HAILO_AVAILABLE:
             frame: Pre-extracted BGR numpy array (shared with preview writer)
             frame_detections: list of detection dicts (label, confidence, bbox_norm)
         """
-        # Filter by configured labels
-        capture_cats = detected_cats
-        if user_data.capture_filter_labels:
-            capture_cats = detected_cats & user_data.capture_filter_labels
-
-        for cat in capture_cats:
+        confirmed = (_get_classifier_identity()
+                     if user_data.classifier_gate else None)
+        for cat in detected_cats:
             save_label = cat
             if user_data.unlabeled_classes and cat in user_data.unlabeled_classes:
-                save_label = "unlabeled"
+                save_label = confirmed if confirmed else "unlabeled"
             # Build per-cat detection list for sidecar (only detections matching this cat)
             det_data = None
             if frame_detections:
@@ -699,11 +688,14 @@ if HAILO_AVAILABLE:
         """
         from deploy.feeding_tracker import CatState
 
+        confirmed = (_get_classifier_identity()
+                     if user_data.classifier_gate else None)
         for cat in detected_cats:
             state = user_data.feeding_tracker.get_cat_state(cat)
             if state != CatState.EATING:
                 continue
             session_id = user_data.feeding_tracker.get_session_id(cat)
+            save_label = confirmed if confirmed else cat
             det_data = None
             if frame_detections:
                 det_data = [
@@ -711,14 +703,14 @@ if HAILO_AVAILABLE:
                      "bbox_norm": list(d["bbox_norm"])}
                     for d in frame_detections if d["label"] == cat
                 ] or None
-            user_data.detection_capturer.maybe_capture(cat, frame, session_id,
+            user_data.detection_capturer.maybe_capture(save_label, frame, session_id,
                                                        detections=det_data)
 
 
     def _handle_set_detection_capture(user_data: CatDetectionCallback, cmd: dict):
         """Handle live toggle of detection capture from the dashboard."""
         enabled = cmd.get("enabled", False)
-        filter_labels = cmd.get("filter_labels", [])
+        interval = cmd.get("min_interval_seconds", 15.0)
 
         if enabled:
             if not user_data.detection_capturer:
@@ -726,15 +718,10 @@ if HAILO_AVAILABLE:
 
                 cfg = load_config()
                 capture_cfg = cfg.get("detection_capture", {})
-                collection_cfg = cfg.get("collection", {})
 
                 capture_dir = resolve_path(
                     capture_cfg.get("output_dir", "data/raw"),
                     PROJECT_ROOT,
-                )
-                interval = collection_cfg.get(
-                    "auto_capture_interval_sec",
-                    capture_cfg.get("min_interval_seconds", 15.0),
                 )
                 user_data.detection_capturer = DetectionCapturer(
                     output_dir=capture_dir,
@@ -749,13 +736,11 @@ if HAILO_AVAILABLE:
                 unlabeled = capture_cfg.get("unlabeled_classes", [])
                 if unlabeled:
                     user_data.unlabeled_classes = set(unlabeled)
+            else:
+                user_data.detection_capturer.min_interval = interval
 
             user_data.capture_mode = "detections"
-            if filter_labels:
-                user_data.capture_filter_labels = set(filter_labels)
-            else:
-                user_data.capture_filter_labels = None
-            print_info(f"Detection capture enabled (filter: {filter_labels or 'all'})")
+            print_info(f"Detection capture enabled (interval={interval}s)")
         else:
             if user_data.detection_capturer:
                 user_data.detection_capturer.shutdown()
@@ -829,10 +814,9 @@ def main():
     # Setup callback
     user_data = CatDetectionCallback()
 
-    filter_classes = deploy_cfg.get("filter_classes", [])
-    if filter_classes:
-        user_data.set_filter(filter_classes)
-        print_info(f"Filtering for: {filter_classes}")
+    tracking_objects = deploy_cfg.get("tracking_objects", ["cat"])
+    user_data.set_filter(tracking_objects)
+    print_info(f"Filtering for: {tracking_objects}")
 
     track_all = deploy_cfg.get("track_all", True)
     tracker_class_id = -1 if track_all else 0
@@ -914,7 +898,7 @@ def main():
             save_crops=save_crops,
             labeling_dir=labeling_dir,
             roi_overlap_threshold=classifier_cfg.get("roi_overlap_threshold", 0.01),
-            trigger_labels=set(classifier_cfg.get("trigger_labels", ["cat"])),
+            trigger_labels=set(tracking_objects),
             miss_tolerance=classifier_cfg.get("miss_tolerance", 15),
         )
         print_info(f"Classifier gate active — ROI={bowl_roi}, save_crops={save_crops}")
@@ -1020,12 +1004,6 @@ def main():
             jpeg_quality=capture_cfg.get("jpeg_quality", 95),
             csv_logging=capture_cfg.get("csv_logging", True),
         )
-
-        # Set label filter if configured
-        filter_labels = capture_cfg.get("filter_labels", [])
-        if filter_labels:
-            user_data.capture_filter_labels = set(filter_labels)
-            print_info(f"Capture filter: {filter_labels}")
 
         # Capture mode: "eating" if feeding tracker active, else "detections"
         if user_data.feeding_tracker:

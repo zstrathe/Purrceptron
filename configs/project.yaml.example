@@ -39,7 +39,7 @@ deployment:
   detection_threshold: 0.5
   hw_arch: hailo10h
   track_all: true
-  filter_classes: []
+  tracking_objects: ["cat"]
   preview_path: /tmp/cat_detection_preview.jpg
   preview_fps: 15
 feeding:
@@ -51,7 +51,6 @@ feeding:
 detection_capture:
   enabled: false
   output_dir: data/raw
-  filter_labels: []
   unlabeled_classes:
   - cat
   min_interval_seconds: 15
