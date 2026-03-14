@@ -33,7 +33,6 @@ Thumbs.db
 
 *.log
 =*
-.syncignore
 *.pt
 *.har
 # *labels.json
@@ -41,3 +40,6 @@ Thumbs.db
 *.tar.gz
 .claude/
 hailo-apps/
+logs/
+planning/
+.pytest_cache/
