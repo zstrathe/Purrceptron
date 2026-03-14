@@ -844,6 +844,7 @@ let latestOutputs = {};
 let latestDatasetStats = {};
 let latestStepStates = {};
 let latestLabelStats = {};
+let latestDeployedVersion = null;
 let lastLogHtml = '';
 let logAutoScroll = true;
 let logUpdating = false;
@@ -863,11 +864,13 @@ let latestVersions = [];
 
 function renderVersionDropdown(d) {
   const sel = document.getElementById('version-select');
+  const deployed = d.deployed_version || latestDeployedVersion;
+  if (deployed) latestDeployedVersion = deployed;
   if (!d.versions || d.versions.length === 0) {
     sel.innerHTML = '<option value="v1" selected>v1</option>';
   } else {
     sel.innerHTML = d.versions.map(v => {
-      const marks = [v.has_model ? 'M' : '', v.has_dataset ? 'D' : ''].filter(Boolean).join(',');
+      const marks = [v.has_dataset ? 'Dataset' : '', v.has_model ? 'Model' : '', v.name === deployed ? 'Deployed' : ''].filter(Boolean).join(', ');
       const suffix = marks ? ' [' + marks + ']' : '';
       return '<option value="' + v.name + '"' + (v.name === d.active ? ' selected' : '') + '>' +
         v.name + suffix + '</option>';
@@ -1278,6 +1281,9 @@ async function pollStatus() {
 
     // Track step states for readiness
     STEPS.forEach(name => { latestStepStates[name] = (steps[name] || {}).state || 'idle'; });
+    // Track deployed version
+    latestDeployedVersion = d.deployed_version || null;
+    try { localStorage.setItem('cachedDeployedVersion', JSON.stringify(latestDeployedVersion)); } catch(e) {}
     // Track label stats for the label step
     if (steps.label && steps.label.label_stats) {
       latestLabelStats = steps.label.label_stats;
@@ -1573,7 +1579,8 @@ function updateReadiness() {
     crop:    hasCrop,
     prepare: !!(latestDatasetStats.dataset_ready),
     train:   !!(latestOutputs.cat_classifier_pt || {}).exists,
-    deploy:  latestStepStates['deploy'] === 'done',
+    deploy:  latestStepStates['deploy'] === 'done' ||
+             latestDeployedVersion === document.getElementById('version-select').value,
   };
 
   let blocked_by_running = false;
@@ -1631,6 +1638,8 @@ function restoreCachedCompletion() {
     if (Object.keys(cachedOutputs).length) latestOutputs = cachedOutputs;
     if (Object.keys(cachedStats).length) latestDatasetStats = cachedStats;
     if (Object.keys(cachedLbStats).length) latestLabelStats = cachedLbStats;
+    const cachedDeployed = JSON.parse(localStorage.getItem('cachedDeployedVersion') || 'null');
+    if (cachedDeployed) latestDeployedVersion = cachedDeployed;
 
     // Restore step card styling
     const cached = JSON.parse(localStorage.getItem('stepCompleted') || '{}');

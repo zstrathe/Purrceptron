@@ -13,6 +13,24 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 
+MAX_RETRIES=4
+RETRY_DELAY=3
+
+retry() {
+    local attempt
+    for attempt in $(seq 1 "$MAX_RETRIES"); do
+        if "$@"; then
+            return 0
+        fi
+        if [ "$attempt" -lt "$MAX_RETRIES" ]; then
+            echo "[WARN] Attempt $attempt/$MAX_RETRIES failed, retrying in ${RETRY_DELAY}s..."
+            sleep "$RETRY_DELAY"
+        fi
+    done
+    echo "[ERROR] Failed after $MAX_RETRIES attempts"
+    return 1
+}
+
 # Parse arguments: if $1 is a file path, treat it as the model; otherwise it's PI_TARGET
 if [ $# -ge 2 ]; then
     PI_TARGET="$1"
@@ -33,11 +51,11 @@ fi
 REMOTE_DIR="${PI_REMOTE_DIR:-~/Repos/cat_detection}"
 
 # Create remote directories
-ssh "$PI_TARGET" "mkdir -p $REMOTE_DIR/models $REMOTE_DIR/deploy"
+retry ssh "$PI_TARGET" "mkdir -p $REMOTE_DIR/models $REMOTE_DIR/deploy"
 
 echo "[INFO] Transferring classifier model to $PI_TARGET:$REMOTE_DIR ..."
 echo "  Model: $MODEL_PATH"
-scp "$MODEL_PATH" "$PI_TARGET:$REMOTE_DIR/models/cat_classifier.pt"
+retry scp "$MODEL_PATH" "$PI_TARGET:$REMOTE_DIR/models/cat_classifier.pt"
 echo ""
 echo "[OK] Classifier model transferred!"
 

@@ -169,6 +169,26 @@ class TrainingStepManager:
         else:
             self._version_size_cache.pop(name, None)
 
+    def _deploy_state_path(self) -> Path:
+        return self.project_root / "versions" / ".deploy_state.json"
+
+    def get_deployed_version(self) -> str | None:
+        """Read which version is currently deployed from disk."""
+        p = self._deploy_state_path()
+        if p.exists():
+            try:
+                with open(p) as f:
+                    return json.load(f).get("version")
+            except (json.JSONDecodeError, OSError):
+                return None
+        return None
+
+    def _record_deploy(self, version: str) -> None:
+        """Write deploy state to disk after successful deployment."""
+        p = self._deploy_state_path()
+        with open(p, "w") as f:
+            json.dump({"version": version, "timestamp": datetime.utcnow().isoformat() + "Z"}, f)
+
     @staticmethod
     def _fix_dataset_yaml_path(version_dir: Path) -> None:
         """No-op — retained for compatibility with duplicate/rename. Classifier uses symlinks."""
@@ -187,6 +207,10 @@ class TrainingStepManager:
 
             shutil.rmtree(ver_dir)
             self._invalidate_size_cache(name)
+
+            # Clean up deploy state if we deleted the deployed version
+            if name == self.get_deployed_version():
+                self._deploy_state_path().unlink(missing_ok=True)
 
             # If we deleted the active version, switch to another
             if name == self._active_version:
@@ -228,6 +252,10 @@ class TrainingStepManager:
             old_size = self._version_size_cache.pop(name, None)
             if old_size is not None:
                 self._version_size_cache[new_name] = old_size
+
+            # Update deploy state if we renamed the deployed version
+            if name == self.get_deployed_version():
+                self._record_deploy(new_name)
 
             if name == self._active_version:
                 self._active_version = new_name
@@ -444,6 +472,8 @@ class TrainingStepManager:
                 step.state = "done"
                 if step.name == "pull":
                     self.invalidate_label_cache()
+                if step.name == "deploy":
+                    self._record_deploy(self._active_version)
                 self._current_step = None
                 # Auto-chain to next step
                 if self._auto_pipeline:
@@ -539,10 +569,16 @@ class TrainingStepManager:
                 steps["label"]["state"] = "idle"
             steps["label"]["label_stats"] = label_stats
 
+            # Restore deploy state from persistent file
+            deployed_version = self.get_deployed_version()
+            if steps["deploy"]["state"] == "idle" and deployed_version == self._active_version:
+                steps["deploy"]["state"] = "done"
+
             return {
                 "steps": steps,
                 "current_step": self._current_step,
                 "auto_pipeline": self._auto_pipeline,
+                "deployed_version": deployed_version,
             }
 
     def get_step_output(self, step_name: str) -> list[str]:
@@ -843,6 +879,7 @@ def create_app(
         return jsonify({
             "active": step_mgr._active_version,
             "versions": step_mgr.get_versions(),
+            "deployed_version": step_mgr.get_deployed_version(),
         })
 
     @flask_app.route("/api/versions", methods=["POST"])
