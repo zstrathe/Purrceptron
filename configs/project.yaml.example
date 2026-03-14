@@ -20,18 +20,6 @@ web_ui:
   port: 5003
   preview_width: 960
   preview_height: 540
-training:
-  model_size: yolov8m
-  image_size: 640
-  epochs: 2000
-  batch_size: -1
-  patience: 30
-  lr0: 0.01
-  lrf: 0.01
-  optimizer: AdamW
-  val_split: 0.15
-  test_split: 0.05
-  seed: 42
 deployment:
   hailo_apps_dir: ./hailo-apps
   hef_path: ""
@@ -39,7 +27,7 @@ deployment:
   detection_threshold: 0.5
   hw_arch: hailo10h
   track_all: true
-  tracking_objects: ["cat"]
+  filter_classes: []
   preview_path: /tmp/cat_detection_preview.jpg
   preview_fps: 15
 feeding:
@@ -51,6 +39,7 @@ feeding:
 detection_capture:
   enabled: false
   output_dir: data/raw
+  filter_labels: []
   unlabeled_classes:
   - cat
   min_interval_seconds: 15
@@ -74,12 +63,9 @@ classifier:
   confidence_threshold: 0.85
   vote_window_size: 10
   db_path: data/classifier_log.db
-  crop_padding: 0.2
+  crop_padding: 0.0
   roi_overlap_threshold: 0.01
-  miss_tolerance: 15
   cpu_core: 3
-  energy_ood_enabled: true
-  energy_ood_threshold:  # auto-calibrated at training time; set manually to override
   save_crops_for_labeling: false
   labeling_output_dir: data/raw/unlabeled
 classifier_training:
@@ -97,7 +83,6 @@ classifier_training:
   mixup_alpha: 0.2
   balance_classes: true
   cv_folds: 5
-  energy_ood_percentile: 0.99
   augmentation:
     horizontal_flip: true
     brightness_contrast: true
