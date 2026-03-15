@@ -364,8 +364,6 @@ All settings are in `configs/project.yaml`. This file is gitignored; copy from
 | `classifier.crop_padding` | 0.2 | Padding around bbox crop (fraction of bbox size) |
 | `classifier.roi_overlap_threshold` | 0.01 | Min overlap with bowl ROI to trigger classification |
 | `classifier.cpu_core` | 3 | Pin classifier process to this CPU core |
-| `classifier.save_crops_for_labeling` | false | Save classifier crops for review |
-| `classifier.labeling_output_dir` | data/raw/unlabeled | Where saved crops go |
 | **Detection Capture** | | |
 | `detection_capture.enabled` | false | Auto-capture frames on detection |
 | `detection_capture.output_dir` | data/raw | Where detected frames are saved |

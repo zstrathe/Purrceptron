@@ -44,6 +44,7 @@ detection_capture:
   - cat
   min_interval_seconds: 15
   max_captures_per_session: 0
+  save_labeled_only: false
   jpeg_quality: 95
   csv_logging: true
 label_review:
@@ -60,23 +61,24 @@ classifier:
   - 790
   stability_frames: 5
   classify_interval_seconds: 1.0
-  confidence_threshold: 0.85
+  confidence_threshold: 0.5
   vote_window_size: 10
   db_path: data/classifier_log.db
   crop_padding: 0.0
   roi_overlap_threshold: 0.01
   cpu_core: 3
-  save_crops_for_labeling: false
-  labeling_output_dir: data/raw/unlabeled
 classifier_training:
   phase1_epochs: 20
   phase2_epochs: 40
-  phase3_epochs: 10
+  phase3_epochs: 20
   phase1_lr: 0.001
   phase2_backbone_lr: 1.0e-05
   phase2_head_lr: 0.0001
   weight_decay: 0.005
   batch_size: 32
+  label_smoothing: 0.1
+  gradient_clip_norm: 1.0
+  warmup_epochs: 5
   patience: 15
   optimizer: AdamW
   session_gap_minutes: 5

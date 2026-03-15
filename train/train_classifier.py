@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import json
 import sys
 from pathlib import Path
@@ -147,7 +148,8 @@ def _freeze_bn(module: nn.Module) -> None:
 
 def _train_epoch(model, loader, optimizer, criterion, device,
                  mixup_alpha: float = 0.0,
-                 freeze_bn: bool = False) -> tuple[float, float]:
+                 freeze_bn: bool = False,
+                 grad_clip_norm: float = 0.0) -> tuple[float, float]:
     model.train()
     if freeze_bn:
         _freeze_bn(model)
@@ -169,6 +171,8 @@ def _train_epoch(model, loader, optimizer, criterion, device,
 
         optimizer.zero_grad()
         loss.backward()
+        if grad_clip_norm > 0:
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
         optimizer.step()
 
         total_loss += loss.item() * images.size(0)
@@ -270,6 +274,9 @@ def main() -> None:
     mixup_alpha     = tc.get("mixup_alpha", 0.2)
     balance_classes = tc.get("balance_classes", True)
     energy_ood_pct  = tc.get("energy_ood_percentile", 0.99)
+    label_smoothing = tc.get("label_smoothing", 0.1)
+    grad_clip_norm  = tc.get("gradient_clip_norm", 1.0)
+    warmup_epochs   = tc.get("warmup_epochs", 5)
     aug_cfg         = tc.get("augmentation", {})
 
     dataset_dir = args.dataset_dir or (PROJECT_ROOT / "data" / "classifier_dataset")
@@ -314,10 +321,12 @@ def main() -> None:
             dtype=torch.float32, device=device,
         )
         print(f"Class balance: ON  weights={dict(zip(class_names, [f'{w:.2f}' for w in weights.tolist()]))}")
-        criterion = nn.CrossEntropyLoss(weight=weights)
+        criterion = nn.CrossEntropyLoss(weight=weights, label_smoothing=label_smoothing)
     else:
         print("Class balance: OFF (uniform loss)")
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+    if label_smoothing > 0:
+        print(f"Label smoothing: {label_smoothing}")
 
     phase1_ckpt = ckpt_dir / "phase1_best.pt"
     phase2_ckpt = ckpt_dir / "phase2_best.pt"
@@ -343,14 +352,21 @@ def main() -> None:
         optimizer = torch.optim.AdamW(
             model.classifier.parameters(), lr=phase1_lr, weight_decay=weight_decay
         )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer, T_0=5, T_mult=1, eta_min=1e-7
+        warmup_sched = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=0.1, total_iters=warmup_epochs
+        )
+        cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=max(phase1_epochs - warmup_epochs, 1), eta_min=1e-7
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[warmup_epochs]
         )
 
         best_val_acc = 0.0
         no_improve = 0
         for epoch in range(1, phase1_epochs + 1):
-            tl, ta = _train_epoch(model, train_loader, optimizer, criterion, device)
+            tl, ta = _train_epoch(model, train_loader, optimizer, criterion, device,
+                                  grad_clip_norm=grad_clip_norm)
             vl, va, per_cls = _eval_epoch(model, val_loader, criterion, device, num_cats)
             scheduler.step()
             csv_logger.log(epoch, "phase1", tl, vl, ta, va, per_cls)
@@ -405,21 +421,46 @@ def main() -> None:
             {"params": model.classifier.parameters(),
              "lr": phase2_head_lr, "weight_decay": weight_decay},
         ])
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer, T_0=5, T_mult=1, eta_min=1e-7
+        p2_warmup = min(3, phase2_epochs // 4)
+        warmup_sched = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=0.1, total_iters=p2_warmup
         )
+        cosine_sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=max(phase2_epochs - p2_warmup, 1), eta_min=1e-7
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer, schedulers=[warmup_sched, cosine_sched], milestones=[p2_warmup]
+        )
+
+        # SWA setup -- activate for last 25% of Phase 2
+        from torch.optim.swa_utils import AveragedModel, SWALR, update_bn
+        swa_model = AveragedModel(model)
+        swa_start_epoch = max(1, int(phase2_epochs * 0.75))
+        swa_scheduler = SWALR(optimizer, swa_lr=[phase2_bb_lr * 0.5, phase2_head_lr * 0.5])
+        swa_active = False
 
         best_val_acc = 0.0
         no_improve = 0
         for epoch in range(1, phase2_epochs + 1):
             tl, ta = _train_epoch(model, train_loader, optimizer, criterion, device,
-                                  mixup_alpha=mixup_alpha, freeze_bn=True)
+                                  mixup_alpha=mixup_alpha, freeze_bn=True,
+                                  grad_clip_norm=grad_clip_norm)
             vl, va, per_cls = _eval_epoch(model, val_loader, criterion, device, num_cats)
-            scheduler.step()
+
+            if epoch >= swa_start_epoch:
+                if not swa_active:
+                    print(f"  SWA activated at epoch {epoch}")
+                    swa_active = True
+                swa_model.update_parameters(model)
+                swa_scheduler.step()
+            else:
+                scheduler.step()
+
             # epoch offset so CSV is continuous
             csv_logger.log(phase1_epochs + epoch, "phase2", tl, vl, ta, va, per_cls)
             print(f"  [P2 {epoch:3d}/{phase2_epochs}] "
-                  f"loss {tl:.3f}/{vl:.3f}  acc {ta:.1%}/{va:.1%}")
+                  f"loss {tl:.3f}/{vl:.3f}  acc {ta:.1%}/{va:.1%}"
+                  f"{'  [SWA]' if swa_active else ''}")
             if va > best_val_acc:
                 best_val_acc = va
                 no_improve = 0
@@ -427,11 +468,26 @@ def main() -> None:
                             "val_acc": va, "epoch": epoch}, phase2_ckpt)
             else:
                 no_improve += 1
-                if no_improve >= patience:
+                if not swa_active and no_improve >= patience:
                     print(f"  Early stop at epoch {epoch} (patience {patience})")
                     break
 
-        print(f"Phase 2 done. Best val acc: {best_val_acc:.1%}  → {phase2_ckpt}")
+        # Finalize SWA: update BN stats and evaluate
+        if swa_active:
+            print("  Updating BN statistics for SWA model...")
+            update_bn(train_loader, swa_model, device=device)
+            swa_vl, swa_va, swa_cls = _eval_epoch(
+                swa_model, val_loader, criterion, device, num_cats)
+            print(f"  SWA val acc: {swa_va:.1%} (vs best single: {best_val_acc:.1%})")
+            if swa_va >= best_val_acc:
+                best_val_acc = swa_va
+                # Save SWA model's inner module state dict
+                torch.save({"model_state_dict": swa_model.module.state_dict(),
+                            "val_acc": swa_va, "epoch": phase2_epochs, "swa": True},
+                           phase2_ckpt)
+                print(f"  SWA checkpoint saved (improved)")
+
+        print(f"Phase 2 done. Best val acc: {best_val_acc:.1%}  -> {phase2_ckpt}")
     else:
         print("Phase 2 skipped.")
 
@@ -468,8 +524,9 @@ def main() -> None:
         torch.ao.quantization.prepare_qat(qat_model, inplace=True)
         qat_model = qat_model.cpu()
 
+        qat_lr = 1e-6  # ~1% of training LR for stable QAT
         optimizer = torch.optim.AdamW(
-            qat_model.parameters(), lr=1e-5, weight_decay=weight_decay
+            qat_model.parameters(), lr=qat_lr, weight_decay=weight_decay
         )
 
         # QAT uses val transforms for training (no augmentation)
@@ -488,9 +545,19 @@ def main() -> None:
         no_improve = 0
         phase3_device = torch.device("cpu")  # quantized models are CPU-only
         criterion = criterion.to(phase3_device)
+        freeze_epoch = max(1, int(math.ceil(phase3_epochs * 0.8)))
+        observers_frozen = False
         for epoch in range(1, phase3_epochs + 1):
+            # Freeze observers and BN at 80% to stabilize quantization grid
+            if epoch >= freeze_epoch and not observers_frozen:
+                torch.ao.quantization.disable_observer(qat_model)
+                for m in qat_model.modules():
+                    if isinstance(m, (nn.BatchNorm2d, nn.SyncBatchNorm)):
+                        m.eval()
+                observers_frozen = True
+                print(f"  Froze observers and BN at epoch {epoch}")
             tl, ta = _train_epoch(qat_model, qat_train_loader, optimizer, criterion,
-                                  phase3_device)
+                                  phase3_device, grad_clip_norm=grad_clip_norm)
             vl, va, per_cls = _eval_epoch(qat_model, qat_val_loader, criterion,
                                           phase3_device, num_cats)
             csv_logger.log(phase1_epochs + phase2_epochs + epoch, "phase3",
@@ -504,7 +571,6 @@ def main() -> None:
                             "val_acc": va, "epoch": epoch}, phase3_ckpt)
             else:
                 no_improve += 1
-                # patience=15: QAT has a temporary accuracy dip in early epochs
                 if no_improve >= patience:
                     print(f"  Early stop at epoch {epoch} (patience {patience})")
                     break

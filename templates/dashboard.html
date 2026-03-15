@@ -421,10 +421,18 @@
             <input type="checkbox" id="cap-enabled" onchange="saveCaptureSettings()">
             <span class="toggle-slider"></span>
           </label>
+          <span id="cap-status-hint" style="font-size:0.7rem;color:#888;font-style:italic;margin-left:8px"></span>
         </div>
         <div class="inference-row">
           <label>Interval (s):</label>
           <input type="number" id="cap-interval" min="1" step="1" style="width:70px" onchange="saveCaptureSettings()">
+        </div>
+        <div class="inference-row" id="cap-labeled-only-row">
+          <label title="Only save images where the classifier has confirmed a cat identity. Unlabeled detections are discarded.">Save labeled only:</label>
+          <label class="toggle-switch">
+            <input type="checkbox" id="cap-labeled-only" onchange="saveCaptureSettings()">
+            <span class="toggle-slider"></span>
+          </label>
         </div>
       </div>
 
@@ -438,13 +446,6 @@
             <span class="toggle-slider"></span>
           </label>
           <span id="clf-model-status" style="font-size:0.7rem;font-family:monospace;margin-left:auto"></span>
-        </div>
-        <div class="inference-row">
-          <label title="Save full frames + bbox sidecar JSON to the labeling directory when a crop is sent to the classifier.">Save crops for labeling:</label>
-          <label class="toggle-switch">
-            <input type="checkbox" id="clf-save-crops" onchange="saveClassifierSettings()">
-            <span class="toggle-slider"></span>
-          </label>
         </div>
         <div class="inference-row">
           <label title="Minimum average confidence in the vote window to confirm a cat identity (0-1).">Confidence:</label>
@@ -476,11 +477,12 @@
       </div>
 
       <!-- Classifier Identity (Stage 2) -->
-      <div class="classifier-identity" id="classifier-identity" style="display:none">
+      <div class="classifier-identity" id="classifier-identity" style="display:none"
+           title="Cat identity from the MobileNetV2 classifier">
         <span class="identity-icon">&#128049;</span>
-        <span class="identity-label" id="identity-label"></span>
-        <span class="identity-votes" id="identity-votes"></span>
-        <span class="identity-conf" id="identity-conf"></span>
+        <span class="identity-label" id="identity-label" title="Predicted cat identity"></span>
+        <span class="identity-votes" id="identity-votes" title="Vote counts per cat in the sliding window (window size configurable via vote_window_size)"></span>
+        <span class="identity-conf" id="identity-conf" title="Raw model confidence for the top prediction (lower with label smoothing — the vote window determines identity, not this value)"></span>
       </div>
 
       <!-- Current Detections -->
@@ -546,6 +548,12 @@
         <span>Sort:</span>
         <button class="sort-btn active" id="sort-time" onclick="sortThumbnails('time')">By time</button>
         <button class="sort-btn" id="sort-name" onclick="sortThumbnails('name')">By name</button>
+        <span style="margin-left:12px">Filter:</span>
+        <button class="sort-btn active" onclick="toggleLabelFilter(this, '')" data-filter="">All</button>
+        <button class="sort-btn" onclick="toggleLabelFilter(this, 'unlabeled')" data-filter="unlabeled">unlabeled</button>
+        {% for i, cat in cats %}
+        <button class="sort-btn" onclick="toggleLabelFilter(this, '{{ cat }}')" data-filter="{{ cat }}">{{ cat }}</button>
+        {% endfor %}
         <span style="margin-left:auto; font-size:0.7rem; color:#8892b0; font-family:monospace" id="select-hint">Click thumbnails to select</span>
       </div>
       <div class="selection-bar" id="selection-bar" style="display:none">
@@ -1321,7 +1329,9 @@ async function reviewRescan() {
 
 // ── Thumbnail Grid + Multi-Select ─────────────────────────
 let thumbnailImages = [];
+let displayedThumbnails = [];  // currently rendered (filtered) subset
 let currentSort = 'time';
+let activeFilters = new Set();
 const selectedThumbnails = new Set();
 let lastSelectedVisualIndex = null;
 
@@ -1361,6 +1371,33 @@ function sortThumbnails(mode) {
   document.getElementById('sort-time').classList.toggle('active', mode === 'time');
   document.getElementById('sort-name').classList.toggle('active', mode === 'name');
   applySortOrder(mode);
+  renderThumbnails();
+}
+
+function toggleLabelFilter(btn, label) {
+  if (label === '') {
+    // "All" button: clear all filters
+    activeFilters.clear();
+    document.querySelectorAll('.thumb-sort-row [data-filter]').forEach(el => {
+      el.classList.toggle('active', el.dataset.filter === '');
+    });
+  } else {
+    // Toggle specific label
+    if (activeFilters.has(label)) {
+      activeFilters.delete(label);
+    } else {
+      activeFilters.add(label);
+    }
+    // Update button states
+    document.querySelectorAll('.thumb-sort-row [data-filter]').forEach(el => {
+      if (el.dataset.filter === '') {
+        el.classList.toggle('active', activeFilters.size === 0);
+      } else {
+        el.classList.toggle('active', activeFilters.has(el.dataset.filter));
+      }
+    });
+  }
+  lastSelectedVisualIndex = null;  // reset — filtered indices changed
   renderThumbnails();
 }
 
@@ -1437,9 +1474,14 @@ async function batchDelete() {
 
 function renderThumbnails() {
   const grid = document.getElementById('thumbnail-grid');
+  const scrollPos = grid.scrollTop;
   grid.innerHTML = '';
 
-  thumbnailImages.forEach((img) => {
+  displayedThumbnails = activeFilters.size > 0
+    ? thumbnailImages.filter(img => activeFilters.has(img.label))
+    : thumbnailImages;
+
+  displayedThumbnails.forEach((img, filteredIdx) => {
     const div = document.createElement('div');
     div.className = 'thumb-item';
     div.dataset.originalIndex = img.index;
@@ -1456,7 +1498,6 @@ function renderThumbnails() {
     label.textContent = img.label;
     div.appendChild(label);
 
-    const visualIdx = thumbnailImages.indexOf(img);
     div.onclick = (e) => {
       if (e.shiftKey) {
         let anchor = lastSelectedVisualIndex;
@@ -1468,21 +1509,21 @@ function renderThumbnails() {
             anchor = 0;
           }
         }
-        const lo = Math.min(anchor, visualIdx);
-        const hi = Math.max(anchor, visualIdx);
+        const lo = Math.min(anchor, filteredIdx);
+        const hi = Math.max(anchor, filteredIdx);
         const thumbEls = grid.querySelectorAll('.thumb-item');
         for (let i = lo; i <= hi; i++) {
-          selectedThumbnails.add(thumbnailImages[i].index);
+          selectedThumbnails.add(displayedThumbnails[i].index);
           thumbEls[i].classList.add('selected');
         }
-        lastSelectedVisualIndex = visualIdx;
+        lastSelectedVisualIndex = filteredIdx;
         updateSelectionBar();
       } else if (selectedThumbnails.size > 0 || e.ctrlKey || e.metaKey) {
         toggleSelect(img.index, div);
-        lastSelectedVisualIndex = visualIdx;
+        lastSelectedVisualIndex = filteredIdx;
       } else {
         gotoThumbnail(img.index);
-        lastSelectedVisualIndex = visualIdx;
+        lastSelectedVisualIndex = filteredIdx;
       }
     };
     // Long-press or right-click to start selection without needing Ctrl
@@ -1492,7 +1533,7 @@ function renderThumbnails() {
     };
     grid.appendChild(div);
   });
-  grid.scrollTop = 0;
+  grid.scrollTop = Math.min(scrollPos, grid.scrollHeight - grid.clientHeight);
 }
 
 async function gotoThumbnail(originalIndex) {
@@ -1508,6 +1549,23 @@ async function gotoThumbnail(originalIndex) {
 }
 
 // ── Detection Capture Settings ─────────────────────────────
+function updateCaptureHints() {
+  const clfOn = document.getElementById('clf-enabled')?.checked || false;
+  const labeledOnly = document.getElementById('cap-labeled-only');
+  const hint = document.getElementById('cap-status-hint');
+  const labeledRow = document.getElementById('cap-labeled-only-row');
+  if (!hint || !labeledOnly || !labeledRow) return;
+  labeledOnly.disabled = !clfOn;
+  labeledRow.style.opacity = clfOn ? '1' : '0.4';
+  if (!clfOn) {
+    hint.textContent = 'Images saved as unlabeled (classifier disabled)';
+  } else if (labeledOnly.checked) {
+    hint.textContent = 'Only identified cats saved';
+  } else {
+    hint.textContent = 'All detections saved (labeled + unlabeled)';
+  }
+}
+
 async function loadCaptureSettings() {
   try {
     const resp = await fetch('/api/inference/settings');
@@ -1515,20 +1573,24 @@ async function loadCaptureSettings() {
     const dc = settings.detection_capture || {};
     document.getElementById('cap-enabled').checked = dc.enabled || false;
     document.getElementById('cap-interval').value = dc.min_interval_seconds || 15;
+    document.getElementById('cap-labeled-only').checked = dc.save_labeled_only || false;
+    updateCaptureHints();
   } catch(e) { console.error(e); }
 }
 
 async function saveCaptureSettings() {
   const enabled = document.getElementById('cap-enabled').checked;
   const interval = parseFloat(document.getElementById('cap-interval').value) || 15;
+  const save_labeled_only = document.getElementById('cap-labeled-only').checked;
   try {
     await fetch('/api/inference/settings', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
-        detection_capture: { enabled, min_interval_seconds: interval }
+        detection_capture: { enabled, min_interval_seconds: interval, save_labeled_only }
       })
     });
+    updateCaptureHints();
   } catch(e) { console.error(e); }
 }
 
@@ -1539,13 +1601,13 @@ async function loadClassifierSettings() {
     const settings = await resp.json();
     const clf = settings.classifier || {};
     document.getElementById('clf-enabled').checked = clf.enabled || false;
-    document.getElementById('clf-save-crops').checked = clf.save_crops_for_labeling || false;
     document.getElementById('clf-confidence').value = clf.confidence_threshold || 0.85;
     document.getElementById('clf-roi-overlap').value = Math.round((clf.roi_overlap_threshold || 0.01) * 100);
     _lastClfEnabled = clf.enabled || false;
     currentROI = clf.bowl_roi || JSON.parse(localStorage.getItem('bowlROI') || 'null');
     updateROICoordsDisplay();
     syncCanvasSize();
+    updateCaptureHints();
   } catch(e) { console.error(e); }
 }
 
@@ -1553,7 +1615,6 @@ let _lastClfEnabled = null;
 
 async function saveClassifierSettings() {
   const enabled = document.getElementById('clf-enabled').checked;
-  const saveCrops = document.getElementById('clf-save-crops').checked;
   const confidence = parseFloat(document.getElementById('clf-confidence').value) || 0.85;
   const roiOverlap = (parseInt(document.getElementById('clf-roi-overlap').value) || 1) / 100;
   try {
@@ -1563,7 +1624,6 @@ async function saveClassifierSettings() {
       body: JSON.stringify({
         classifier: {
           enabled: enabled,
-          save_crops_for_labeling: saveCrops,
           confidence_threshold: confidence,
           roi_overlap_threshold: roiOverlap,
         }
@@ -1574,6 +1634,7 @@ async function saveClassifierSettings() {
       await fetch('/api/pipeline/restart', { method: 'POST' });
     }
     _lastClfEnabled = enabled;
+    updateCaptureHints();
   } catch(e) { console.error(e); }
 }
 

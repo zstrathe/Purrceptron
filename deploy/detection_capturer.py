@@ -224,6 +224,7 @@ class DetectionCapturer:
             try:
                 filepath.parent.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(filepath), frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
+                print_info(f"Detection capture saved: {filepath.name}")
                 if detections is not None:
                     sidecar = {
                         "timestamp": ts_iso,

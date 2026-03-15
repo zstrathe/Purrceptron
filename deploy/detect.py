@@ -217,8 +217,8 @@ class ClassifierGate:
     """Manages Stage 2 classifier interaction from the GStreamer callback.
 
     Filters detections to the bowl ROI, applies a stability gate (N consecutive
-    frames), throttles classification to classify_interval seconds, produces
-    224×224 crops, and optionally saves them for labeling.
+    frames), throttles classification to classify_interval seconds, and produces
+    224×224 crops.
     """
 
     def __init__(
@@ -230,8 +230,6 @@ class ClassifierGate:
         stability_frames: int,
         classify_interval: float,
         crop_padding: float,
-        save_crops: bool,
-        labeling_dir: Path | None,
         roi_overlap_threshold: float = 0.01,
         trigger_labels: set[str] | None = None,
         miss_tolerance: int = 15,
@@ -243,8 +241,6 @@ class ClassifierGate:
         self._stability_frames = stability_frames
         self._classify_interval = classify_interval
         self._crop_padding = crop_padding
-        self._save_crops = save_crops
-        self._labeling_dir = labeling_dir
         self._roi_overlap_threshold = roi_overlap_threshold
         self._trigger_labels = trigger_labels or {"cat"}
         self._miss_tolerance = miss_tolerance
@@ -271,28 +267,28 @@ class ClassifierGate:
         for det in frame_detections:
             if det["label"] not in self._trigger_labels:
                 continue
+            if roi_area <= 0:
+                # Degenerate ROI -- accept all detections (don't filter)
+                roi_hit = True
+                best_bbox = det["bbox_norm"]
+                break
             xmin, ymin, w, h = det["bbox_norm"]
             bx1, by1 = xmin * W, ymin * H
             bx2, by2 = (xmin + w) * W, (ymin + h) * H
             # Compute intersection area
             ix1, iy1 = max(x0, bx1), max(y0, by1)
             ix2, iy2 = min(x1, bx2), min(y1, by2)
-            if ix2 > ix1 and iy2 > iy1 and roi_area > 0:
+            if ix2 > ix1 and iy2 > iy1:
                 overlap = (ix2 - ix1) * (iy2 - iy1) / roi_area
                 if overlap >= self._roi_overlap_threshold:
                     roi_hit = True
                     best_bbox = det["bbox_norm"]
                     break
                 elif now - self._last_log_time >= 5.0:
-                    print(f"[classifier-gate] Overlap {overlap:.0%} < "
-                          f"threshold {self._roi_overlap_threshold:.0%}",
-                          flush=True)
+                    print(f"[classifier-gate] Overlap {overlap:.0%} < {self._roi_overlap_threshold:.0%}", flush=True)
                     self._last_log_time = now
             elif now - self._last_log_time >= 5.0:
-                print(f"[classifier-gate] Detection outside ROI: "
-                      f"bbox=({bx1:.0f},{by1:.0f})-({bx2:.0f},{by2:.0f}) "
-                      f"ROI=({x0},{y0})-({x1},{y1})",
-                      flush=True)
+                print(f"[classifier-gate] Detection outside ROI", flush=True)
                 self._last_log_time = now
 
         if not roi_hit:
@@ -318,7 +314,6 @@ class ClassifierGate:
         if (now - self._last_classify_time) >= self._classify_interval:
             self.pending_bbox = best_bbox
             self._last_classify_time = now
-            print(f"[classifier-gate] Crop sent to classifier", flush=True)
             return True
 
         return False
@@ -343,26 +338,6 @@ class ClassifierGate:
             self._queue.put_nowait(crop)
         except QueueFull:
             pass
-
-        if self._save_crops and self._labeling_dir:
-            stem = str(int(time.time() * 1000))
-            try:
-                # Save full frame (not crop) so padding can be adjusted on the dashboard
-                cv2.imwrite(str(self._labeling_dir / f"{stem}.jpg"), frame)
-                sidecar = {
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "session_id": "",
-                    "image_size": [W, H],
-                    "detections": [{
-                        "label": "cat",
-                        "confidence": 1.0,
-                        "bbox_norm": [round(float(v), 6) for v in bbox_norm],
-                    }],
-                }
-                with open(self._labeling_dir / f"{stem}.json", "w") as f:
-                    _json.dump(sidecar, f)
-            except Exception:
-                pass
 
     def send_reset(self) -> None:
         """Send departure sentinel to classifier worker."""
@@ -441,6 +416,13 @@ if HAILO_AVAILABLE:
             self.classifier_gate: ClassifierGate | None = None
             self.classifier_process: multiprocessing.Process | None = None
             self.classifier_queue = None  # multiprocessing.Queue
+            self.save_labeled_only: bool = False
+            self.bowl_roi: tuple = (0, 0, 1920, 1080)
+            self.roi_overlap_threshold: float = 0.01
+            self.stability_frames: int = 5
+            self.frame_w: int = 1920
+            self.frame_h: int = 1080
+            self._track_roi_frames: dict[int, tuple[int, int]] = {}  # track_id -> (roi_frames, miss_frames)
 
         def set_filter(self, labels: list[str]) -> None:
             self.filter_labels = set(labels)
@@ -460,10 +442,6 @@ if HAILO_AVAILABLE:
         """
         roi = hailo.get_roi_from_buffer(buffer)
         detections = roi.get_objects_typed(hailo.HAILO_DETECTION)
-
-        # Diagnostic: log raw detection count before filtering
-        if user_data.get_count() % 30 == 0:
-            print_info(f"Frame {user_data.get_count()}: {len(detections)} raw detections (before filter)")
 
         # Collect detected cat names and tracker IDs this frame
         detected_cats: set[str] = set()
@@ -497,13 +475,6 @@ if HAILO_AVAILABLE:
                 "track_id": track_id,
             })
 
-            if user_data.get_count() % 30 == 0:  # Print every 30 frames to avoid spam
-                print_info(f"Frame {user_data.get_count()}: {label} ({confidence:.2f}) track={track_id}")
-
-        # Periodic summary — confirms model is producing detections
-        if user_data.get_count() % 150 == 0:
-            print_info(f"Frame {user_data.get_count()}: {len(frame_detections)} detections this frame")
-
         # Process stdin commands (cheap — just a queue check)
         if user_data.command_listener:
             cmd = user_data.command_listener.get_command()
@@ -513,19 +484,27 @@ if HAILO_AVAILABLE:
                 elif cmd.get("cmd") == "set_detection_capture":
                     _handle_set_detection_capture(user_data, cmd)
                 elif cmd.get("cmd") == "set_bowl_roi":
+                    roi = cmd.get("bowl_roi", [0, 0, 1920, 1080])
+                    user_data.bowl_roi = tuple(roi)
                     if user_data.classifier_gate:
-                        roi = cmd.get("bowl_roi", [0, 0, 1920, 1080])
                         user_data.classifier_gate._bowl_roi = tuple(roi)
-                        print(f"[classifier-gate] ROI updated: {roi}", flush=True)
+                    print(f"[classifier-gate] ROI updated: {roi}", flush=True)
                 elif cmd.get("cmd") == "set_roi_overlap_threshold":
+                    t = cmd.get("roi_overlap_threshold", 0.01)
+                    user_data.roi_overlap_threshold = t
                     if user_data.classifier_gate:
-                        t = cmd.get("roi_overlap_threshold", 0.01)
                         user_data.classifier_gate._roi_overlap_threshold = t
-                        print(f"[classifier-gate] Overlap threshold: {t:.0%}", flush=True)
+                    print(f"[classifier-gate] Overlap threshold: {t:.0%}", flush=True)
 
         # Feed into session tracker (with tracker IDs)
         if user_data.feeding_tracker:
             user_data.feeding_tracker.update(detected_cats_with_ids)
+
+        # ── Periodic pipeline heartbeat ──────────────────────────────
+        if user_data.frame_count % 300 == 0:
+            n_det = len(frame_detections)
+            n_tracks = len(user_data._track_roi_frames)
+            print(f"[pipeline] Frame {user_data.frame_count}: {n_det} detections, {n_tracks} tracked", flush=True)
 
         # ── Classifier subprocess health check ─────────────────────────
         if (user_data.classifier_process is not None
@@ -549,15 +528,32 @@ if HAILO_AVAILABLE:
         needs_preview = (user_data.preview_writer
                          and user_data.preview_writer.should_write())
 
+        # Update per-track_id ROI stability (runs every frame, lightweight)
+        if frame_detections:
+            _update_track_roi_stability(user_data, frame_detections)
+
         needs_capture = False
         if user_data.detection_capturer and detected_cats:
             if user_data.capture_mode == "detections":
+                min_stable = user_data.stability_frames
                 for cat in detected_cats:
                     save_label = ("unlabeled" if user_data.unlabeled_classes
                                   and cat in user_data.unlabeled_classes else cat)
-                    if user_data.detection_capturer.should_capture(save_label):
-                        needs_capture = True
-                        break
+                    if not user_data.detection_capturer.should_capture(save_label):
+                        continue
+                    # Check if any detection for this cat is stably within ROI
+                    if frame_detections and not any(
+                        d["label"] == cat
+                        and _detection_in_roi(
+                            d, user_data.bowl_roi, user_data.frame_w,
+                            user_data.frame_h, user_data.roi_overlap_threshold)
+                        and user_data._track_roi_frames.get(
+                            d.get("track_id"), (0, 0))[0] >= min_stable
+                        for d in frame_detections
+                    ):
+                        continue
+                    needs_capture = True
+                    break
             elif user_data.capture_mode == "eating" and user_data.feeding_tracker:
                 from deploy.feeding_tracker import CatState
                 for cat in detected_cats:
@@ -651,8 +647,69 @@ if HAILO_AVAILABLE:
             return None
 
 
+    def _detection_in_roi(det: dict, bowl_roi: tuple, frame_w: int, frame_h: int,
+                          threshold: float) -> bool:
+        """Check if a detection bbox overlaps the bowl ROI above the threshold.
+
+        Uses intersection-over-ROI-area, same as ClassifierGate.update().
+        """
+        x0, y0, x1, y1 = bowl_roi
+        roi_area = (x1 - x0) * (y1 - y0)
+        if roi_area <= 0:
+            return True  # degenerate ROI, don't filter
+        xmin, ymin, w, h = det["bbox_norm"]
+        bx1, by1 = xmin * frame_w, ymin * frame_h
+        bx2, by2 = (xmin + w) * frame_w, (ymin + h) * frame_h
+        ix1, iy1 = max(x0, bx1), max(y0, by1)
+        ix2, iy2 = min(x1, bx2), min(y1, by2)
+        if ix2 > ix1 and iy2 > iy1:
+            overlap = (ix2 - ix1) * (iy2 - iy1) / roi_area
+            return overlap >= threshold
+        return False
+
+
+    _ROI_MISS_TOLERANCE = 5  # frames of grace before stability counter resets
+    _MAX_TRACKED_IDS = 50    # cap to prevent unbounded growth from noisy trackers
+
+    def _update_track_roi_stability(user_data, frame_detections):
+        """Update per-track_id consecutive ROI frame counts with grace period."""
+        min_stable = user_data.stability_frames
+        current_ids = set()
+        for det in frame_detections:
+            tid = det.get("track_id")
+            if tid is None:
+                continue
+            if _detection_in_roi(det, user_data.bowl_roi, user_data.frame_w,
+                                 user_data.frame_h, user_data.roi_overlap_threshold):
+                current_ids.add(tid)
+                prev_count, _ = user_data._track_roi_frames.get(tid, (0, 0))
+                new_count = prev_count + 1
+                user_data._track_roi_frames[tid] = (new_count, 0)
+                if prev_count < min_stable <= new_count:
+                    print(f"[roi-stability] Track {tid} stable in ROI ({new_count} frames)", flush=True)
+        for tid in list(user_data._track_roi_frames):
+            if tid not in current_ids:
+                count, misses = user_data._track_roi_frames[tid]
+                misses += 1
+                if misses >= _ROI_MISS_TOLERANCE:
+                    del user_data._track_roi_frames[tid]
+                    print(f"[roi-stability] Track {tid} departed ROI", flush=True)
+                else:
+                    user_data._track_roi_frames[tid] = (count, misses)
+        # Evict lowest-stability entries if dict grows too large
+        if len(user_data._track_roi_frames) > _MAX_TRACKED_IDS:
+            sorted_ids = sorted(user_data._track_roi_frames,
+                                key=lambda t: user_data._track_roi_frames[t][0])
+            for tid in sorted_ids[:len(user_data._track_roi_frames) - _MAX_TRACKED_IDS]:
+                del user_data._track_roi_frames[tid]
+
+
     def _maybe_capture_detections(user_data, detected_cats, frame, frame_detections=None):
         """Capture a frame for each detected class (no feeding tracker required).
+
+        Only saves detections whose bbox overlaps the bowl ROI above the
+        configured threshold.  Optionally skips unlabeled images when
+        ``save_labeled_only`` is set.
 
         Args:
             user_data: CatDetectionCallback with detection_capturer
@@ -660,21 +717,37 @@ if HAILO_AVAILABLE:
             frame: Pre-extracted BGR numpy array (shared with preview writer)
             frame_detections: list of detection dicts (label, confidence, bbox_norm)
         """
+        min_stable = user_data.stability_frames
         confirmed = (_get_classifier_identity()
                      if user_data.classifier_gate else None)
         for cat in detected_cats:
+            # Filter to detections in the ROI with stable presence
+            roi_dets = None
+            if frame_detections:
+                roi_dets = [
+                    {"label": d["label"], "confidence": d["confidence"],
+                     "bbox_norm": list(d["bbox_norm"])}
+                    for d in frame_detections
+                    if d["label"] == cat
+                    and _detection_in_roi(
+                        d, user_data.bowl_roi, user_data.frame_w,
+                        user_data.frame_h, user_data.roi_overlap_threshold)
+                    and user_data._track_roi_frames.get(
+                        d.get("track_id"), (0, 0))[0] >= min_stable
+                ] or None
+            if not roi_dets:
+                continue
+
             save_label = cat
             if user_data.unlabeled_classes and cat in user_data.unlabeled_classes:
                 save_label = confirmed if confirmed else "unlabeled"
-            # Build per-cat detection list for sidecar (only detections matching this cat)
-            det_data = None
-            if frame_detections:
-                det_data = [
-                    {"label": d["label"], "confidence": d["confidence"],
-                     "bbox_norm": list(d["bbox_norm"])}
-                    for d in frame_detections if d["label"] == cat
-                ] or None
-            user_data.detection_capturer.maybe_capture(save_label, frame, detections=det_data)
+
+            if user_data.save_labeled_only and save_label == "unlabeled":
+                continue
+
+            saved = user_data.detection_capturer.maybe_capture(save_label, frame, detections=roi_dets)
+            if saved:
+                print(f"[capture] Saved as '{save_label}' ({len(roi_dets)} detections)", flush=True)
 
 
     def _maybe_capture_eating_cats(user_data, detected_cats, frame, frame_detections=None):
@@ -711,6 +784,7 @@ if HAILO_AVAILABLE:
         """Handle live toggle of detection capture from the dashboard."""
         enabled = cmd.get("enabled", False)
         interval = cmd.get("min_interval_seconds", 15.0)
+        save_labeled_only = cmd.get("save_labeled_only", False)
 
         if enabled:
             if not user_data.detection_capturer:
@@ -740,7 +814,8 @@ if HAILO_AVAILABLE:
                 user_data.detection_capturer.min_interval = interval
 
             user_data.capture_mode = "detections"
-            print_info(f"Detection capture enabled (interval={interval}s)")
+            user_data.save_labeled_only = save_labeled_only
+            print_info(f"Detection capture enabled (interval={interval}s, labeled_only={save_labeled_only})")
         else:
             if user_data.detection_capturer:
                 user_data.detection_capturer.shutdown()
@@ -848,20 +923,18 @@ def main():
         PROJECT_ROOT,
     )
 
-    # ── Classifier setup (BEFORE GStreamer init — fork safety) ───────────
+    # ── ROI config (always loaded — used by detection capture even without classifier) ──
     classifier_cfg = cfg.get("classifier", {})
-    if classifier_cfg.get("enabled", False) or classifier_cfg.get("save_crops_for_labeling", False):
+    user_data.bowl_roi = tuple(classifier_cfg.get("bowl_roi", [0, 0, 1920, 1080]))
+    user_data.roi_overlap_threshold = classifier_cfg.get("roi_overlap_threshold", 0.01)
+    user_data.stability_frames = classifier_cfg.get("stability_frames", 5)
+    user_data.frame_w = camera_cfg.get("width", 1920)
+    user_data.frame_h = camera_cfg.get("height", 1080)
+
+    # ── Classifier setup (BEFORE GStreamer init — fork safety) ───────────
+    if classifier_cfg.get("enabled", False):
         bowl_roi = tuple(classifier_cfg.get("bowl_roi", [0, 0, 1920, 1080]))
         classifier_q = multiprocessing.Queue(maxsize=5)
-
-        save_crops = classifier_cfg.get("save_crops_for_labeling", False)
-        labeling_dir = None
-        if save_crops:
-            labeling_dir = resolve_path(
-                classifier_cfg.get("labeling_output_dir", "data/raw/unlabeled"),
-                PROJECT_ROOT,
-            )
-            labeling_dir.mkdir(parents=True, exist_ok=True)
 
         # Clear stale classifier status from previous runs
         status_file = Path("/tmp/cat_classifier_status.json")
@@ -895,13 +968,11 @@ def main():
             stability_frames=classifier_cfg.get("stability_frames", 5),
             classify_interval=classifier_cfg.get("classify_interval_seconds", 1.0),
             crop_padding=classifier_cfg.get("crop_padding", 0.20),
-            save_crops=save_crops,
-            labeling_dir=labeling_dir,
             roi_overlap_threshold=classifier_cfg.get("roi_overlap_threshold", 0.01),
             trigger_labels=set(tracking_objects),
             miss_tolerance=classifier_cfg.get("miss_tolerance", 15),
         )
-        print_info(f"Classifier gate active — ROI={bowl_roi}, save_crops={save_crops}")
+        print_info(f"Classifier gate active — ROI={bowl_roi}")
 
     # Create the detection app (Hailo parses sys.argv for --hef-path, --input, etc.)
     app = GStreamerDetectionApp(app_callback, user_data)
@@ -990,12 +1061,8 @@ def main():
             capture_cfg.get("output_dir", "data/raw"),
             PROJECT_ROOT,
         )
-        # Use auto-capture interval as the throttle (fallback to detection_capture's own)
-        collection_cfg = cfg.get("collection", {})
-        interval = collection_cfg.get(
-            "auto_capture_interval_sec",
-            capture_cfg.get("min_interval_seconds", 15.0),
-        )
+        interval = capture_cfg.get("min_interval_seconds", 15.0)
+        user_data.save_labeled_only = capture_cfg.get("save_labeled_only", False)
         user_data.detection_capturer = DetectionCapturer(
             output_dir=capture_dir,
             cats=cfg.get("cats", []),
