@@ -721,6 +721,30 @@ def read_training_metrics(run_dir: Path, cats: list[str] | None = None) -> dict:
             phase_boundaries.append({"phase": ph, "epoch_idx": i})
             prev_phase = ph
 
+    # Build per-phase breakdown
+    phase_labels = {"phase1": "Head Warmup", "phase2": "Fine-tune", "phase3": "QAT"}
+    phases_data: dict[str, dict] = {}
+    for i, ph in enumerate(phases):
+        if ph not in phases_data:
+            phases_data[ph] = {
+                "label": phase_labels.get(ph, ph),
+                "local_epochs": [], "train_loss": [], "val_loss": [],
+                "train_acc": [], "val_acc": [], "per_class": {},
+                "best_val_acc": 0, "best_epoch_local": 0,
+            }
+        pd = phases_data[ph]
+        local_ep = len(pd["local_epochs"]) + 1
+        pd["local_epochs"].append(local_ep)
+        pd["train_loss"].append(train_loss[i])
+        pd["val_loss"].append(val_loss[i])
+        pd["train_acc"].append(train_acc[i])
+        pd["val_acc"].append(val_acc[i])
+        for cat in per_class:
+            pd["per_class"].setdefault(cat, []).append(per_class[cat][i])
+        if val_acc[i] > pd["best_val_acc"]:
+            pd["best_val_acc"] = round(val_acc[i], 4)
+            pd["best_epoch_local"] = local_ep
+
     return {
         "available": True,
         "epochs": epochs,
@@ -731,6 +755,7 @@ def read_training_metrics(run_dir: Path, cats: list[str] | None = None) -> dict:
         "val_acc": val_acc,
         "per_class": per_class,
         "phase_boundaries": phase_boundaries,
+        "phases_data": phases_data,
         "best_val_acc": round(best_val_acc, 4),
         "best_epoch": best_epoch,
         "total_epochs": len(epochs),
@@ -860,6 +885,11 @@ def create_app(
     @flask_app.route("/api/metrics")
     def api_metrics():
         return jsonify(read_training_metrics(step_mgr.get_version_dir() / "training"))
+
+    @flask_app.route("/api/metrics/<version_name>")
+    def api_metrics_version(version_name):
+        ver_dir = project_root / "versions" / version_name / "training"
+        return jsonify(read_training_metrics(ver_dir))
 
     @flask_app.route("/api/cv_results")
     def api_cv_results():

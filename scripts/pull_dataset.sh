@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ═══════════════════════════════════════════════════════════════
 # Pull training dataset from Raspberry Pi
-# Runs export.py on the Pi via SSH, then downloads the archive.
+# Rsyncs data/raw/ from the Pi into the local data/raw/ directory.
 #
 # Usage: ./scripts/pull_dataset.sh [pi_user@pi_host] [remote_dir]
 #
@@ -22,41 +22,42 @@ PI_TARGET="${1:-${PI_USER:?Set PI_USER in .env}@${PI_HOST:?Set PI_HOST in .env}}
 REMOTE_DIR="${2:-${PI_REMOTE_DIR:-~/Repos/cat_detection}}"
 LOCAL_RAW_DIR="${3:-$PROJECT_ROOT/data/raw}"
 
-echo "[INFO] Running export on $PI_TARGET ..."
+MAX_RETRIES=5
+RETRY_DELAY=5
 
-# Run export.py on the Pi and capture the archive filename
-REMOTE_OUTPUT=$(ssh "$PI_TARGET" "
-    cd $REMOTE_DIR
-    source hailo-apps/setup_env.sh 2>/dev/null || true
-    python collect/export.py 2>&1
-")
+run_with_retry() {
+    local description="$1"
+    shift
+    for attempt in $(seq 1 $MAX_RETRIES); do
+        set +e
+        "$@"
+        local rc=$?
+        set -e
+        if [ $rc -eq 0 ]; then
+            return 0
+        fi
+        if [ $rc -eq 255 ] && [ "$attempt" -lt $MAX_RETRIES ]; then
+            echo "  [RETRY $attempt/$MAX_RETRIES] $description failed, retrying in ${RETRY_DELAY}s ..."
+            sleep $RETRY_DELAY
+        else
+            echo "[ERROR] $description failed (exit $rc)"
+            return $rc
+        fi
+    done
+}
 
-echo "$REMOTE_OUTPUT"
+# Resolve ~ for rsync (rsync doesn't expand ~ like SSH does)
+REMOTE_HOME=$(run_with_retry "SSH home resolve" ssh "$PI_TARGET" "echo \$HOME")
+RESOLVED_DIR="${REMOTE_DIR/#\~/$REMOTE_HOME}"
 
-# Extract the archive path from export.py output (looks for data/export/dataset_*.tar.gz)
-ARCHIVE_NAME=$(echo "$REMOTE_OUTPUT" | grep -oP 'dataset_\d{8}\.tar\.gz' | tail -1)
-
-if [ -z "$ARCHIVE_NAME" ]; then
-    echo "[ERROR] Could not find archive name in export output."
-    echo "Try running export.py on the Pi manually first."
-    exit 1
-fi
-
-REMOTE_ARCHIVE="$REMOTE_DIR/data/export/$ARCHIVE_NAME"
-
-# Download the archive
 mkdir -p "$LOCAL_RAW_DIR"
-echo ""
-echo "[INFO] Downloading $ARCHIVE_NAME ..."
-scp "$PI_TARGET:$REMOTE_ARCHIVE" "$PROJECT_ROOT/$ARCHIVE_NAME"
-
-# Extract into data/raw/ ({cat_name}/image.jpg)
-echo "[INFO] Extracting to $LOCAL_RAW_DIR ..."
-tar -xzf "$PROJECT_ROOT/$ARCHIVE_NAME" -C "$LOCAL_RAW_DIR"
-rm "$PROJECT_ROOT/$ARCHIVE_NAME"
+echo "[INFO] Syncing data/raw/ from $PI_TARGET ..."
+run_with_retry "rsync pull" rsync -avz --delete --exclude .thumbnails \
+    "$PI_TARGET:$RESOLVED_DIR/data/raw/" \
+    "$LOCAL_RAW_DIR/"
 
 echo ""
-echo "[OK] Dataset pulled and extracted to $LOCAL_RAW_DIR"
+echo "[OK] Dataset synced to $LOCAL_RAW_DIR"
 echo ""
 echo "Next step: open the training dashboard or run:"
 echo "  source venv_train/bin/activate"

@@ -255,6 +255,51 @@
     margin-bottom: 8px; letter-spacing: 1px;
   }
   .chart-box canvas { max-height: 250px; }
+  .chart-box.per-class-box canvas { max-height: 180px; }
+
+  /* ── Phase tabs & panels ── */
+  .phase-tabs {
+    display: flex; gap: 4px; margin-bottom: 12px;
+  }
+  .phase-tab {
+    padding: 6px 14px; border: 1px solid #0f2a4a;
+    background: #0a0a1a; color: #8892b0; cursor: pointer;
+    border-radius: 4px; font-size: 0.75rem; font-family: monospace;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .phase-tab:hover { background: #111828; }
+  .phase-tab.active { background: #161d30; color: #e0e0e0; border-color: #233554; }
+  .phase-panel { margin-bottom: 20px; }
+  .phase-panel.hidden { display: none; }
+  .phase-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 8px; padding: 6px 0;
+  }
+  .phase-header h3 {
+    font-size: 0.8rem; text-transform: uppercase; color: #ccd6f6;
+    letter-spacing: 1px; margin: 0;
+  }
+  .phase-best {
+    font-family: monospace; font-size: 0.75rem; color: #7ba87a;
+    background: rgba(123,168,122,0.1); padding: 2px 8px; border-radius: 3px;
+  }
+
+  /* ── Comparison bar ── */
+  .compare-bar {
+    display: flex; align-items: center; gap: 8px;
+    margin-bottom: 12px; font-family: monospace; font-size: 0.8rem;
+  }
+  .compare-bar label { color: #8892b0; }
+  .compare-bar select {
+    background: #0a0a1a; color: #e0e0e0; border: 1px solid #0f2a4a;
+    padding: 4px 8px; border-radius: 4px; font-family: monospace; font-size: 0.8rem;
+  }
+  .compare-delta {
+    font-family: monospace; font-size: 0.75rem; padding: 2px 8px;
+    border-radius: 3px; margin-left: 8px;
+  }
+  .compare-delta.positive { color: #7ba87a; background: rgba(123,168,122,0.1); }
+  .compare-delta.negative { color: #e63946; background: rgba(230,57,70,0.1); }
 
   .no-metrics {
     text-align: center; color: #555; font-family: monospace;
@@ -728,19 +773,22 @@
           </div>
         </div>
 
-        <!-- Charts -->
-        <div class="charts-row">
-          <div class="chart-box">
-            <h3>Cross-Entropy Loss</h3>
-            <canvas id="chart-loss"></canvas>
-          </div>
-          <div class="chart-box">
-            <h3>Accuracy</h3>
-            <canvas id="chart-map"></canvas>
-          </div>
+        <!-- Comparison selector -->
+        <div class="compare-bar">
+          <label>Compare with:</label>
+          <select id="compare-version" onchange="onCompareVersionChange()">
+            <option value="">-- none --</option>
+          </select>
+          <span id="compare-delta"></span>
         </div>
 
-        <!-- Per-class accuracy -->
+        <!-- Phase tabs -->
+        <div class="phase-tabs" id="phase-tabs"></div>
+
+        <!-- Per-phase charts (rendered dynamically) -->
+        <div id="phase-charts-container"></div>
+
+        <!-- Per-class accuracy (final values) -->
         <div class="dataset-panel" id="per-class-panel">
           <h3>Per-Class Val Accuracy</h3>
           <div id="per-class-bars"></div>
@@ -810,35 +858,40 @@
 
 <script>
 const CATS = {{ cat_names | tojson }};
+const CAT_COLORS = {{ cat_colors | tojson }};
 const STEPS = ['pull', 'label', 'crop', 'prepare', 'train', 'deploy', 'crossval'];
 let activeTab = 'pipeline';
-let lossChart = null;
-let mapChart = null;
+// ── Per-phase chart state ────────────────────────────────────
+let phaseCharts = {};   // { phase1: { loss: Chart, acc: Chart, perClass: Chart }, ... }
+let lastMetricsData = null;
+let compareData = null;
+let activePhaseTab = 'all';
+let compareVersionsPopulated = false;
 
-// ── Phase-boundary background shading plugin ────────────────
-const phaseBgPlugin = {
-  id: 'phaseBg',
-  beforeDraw(chart) {
-    const boundaries = (chart.options.plugins.phaseBg || {}).boundaries;
-    if (!boundaries || !boundaries.length) return;
-    const ctx = chart.ctx;
+// Best-epoch vertical line plugin
+const bestEpochPlugin = {
+  id: 'bestEpochLine',
+  afterDraw(chart) {
+    const bestEp = (chart.options.plugins.bestEpochLine || {}).epoch;
+    if (!bestEp) return;
     const xAxis = chart.scales.x;
     const yAxis = chart.scales.y;
-    const colors = {
-      phase1: 'rgba(123,168,122,0.07)',
-      phase2: 'rgba(184,137,106,0.07)',
-      phase3: 'rgba(230,57,70,0.07)',
-    };
-    boundaries.forEach((b, i) => {
-      const next = boundaries[i + 1];
-      const x1 = xAxis.getPixelForValue(b.epoch_idx);
-      const x2 = next ? xAxis.getPixelForValue(next.epoch_idx) : xAxis.right;
-      ctx.fillStyle = colors[b.phase] || 'rgba(100,100,100,0.05)';
-      ctx.fillRect(x1, yAxis.top, x2 - x1, yAxis.bottom - yAxis.top);
-    });
+    const idx = bestEp - 1;
+    if (idx < 0 || idx >= (chart.data.labels || []).length) return;
+    const x = xAxis.getPixelForValue(idx);
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = 'rgba(204,214,246,0.3)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, yAxis.top);
+    ctx.lineTo(x, yAxis.bottom);
+    ctx.stroke();
+    ctx.restore();
   }
 };
-Chart.register(phaseBgPlugin);
+Chart.register(bestEpochPlugin);
 let metricsLoaded = false;
 let latestOutputs = {};
 let latestDatasetStats = {};
@@ -917,6 +970,21 @@ async function switchVersion(name) {
   // Reset in-memory output/dataset state so updateReadiness() doesn't use stale data
   latestOutputs = {};
   latestDatasetStats = {};
+  // Reset chart state for new version
+  Object.values(phaseCharts).forEach(pc => {
+    if (pc.loss) pc.loss.destroy();
+    if (pc.acc) pc.acc.destroy();
+    if (pc.perClass) pc.perClass.destroy();
+  });
+  phaseCharts = {};
+  lastMetricsData = null;
+  compareData = null;
+  compareVersionsPopulated = false;
+  document.getElementById('phase-charts-container').innerHTML = '';
+  document.getElementById('phase-tabs').innerHTML = '';
+  document.getElementById('compare-delta').innerHTML = '';
+  const cmpSel = document.getElementById('compare-version');
+  if (cmpSel) cmpSel.innerHTML = '<option value="">-- none --</option>';
   pollStatus();
   pollDatasetStats();
   if (activeTab === 'metrics') pollMetrics();
@@ -1351,10 +1419,18 @@ async function pollMetrics() {
     document.getElementById('m-best-epoch').textContent = d.best_epoch;
     document.getElementById('m-train-loss').textContent = d.current_phase || '--';
 
-    // Charts
-    updateCharts(d);
+    lastMetricsData = d;
 
-    // Per-class accuracy bars
+    // Populate comparison dropdown (once)
+    if (!compareVersionsPopulated) {
+      populateCompareDropdown();
+      compareVersionsPopulated = true;
+    }
+
+    // Charts
+    updatePhaseCharts(d, compareData);
+
+    // Per-class accuracy bars (final epoch summary)
     const pcEl = document.getElementById('per-class-bars');
     if (d.per_class && Object.keys(d.per_class).length) {
       pcEl.innerHTML = Object.entries(d.per_class).map(([cat, accs]) => {
@@ -1370,6 +1446,50 @@ async function pollMetrics() {
     metricsLoaded = true;
   } catch(e) { console.error(e); }
   pollCvResults();
+}
+
+async function populateCompareDropdown() {
+  try {
+    const r = await fetch('/api/versions');
+    const d = await r.json();
+    const sel = document.getElementById('compare-version');
+    const current = sel.value;
+    const active = d.active;
+    sel.innerHTML = '<option value="">-- none --</option>';
+    (d.versions || []).forEach(v => {
+      if (v.name === active || !v.has_model) return;
+      const opt = document.createElement('option');
+      opt.value = v.name;
+      opt.textContent = v.name;
+      if (v.name === current) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  } catch(e) {}
+}
+
+async function onCompareVersionChange() {
+  const ver = document.getElementById('compare-version').value;
+  if (!ver) {
+    compareData = null;
+    document.getElementById('compare-delta').innerHTML = '';
+    if (lastMetricsData) updatePhaseCharts(lastMetricsData, null);
+    return;
+  }
+  try {
+    const r = await fetch('/api/metrics/' + encodeURIComponent(ver));
+    compareData = await r.json();
+    compareData._versionName = ver;
+    if (lastMetricsData) {
+      updatePhaseCharts(lastMetricsData, compareData);
+      // Show delta
+      const delta = lastMetricsData.best_val_acc - (compareData.best_val_acc || 0);
+      const deltaEl = document.getElementById('compare-delta');
+      const sign = delta >= 0 ? '+' : '';
+      const cls = delta >= 0 ? 'positive' : 'negative';
+      deltaEl.className = 'compare-delta ' + cls;
+      deltaEl.textContent = sign + (delta * 100).toFixed(1) + '% vs ' + ver;
+    }
+  } catch(e) { console.error(e); }
 }
 
 async function pollCvResults() {
@@ -1414,14 +1534,8 @@ async function pollCvResults() {
   } catch(e) { /* no CV results yet */ }
 }
 
-function updateCharts(data) {
-  const labels = data.epochs;
-
-  // Build phase boundary annotations for shading
-  const phases = data.phases || [];
-  const phaseColors = { phase1: 'rgba(123,168,122,0.06)', phase2: 'rgba(184,137,106,0.06)', phase3: 'rgba(230,57,70,0.06)' };
-
-  const chartOpts = {
+function getChartOpts(bestEpoch) {
+  return {
     responsive: true,
     maintainAspectRatio: true,
     animation: { duration: 0 },
@@ -1436,78 +1550,184 @@ function updateCharts(data) {
     },
     plugins: {
       legend: { labels: { color: '#8892b0', font: { family: 'monospace', size: 11 } } },
+      bestEpochLine: { epoch: bestEpoch || 0 },
     },
   };
+}
 
-  const phaseBoundaries = data.phase_boundaries || [];
+function updatePhaseCharts(data, cmpData) {
+  const pd = data.phases_data;
+  if (!pd) return;
+  const phaseKeys = Object.keys(pd);
+  const cmpPd = (cmpData && cmpData.available && cmpData.phases_data) ? cmpData.phases_data : null;
+  const cmpName = cmpData ? (cmpData._versionName || 'compare') : '';
 
-  // Loss chart
-  if (lossChart) {
-    lossChart.data.labels = labels;
-    lossChart.data.datasets[0].data = data.train_loss;
-    lossChart.data.datasets[1].data = data.val_loss;
-    lossChart.options.plugins.phaseBg = { boundaries: phaseBoundaries };
-    lossChart.update();
-  } else {
-    const ctx = document.getElementById('chart-loss').getContext('2d');
-    lossChart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          {
-            label: 'Train Loss',
-            data: data.train_loss,
-            borderColor: '#7ba87a', backgroundColor: 'transparent',
-            borderWidth: 1.5, pointRadius: 0, tension: 0.3,
-          },
-          {
-            label: 'Val Loss',
-            data: data.val_loss,
-            borderColor: '#e63946', backgroundColor: 'transparent',
-            borderWidth: 1.5, pointRadius: 0, tension: 0.3,
-          },
-        ],
-      },
-      options: { ...chartOpts, plugins: { ...chartOpts.plugins, phaseBg: { boundaries: phaseBoundaries } } },
-    });
-  }
+  // Render phase tabs
+  const tabsEl = document.getElementById('phase-tabs');
+  const tabHtml = ['<div class="phase-tab' + (activePhaseTab === 'all' ? ' active' : '') +
+    '" onclick="setPhaseTab(\'all\')">All</div>'];
+  phaseKeys.forEach(pk => {
+    tabHtml.push('<div class="phase-tab' + (activePhaseTab === pk ? ' active' : '') +
+      '" onclick="setPhaseTab(\'' + pk + '\')">' + pd[pk].label + '</div>');
+  });
+  tabsEl.innerHTML = tabHtml.join('');
 
-  // Accuracy chart
-  if (mapChart) {
-    mapChart.data.labels = labels;
-    mapChart.data.datasets[0].data = data.train_acc;
-    mapChart.data.datasets[1].data = data.val_acc;
-    mapChart.options.plugins.phaseBg = { boundaries: phaseBoundaries };
-    mapChart.update();
-  } else {
-    const ctx2 = document.getElementById('chart-map').getContext('2d');
-    mapChart = new Chart(ctx2, {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [
-          {
-            label: 'Train Acc',
-            data: data.train_acc,
-            borderColor: '#7ba87a', backgroundColor: 'transparent',
-            borderWidth: 1.5, pointRadius: 0, tension: 0.3,
-          },
-          {
-            label: 'Val Acc',
-            data: data.val_acc,
-            borderColor: '#b8896a', backgroundColor: 'transparent',
-            borderWidth: 1.5, pointRadius: 0, tension: 0.3,
-          },
-        ],
-      },
-      options: {
-        ...chartOpts,
-        scales: { ...chartOpts.scales, y: { ...chartOpts.scales.y, min: 0, max: 1 } },
-        plugins: { ...chartOpts.plugins, phaseBg: { boundaries: phaseBoundaries } },
-      },
-    });
-  }
+  // Render phase panels
+  const container = document.getElementById('phase-charts-container');
+
+  phaseKeys.forEach(pk => {
+    const phData = pd[pk];
+    const labels = phData.local_epochs;
+    const bestEp = phData.best_epoch_local;
+    let panel = document.getElementById('phase-panel-' + pk);
+
+    // Create panel DOM if it doesn't exist
+    if (!panel) {
+      panel = document.createElement('div');
+      panel.id = 'phase-panel-' + pk;
+      panel.className = 'phase-panel';
+      panel.innerHTML =
+        '<div class="phase-header"><h3>' + phData.label + '</h3>' +
+        '<span class="phase-best" id="phase-best-' + pk + '"></span></div>' +
+        '<div class="charts-row">' +
+        '<div class="chart-box"><h3>Loss</h3><canvas id="chart-loss-' + pk + '"></canvas></div>' +
+        '<div class="chart-box"><h3>Accuracy</h3><canvas id="chart-acc-' + pk + '"></canvas></div>' +
+        '</div>' +
+        '<div class="charts-row">' +
+        '<div class="chart-box per-class-box"><h3>Per-Class Val Accuracy</h3><canvas id="chart-pc-' + pk + '"></canvas></div>' +
+        '</div>';
+      container.appendChild(panel);
+    }
+
+    // Update best badge
+    document.getElementById('phase-best-' + pk).textContent =
+      'Best: ' + (phData.best_val_acc * 100).toFixed(1) + '% @ epoch ' + bestEp;
+
+    // Show/hide based on tab
+    panel.className = 'phase-panel' +
+      ((activePhaseTab === 'all' || activePhaseTab === pk) ? '' : ' hidden');
+
+    // Build datasets
+    const lossSets = [
+      { label: 'Train Loss', data: phData.train_loss, borderColor: '#7ba87a',
+        backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
+      { label: 'Val Loss', data: phData.val_loss, borderColor: '#e63946',
+        backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
+    ];
+    const accSets = [
+      { label: 'Train Acc', data: phData.train_acc, borderColor: '#7ba87a',
+        backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
+      { label: 'Val Acc', data: phData.val_acc, borderColor: '#b8896a',
+        backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
+    ];
+
+    // Comparison overlay (dashed lines)
+    if (cmpPd && cmpPd[pk]) {
+      const cPh = cmpPd[pk];
+      lossSets.push(
+        { label: 'Train Loss (' + cmpName + ')', data: cPh.train_loss, borderColor: 'rgba(123,168,122,0.4)',
+          backgroundColor: 'transparent', borderWidth: 1, pointRadius: 0, tension: 0.3, borderDash: [5, 5] },
+        { label: 'Val Loss (' + cmpName + ')', data: cPh.val_loss, borderColor: 'rgba(230,57,70,0.4)',
+          backgroundColor: 'transparent', borderWidth: 1, pointRadius: 0, tension: 0.3, borderDash: [5, 5] },
+      );
+      accSets.push(
+        { label: 'Train Acc (' + cmpName + ')', data: cPh.train_acc, borderColor: 'rgba(123,168,122,0.4)',
+          backgroundColor: 'transparent', borderWidth: 1, pointRadius: 0, tension: 0.3, borderDash: [5, 5] },
+        { label: 'Val Acc (' + cmpName + ')', data: cPh.val_acc, borderColor: 'rgba(184,137,106,0.4)',
+          backgroundColor: 'transparent', borderWidth: 1, pointRadius: 0, tension: 0.3, borderDash: [5, 5] },
+      );
+    }
+
+    // Per-class line datasets
+    const cats = Object.keys(phData.per_class || {});
+    const pcSets = cats.map((cat, ci) => ({
+      label: cat, data: phData.per_class[cat],
+      borderColor: CAT_COLORS[ci % CAT_COLORS.length], backgroundColor: 'transparent',
+      borderWidth: 1.5, pointRadius: 0, tension: 0.3,
+    }));
+    if (cmpPd && cmpPd[pk]) {
+      const cCats = Object.keys(cmpPd[pk].per_class || {});
+      cCats.forEach((cat, ci) => {
+        pcSets.push({
+          label: cat + ' (' + cmpName + ')', data: cmpPd[pk].per_class[cat],
+          borderColor: CAT_COLORS[ci % CAT_COLORS.length] + '66', backgroundColor: 'transparent',
+          borderWidth: 1, pointRadius: 0, tension: 0.3, borderDash: [5, 5],
+        });
+      });
+    }
+
+    // Use max labels length for x-axis (handles comparison with more epochs)
+    const maxLabels = cmpPd && cmpPd[pk] ?
+      Array.from({length: Math.max(labels.length, cmpPd[pk].local_epochs.length)}, (_, i) => i + 1) :
+      labels;
+
+    // Create or update charts
+    if (!phaseCharts[pk]) phaseCharts[pk] = {};
+
+    // Loss chart
+    if (phaseCharts[pk].loss) {
+      const c = phaseCharts[pk].loss;
+      c.data.labels = maxLabels;
+      c.data.datasets = lossSets;
+      c.options.plugins.bestEpochLine = { epoch: bestEp };
+      c.update();
+    } else {
+      const ctx = document.getElementById('chart-loss-' + pk).getContext('2d');
+      phaseCharts[pk].loss = new Chart(ctx, {
+        type: 'line', data: { labels: maxLabels, datasets: lossSets },
+        options: getChartOpts(bestEp),
+      });
+    }
+
+    // Accuracy chart
+    const accOpts = getChartOpts(bestEp);
+    accOpts.scales = { ...accOpts.scales, y: { ...accOpts.scales.y, min: 0, max: 1 } };
+    if (phaseCharts[pk].acc) {
+      const c = phaseCharts[pk].acc;
+      c.data.labels = maxLabels;
+      c.data.datasets = accSets;
+      c.options.plugins.bestEpochLine = { epoch: bestEp };
+      c.update();
+    } else {
+      const ctx = document.getElementById('chart-acc-' + pk).getContext('2d');
+      phaseCharts[pk].acc = new Chart(ctx, {
+        type: 'line', data: { labels: maxLabels, datasets: accSets },
+        options: accOpts,
+      });
+    }
+
+    // Per-class chart
+    const pcOpts = getChartOpts(bestEp);
+    pcOpts.scales = { ...pcOpts.scales, y: { ...pcOpts.scales.y, min: 0, max: 1 } };
+    if (phaseCharts[pk].perClass) {
+      const c = phaseCharts[pk].perClass;
+      c.data.labels = maxLabels;
+      c.data.datasets = pcSets;
+      c.options.plugins.bestEpochLine = { epoch: bestEp };
+      c.update();
+    } else {
+      const ctx = document.getElementById('chart-pc-' + pk).getContext('2d');
+      phaseCharts[pk].perClass = new Chart(ctx, {
+        type: 'line', data: { labels: maxLabels, datasets: pcSets },
+        options: pcOpts,
+      });
+    }
+  });
+}
+
+function setPhaseTab(tab) {
+  activePhaseTab = tab;
+  // Update tab styles
+  document.querySelectorAll('.phase-tab').forEach(el => {
+    const onclick = el.getAttribute('onclick') || '';
+    const match = onclick.match(/setPhaseTab\('(.+?)'\)/);
+    if (match) el.className = 'phase-tab' + (match[1] === tab ? ' active' : '');
+  });
+  // Show/hide panels
+  document.querySelectorAll('.phase-panel').forEach(el => {
+    const pk = el.id.replace('phase-panel-', '');
+    el.className = 'phase-panel' + ((tab === 'all' || tab === pk) ? '' : ' hidden');
+  });
 }
 
 // ── Dataset stats ──────────────────────────────────────────
@@ -2116,7 +2336,6 @@ async function saveAugSettings() {
 }
 
 // ═══════════════════════════════════════════════════════════
-const CAT_COLORS = {{ cat_colors | tojson }};
 let labelCurrent = null;
 let labelCurrentMeta = null;          // sidecar JSON for current image
 let unlabeledFilenames = [];          // up to 30 remaining unlabeled filenames
