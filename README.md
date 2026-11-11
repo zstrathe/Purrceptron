@@ -12,6 +12,10 @@ accelerator.
 While built for cats, the same architecture works for any pet or animal. Just point
 the camera, collect images, and train the classifier on your own classes.
 
+> **License notice:** source-available for noncommercial use only. No redistribution,
+> no commercial use, and no use as AI/ML training data. Models you train with this
+> software are for your own noncommercial use only. See [License](#license).
+
 ## Overview
 
 The workflow has three phases:
@@ -494,6 +498,17 @@ cat_detection/
 - **Iterate**: use detection capture to collect more labeled data automatically,
   review in the dashboard, then retrain with the expanded dataset
 
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to submit a pull request and the terms that apply to contributions.
+
 ## License
 
-This project is source-available under the [Purrceptron Source-Available License 1.0](LICENSE.md). See LICENSE.md for the terms.
+This project is source-available under the [Purrceptron Source-Available License 1.0](LICENSE.md):
+
+- **Allowed:** using the software for noncommercial purposes, and changing it privately for your own setup.
+- **Allowed:** forking the repository solely to contribute changes back through pull requests (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+- **Not allowed:** redistributing the software, publishing modified versions, or maintaining a fork as a separate project.
+- **Not allowed:** using the software, or any part of it, as training, evaluation, or retrieval data for any AI or machine learning model, giving it to an AI service whose provider is allowed to train on it, or text and data mining. All such rights are reserved. AI coding assistants are fine if their terms don't let the provider train on your input.
+- **Not allowed:** commercial use without a separate license from the author.
+- **Trained models:** any model you train with the software may be used only by you, for noncommercial purposes. You may not share, sell, or commercially use it.

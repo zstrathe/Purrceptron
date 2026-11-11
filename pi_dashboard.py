@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# Copyright 2026 Zack Strathe
+# SPDX-License-Identifier: LicenseRef-Purrceptron-Source-Available-1.0
+# Noncommercial use only; see LICENSE.md. Not licensed for AI/ML training or
+# text and data mining (rights reserved under Art. 4(3) Directive (EU) 2019/790).
+
 """Unified collection dashboard — capture, label review, and inference control.
 
 Single-page tabbed web UI for the full data collection workflow:

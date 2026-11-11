@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# Copyright 2026 Zack Strathe
+# SPDX-License-Identifier: LicenseRef-Purrceptron-Source-Available-1.0
+# Noncommercial use only; see LICENSE.md. Not licensed for AI/ML training or
+# text and data mining (rights reserved under Art. 4(3) Directive (EU) 2019/790).
+
 """Label review classes for iterating through captured images and assigning cat labels.
 
 Provides LabelReviewApp class for use by the unified dashboard (pi_dashboard.py).

@@ -1,3 +1,8 @@
+# Copyright 2026 Zack Strathe
+# SPDX-License-Identifier: LicenseRef-Purrceptron-Source-Available-1.0
+# Noncommercial use only; see LICENSE.md. Not licensed for AI/ML training or
+# text and data mining (rights reserved under Art. 4(3) Directive (EU) 2019/790).
+
 """Stage 2: MobileNetV2-INT8 cat identity classifier worker.
 
 Runs as a separate process pinned to a single CPU core.  Receives
