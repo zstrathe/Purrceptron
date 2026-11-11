@@ -1927,6 +1927,9 @@ function restoreCachedCompletion() {
 let annImages = [];
 let annIndex = 0;
 let annBbox = null;  // {cx, cy, w, h} normalized or null
+let annBboxSource = null;  // 'auto' | 'manual' for unsaved boxes
+let annBboxConf = null;    // detector confidence for 'auto' boxes
+let annDirty = false;      // true only when the box changed and is not yet saved
 let annDrawing = false;
 let annDrawStart = null;
 
@@ -1982,16 +1985,24 @@ async function annLoadImage() {
 
   imgEl.onload = async () => {
     annResizeCanvas();
-    // Load existing bbox
-    try {
-      const r = await fetch('/api/annotate/bbox/' + img.cat + '/' + img.filename);
-      const d = await r.json();
-      annBbox = d.exists ? {cx: d.cx, cy: d.cy, w: d.w, h: d.h} : null;
-    } catch(e) { annBbox = null; }
+    // Load existing bbox (from the image's sidecar)
+    await annFetchBbox(img);
     annDrawBbox();
     annRenderThumbs();
   };
   imgEl.src = '/api/annotate/image/' + img.cat + '/' + img.filename + '?' + Date.now();
+}
+
+async function annFetchBbox(img) {
+  annDirty = false;
+  annBboxSource = null;
+  annBboxConf = null;
+  try {
+    const r = await fetch('/api/annotate/bbox/' + img.cat + '/' + img.filename);
+    const d = await r.json();
+    annBbox = d.exists ? {cx: d.cx, cy: d.cy, w: d.w, h: d.h} : null;
+  } catch(e) { annBbox = null; }
+  img.has_bbox = annBbox !== null;
 }
 
 function annResizeCanvas() {
@@ -2115,6 +2126,9 @@ function annDrawCrosshairs(ctx, mx, my, canvas) {
       w: (x2 - x1) / canvas.width,
       h: (y2 - y1) / canvas.height,
     };
+    annBboxSource = 'manual';
+    annBboxConf = null;
+    annDirty = true;
     annDrawBbox();
     annSave();
   });
@@ -2128,28 +2142,41 @@ window.addEventListener('resize', () => {
   }
 });
 
+// Saves only a box the user drew or auto-detected; navigating past an image
+// never rewrites its existing (e.g. Pi-captured) box.
 async function annSave() {
-  if (!annBbox || annImages.length === 0) return;
+  if (!annBbox || !annDirty || annImages.length === 0) return;
   const img = annImages[annIndex];
-  const catIdx = CATS.indexOf(img.cat);
+  const body = {...annBbox, source: annBboxSource || 'manual'};
+  if (annBboxSource === 'auto' && annBboxConf !== null) body.confidence = annBboxConf;
+  annDirty = false;
   try {
-    await fetch('/api/annotate/bbox/' + img.cat + '/' + img.filename, {
+    const r = await fetch('/api/annotate/bbox/' + img.cat + '/' + img.filename, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({class_id: catIdx >= 0 ? catIdx : 0, ...annBbox}),
+      body: JSON.stringify(body),
     });
+    const d = await r.json();
+    if (d.status !== 'ok') { alert('Save failed: ' + (d.message || r.status)); return; }
     img.has_bbox = true;
     annRenderThumbs();
   } catch(e) { console.error(e); }
 }
 
-function annClearBbox() {
-  annBbox = null;
-  annDrawBbox();
+// Clear = undo annotation: restores the Pi's original box if one existed,
+// deletes annotate-created boxes, and never deletes untouched Pi boxes.
+async function annClearBbox() {
   if (annImages.length === 0) return;
   const img = annImages[annIndex];
-  fetch('/api/annotate/bbox/' + img.cat + '/' + img.filename, {method: 'DELETE'});
-  img.has_bbox = false;
+  try {
+    const r = await fetch('/api/annotate/bbox/' + img.cat + '/' + img.filename, {method: 'DELETE'});
+    const d = await r.json();
+    if (d.result === 'kept_pi') {
+      alert('This box came from the Pi capture and was kept. Draw a new box to replace it.');
+    }
+  } catch(e) { console.error(e); }
+  await annFetchBbox(img);
+  annDrawBbox();
   annRenderThumbs();
 }
 
@@ -2197,7 +2224,13 @@ async function annAutoDetectCurrent() {
     const d = await r.json();
     if (d.detected) {
       annBbox = {cx: d.cx, cy: d.cy, w: d.w, h: d.h};
+      annBboxSource = 'auto';
+      annBboxConf = d.confidence;
+      annDirty = true;
       annDrawBbox();
+      annSave();
+    } else if (d.status === 'error') {
+      alert('Auto-detect failed: ' + d.message);
     } else {
       alert('No cat detected in this image');
     }
@@ -2220,13 +2253,12 @@ async function annAutoDetectAll() {
       });
       const d = await r.json();
       if (d.detected) {
-        const catIdx = CATS.indexOf(img.cat);
-        await fetch('/api/annotate/bbox/' + img.cat + '/' + img.filename, {
+        const s = await fetch('/api/annotate/bbox/' + img.cat + '/' + img.filename, {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({class_id: catIdx >= 0 ? catIdx : 0, cx: d.cx, cy: d.cy, w: d.w, h: d.h}),
+          body: JSON.stringify({cx: d.cx, cy: d.cy, w: d.w, h: d.h, source: 'auto', confidence: d.confidence}),
         });
-        img.has_bbox = true;
+        if ((await s.json()).status === 'ok') img.has_bbox = true;
       }
     } catch(e) { console.error(e); }
   }

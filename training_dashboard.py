@@ -1105,53 +1105,95 @@ def create_app(
         step_mgr.invalidate_label_cache()
         return jsonify({"status": "ok", "restored": src.name})
 
-    # ── Annotation API (YOLO bbox — kept for Stage 1 compatibility) ──
+    # ── Annotation API (bbox sidecars in raw_images/, read by crop step) ──
+    # Boxes are stored in the same .json sidecar format the Pi's detection
+    # capture writes, so train/crop_images.py crops annotated images exactly
+    # like Pi-captured ones (highest-confidence detection, bbox_norm =
+    # [xmin, ymin, w, h] normalized). The UI works in center format
+    # (cx, cy, w, h); conversion happens here.
+
+    def _ann_image_path(folder: str, filename: str) -> Path | None:
+        """Resolve raw_images/<folder>/<filename>; None if folder/name invalid."""
+        if folder not in cats and folder != "unlabeled":
+            return None
+        if not filename or Path(filename).name != filename or not filename.lower().endswith(".jpg"):
+            return None
+        return _label_raw_dir() / folder / filename
+
+    def _ann_read_sidecar(img_path: Path) -> dict | None:
+        sidecar = img_path.with_suffix(".json")
+        if not sidecar.is_file():
+            return None
+        try:
+            return json.loads(sidecar.read_text())
+        except Exception:
+            return None
+
+    def _ann_write_sidecar(img_path: Path, meta: dict) -> None:
+        """Write the sidecar atomically (temp file + rename)."""
+        sidecar = img_path.with_suffix(".json")
+        tmp = sidecar.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(meta))
+        tmp.replace(sidecar)
+
+    def _ann_best_detection(meta: dict | None) -> dict | None:
+        """Highest-confidence detection with a valid bbox (same rule as crop_images.py)."""
+        if not meta:
+            return None
+        valid = [
+            d for d in meta.get("detections", [])
+            if isinstance(d.get("bbox_norm"), list) and len(d["bbox_norm"]) == 4
+        ]
+        return max(valid, key=lambda d: d.get("confidence", 0)) if valid else None
+
+    def _ann_image_size(img_path: Path) -> list[int] | None:
+        try:
+            import cv2
+            img = cv2.imread(str(img_path))
+            return [int(img.shape[1]), int(img.shape[0])] if img is not None else None
+        except Exception:
+            return None
+
     @flask_app.route("/api/annotate/images")
     def api_annotate_images():
-        ver_dir = step_mgr.get_version_dir()
-        raw_dir = ver_dir / "raw"
+        raw_dir = _label_raw_dir()
         images = []
-        for cat_name in cats:
-            cat_dir = raw_dir / cat_name
-            if not cat_dir.is_dir():
+        for folder in [*cats, "unlabeled"]:
+            folder_dir = raw_dir / folder
+            if not folder_dir.is_dir():
                 continue
-            for img in sorted(cat_dir.glob("*.jpg")):
-                has_bbox = img.with_suffix(".txt").exists()
+            for img in sorted(folder_dir.glob("*.jpg")):
                 images.append({
-                    "cat": cat_name,
+                    "cat": folder,
                     "filename": img.name,
-                    "has_bbox": has_bbox,
+                    "has_bbox": _ann_best_detection(_ann_read_sidecar(img)) is not None,
                 })
         return jsonify({"images": images})
 
     @flask_app.route("/api/annotate/image/<cat>/<filename>")
     def api_annotate_image(cat, filename):
-        ver_dir = step_mgr.get_version_dir()
-        img_path = ver_dir / "raw" / cat / filename
-        if not img_path.exists():
+        img_path = _ann_image_path(cat, filename)
+        if img_path is None or not img_path.is_file():
             return "Not found", 404
         return send_file(str(img_path), mimetype="image/jpeg")
 
     @flask_app.route("/api/annotate/bbox/<cat>/<filename>", methods=["GET"])
     def api_annotate_bbox_get(cat, filename):
-        ver_dir = step_mgr.get_version_dir()
-        label_name = Path(filename).with_suffix(".txt").name
-        label_path = ver_dir / "raw" / cat / label_name
-        if not label_path.exists():
+        img_path = _ann_image_path(cat, filename)
+        if img_path is None:
             return jsonify({"exists": False})
-        text = label_path.read_text().strip()
-        if not text:
+        best = _ann_best_detection(_ann_read_sidecar(img_path))
+        if best is None:
             return jsonify({"exists": False})
-        parts = text.split("\n")[0].split()
-        if len(parts) < 5:
-            return jsonify({"exists": False})
+        xmin, ymin, w, h = (float(v) for v in best["bbox_norm"])
         return jsonify({
             "exists": True,
-            "class_id": int(parts[0]),
-            "cx": float(parts[1]),
-            "cy": float(parts[2]),
-            "w": float(parts[3]),
-            "h": float(parts[4]),
+            "cx": xmin + w / 2,
+            "cy": ymin + h / 2,
+            "w": w,
+            "h": h,
+            "confidence": best.get("confidence"),
+            "source": best.get("source", "pi"),
         })
 
     @flask_app.route("/api/annotate/bbox/<cat>/<filename>", methods=["POST"])
@@ -1159,36 +1201,66 @@ def create_app(
         data = request.get_json()
         if not data:
             return jsonify({"status": "error", "message": "No data"}), 400
-        ver_dir = step_mgr.get_version_dir()
-        label_name = Path(filename).with_suffix(".txt").name
-        label_path = ver_dir / "raw" / cat / label_name
-        class_id = data.get("class_id", 0)
-        cx = data["cx"]
-        cy = data["cy"]
-        w = data["w"]
-        h = data["h"]
-        label_path.write_text(f"{class_id} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}\n")
-        step_mgr.invalidate_label_cache()
+        img_path = _ann_image_path(cat, filename)
+        if img_path is None or not img_path.is_file():
+            return jsonify({"status": "error", "message": "Image not found"}), 404
+        try:
+            cx, cy, w, h = (float(data[k]) for k in ("cx", "cy", "w", "h"))
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"status": "error", "message": "cx, cy, w, h required"}), 400
+        # Center format -> [xmin, ymin, w, h], clamped to the image
+        x1 = min(max(cx - w / 2, 0.0), 1.0)
+        y1 = min(max(cy - h / 2, 0.0), 1.0)
+        x2 = min(max(cx + w / 2, 0.0), 1.0)
+        y2 = min(max(cy + h / 2, 0.0), 1.0)
+        if x2 <= x1 or y2 <= y1:
+            return jsonify({"status": "error", "message": "Empty bbox"}), 400
+        source = "auto" if data.get("source") == "auto" else "manual"
+        confidence = float(data.get("confidence", 1.0)) if source == "auto" else 1.0
+
+        meta = _ann_read_sidecar(img_path)
+        if meta is None:
+            meta = {
+                "timestamp": datetime.now().astimezone().isoformat(),
+                "session_id": "",
+                "image_size": _ann_image_size(img_path),
+                "created_by": "annotate",
+            }
+        elif "original_detections" not in meta and meta.get("created_by") != "annotate":
+            # First edit of a Pi sidecar: keep the Pi's detections restorable
+            meta["original_detections"] = meta.get("detections", [])
+        meta["detections"] = [{
+            "label": "cat",
+            "confidence": round(confidence, 4),
+            "bbox_norm": [round(v, 6) for v in (x1, y1, x2 - x1, y2 - y1)],
+            "source": source,
+        }]
+        _ann_write_sidecar(img_path, meta)
         return jsonify({"status": "ok"})
 
     @flask_app.route("/api/annotate/bbox/<cat>/<filename>", methods=["DELETE"])
     def api_annotate_bbox_delete(cat, filename):
-        ver_dir = step_mgr.get_version_dir()
-        label_name = Path(filename).with_suffix(".txt").name
-        label_path = ver_dir / "raw" / cat / label_name
-        if label_path.exists():
-            label_path.unlink()
-        step_mgr.invalidate_label_cache()
-        return jsonify({"status": "ok"})
+        img_path = _ann_image_path(cat, filename)
+        if img_path is None:
+            return jsonify({"status": "error", "message": "Invalid image"}), 400
+        meta = _ann_read_sidecar(img_path)
+        if meta is None:
+            return jsonify({"status": "ok", "result": "none"})
+        if "original_detections" in meta:
+            meta["detections"] = meta.pop("original_detections")
+            _ann_write_sidecar(img_path, meta)
+            return jsonify({"status": "ok", "result": "restored"})
+        if meta.get("created_by") == "annotate":
+            img_path.with_suffix(".json").unlink()
+            return jsonify({"status": "ok", "result": "deleted"})
+        # Untouched Pi detection: never destroy capture data
+        return jsonify({"status": "ok", "result": "kept_pi"})
 
     @flask_app.route("/api/annotate/auto-detect", methods=["POST"])
     def api_annotate_auto_detect():
         data = request.get_json()
-        cat = data.get("cat", "")
-        filename = data.get("filename", "")
-        ver_dir = step_mgr.get_version_dir()
-        img_path = ver_dir / "raw" / cat / filename
-        if not img_path.exists():
+        img_path = _ann_image_path(data.get("cat", ""), data.get("filename", ""))
+        if img_path is None or not img_path.is_file():
             return jsonify({"status": "error", "message": "Image not found"}), 404
 
         try:
