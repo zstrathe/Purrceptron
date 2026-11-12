@@ -10,7 +10,7 @@ The project has two parts that run on different machines:
 - `pi_dashboard.py` runs on the Pi. It collects training images from the camera,
   provides a labeling interface, runs detection and identification continuously, and
   displays the visit log. It launches `deploy/detect.py` and the classifier worker.
-- `training_dashboard.py` runs on a PC with an NVIDIA GPU (Linux or WSL2). It pulls
+- `training_dashboard.py` runs on a Linux or WSL2 PC, ideally with a CUDA-capable GPU. It pulls
   images from the Pi, provides labeling and annotation tools, trains the classifier,
   and copies the finished model back to the Pi.
 
@@ -58,21 +58,33 @@ the training dashboard's auto-detect currently looks for cats only.
 
 ## How it works
 
-```
-                 Raspberry Pi 5                                 Training machine (GPU)
- ┌──────────────────────────────────────────────┐     ┌──────────────────────────────────┐
- │ USB camera                                   │     │ Pull (rsync) ──> Label ──> Crop  │
- │   │  GStreamer                               │     │   │                          │   │
- │   ▼                                          │     │   │      Annotate (optional) │   │
- │ YOLOv8m on Hailo-10H ──> "cat" boxes + IDs   │     │   ▼                          ▼   │
- │   │                                          │     │ Prepare ──> Train ──> Deploy     │
- │   ├─> bowl-ROI gate ─> crop ─> MobileNetV2   │     │ (train/val)  (4 phases)  (scp)   │
- │   │                  (INT8, CPU core 3)      │     └──────────────────────────────────┘
- │   │                     │ energy check            ▲                         │
- │   │                     ▼ vote window             │ images + bbox sidecars   │ cat_classifier.pt
- │   │                 identity ──> classifier_log.db│                          ▼
- │   └─> detection-triggered capture ───────────────┘                   models/ on the Pi
- └──────────────────────────────────────────────┘
+```mermaid
+%%{init: {"flowchart": {"wrappingWidth": 320, "nodeSpacing": 40, "rankSpacing": 45}}}%%
+flowchart TB
+    subgraph S1["Raspberry Pi, Stage 1: detect cats (always on)"]
+        CAM["USB camera"] --> DET["YOLOv8m detector on the Hailo-10H NPU<br/>draws a bounding box around each detected cat<br/>and assigns it a tracking ID"]
+        DET --> GATE{"Is the cat at the food bowl?<br/>(its bounding box overlaps the configured<br/>bowl area for several consecutive frames)"}
+    end
+    subgraph S2["Raspberry Pi, Stage 2: identify the cat (once a model is trained)"]
+        EN{"Trained model deployed?<br/>(the first collection round<br/>runs without one)"}
+        EN -- yes --> CROP["Crop the cat out of the frame<br/>resized to 224x224"] --> CLS["MobileNetV2 classifier, INT8<br/>runs on one Pi CPU core<br/>predicts which cat this is"]
+        CLS --> OOD{"Does it look like one of<br/>the known cats?<br/>(energy score vs. threshold)"}
+        OOD -- no --> UNK["Reported as Unknown"]
+        OOD -- yes --> VOTE["Majority vote over<br/>the last 10 predictions"]
+        VOTE --> LOG[("Visit log, SQLite<br/>cat, start time, end time, duration")]
+    end
+    subgraph S3["Raspberry Pi: training-image capture"]
+        CAP["Save a training image<br/>JPEG frame + bounding-box JSON file<br/>filed under the identified cat, or 'unlabeled'"]
+    end
+    subgraph PC["Training machine (CUDA recommended)"]
+        PULL["Pull images from the Pi"] --> LABEL["Label each cat by name;<br/>add missing or adjust existing bounding boxes"] --> CROPS["Crop each cat<br/>using its bounding box"]
+        CROPS --> PREP["Split into<br/>training / validation sets"] --> TRAIN["Train the classifier<br/>4 phases, INT8 export"] --> DEPLOY["Copy the model to the Pi"]
+    end
+    GATE -- yes --> EN
+    EN -- "not yet: save as 'unlabeled'" --> CAP
+    VOTE -- "confirmed identity" --> CAP
+    CAP -. "rsync: images + box files" .-> PULL
+    DEPLOY -. "scp: cat_classifier.pt" .-> CLS
 ```
 
 1. hailo-apps runs a GStreamer pipeline with YOLOv8m on the Hailo-10H, plus a
@@ -103,13 +115,16 @@ the training dashboard's auto-detect currently looks for cats only.
 - USB camera. Built and tested with the
   [Arducam B0205 1080P Day & Night Vision USB Camera](https://www.amazon.com/dp/B0829HZ3Q7)
   (2MP, IR LEDs, automatic IR-cut switching), which lets detection run in the dark.
-  Other V4L2 USB cameras work for daytime use.
+  Other USB cameras should work.
 
 **Training side**
 
-- A Linux or WSL2 machine with an NVIDIA GPU. Training runs on the CPU if CUDA is
-  unavailable, but much more slowly. Quantization-aware training and export always run
-  on the CPU.
+- A Linux or WSL2 machine, ideally with a CUDA-capable NVIDIA GPU. CUDA is the only
+  accelerator the code uses; on other hardware, including Apple Silicon, it runs on
+  the CPU. CUDA is not required: training
+  falls back to the CPU when CUDA is unavailable, but the fine-tuning phases and the
+  Annotate tab's auto-detect are much slower there. Quantization-aware training and
+  the INT8 export always run on the CPU.
 
 ## Software requirements
 
@@ -239,7 +254,7 @@ identified visits from `classifier_log.db` with total tracked time per cat.
 
 ## Training dashboard
 
-`training_dashboard.py` runs on the GPU machine and serves on port 5004 (`--host`,
+`training_dashboard.py` runs on the training machine and serves on port 5004 (`--host`,
 `--port` and `--config` are the only options). Work is organized into versions. Each
 version is a directory under `versions/` holding that round's images, crops, dataset,
 training output and model. Versions can be created, renamed, duplicated and deleted
@@ -273,7 +288,8 @@ padding ("Save & Re-crop") and the augmentation switches. They are written back 
 
 For images that have no bounding box (phone photos, older captures, or images added
 by hand). Draw a box by dragging, or click Auto-detect to get one from a
-COCO-pretrained torchvision Faster R-CNN (ResNet50 FPN v2) running on the GPU.
+COCO-pretrained torchvision Faster R-CNN (ResNet50 FPN v2), using the GPU when
+one is available.
 "Auto-detect All Missing" processes every image without a box. Boxes are saved in
 the same sidecar format the Pi writes, so the Crop step treats them the same way.
 Editing a Pi-generated box keeps a backup, and Clear restores it. Keyboard shortcuts:
@@ -493,6 +509,7 @@ Purrceptron/
 ├── templates/
 │   ├── dashboard.html              # Pi dashboard UI
 │   └── training_dashboard.html     # Training dashboard UI
+├── static/css/theme.css            # Shared dashboard theme (colors, layout, image browser)
 ├── configs/
 │   └── project.yaml.example        # Configuration template (copy to project.yaml)
 ├── deploy/                         # Runs on the Pi
@@ -520,7 +537,8 @@ Purrceptron/
 │   └── _common.sh                  # Shared helpers (.env loading)
 ├── utils/
 │   ├── config.py                   # Config loading, runtime.yaml merge, path resolution, cat colors
-│   └── display.py                  # Colored console output
+│   ├── display.py                  # Colored console output
+│   └── thumbnails.py               # Cached thumbnails for the dashboards' image browsers
 ├── requirements-pi.txt
 ├── requirements-training.txt
 └── requirements-scripts.txt
