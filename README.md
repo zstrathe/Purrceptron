@@ -442,7 +442,7 @@ cat_detection/
 │   ├── config.py                       # YAML config loading, path resolution
 │   └── display.py                      # Colored console output
 ├── requirements-pi.txt                 # Pi dependencies (Flask, OpenCV, PyTorch, PyYAML)
-├── requirements-training.txt           # Training machine dependencies (Ultralytics, CUDA)
+├── requirements-training.txt           # Training machine dependencies (PyTorch, CUDA)
 └── requirements-scripts.txt            # Script-only dependencies (PyYAML)
 ```
 

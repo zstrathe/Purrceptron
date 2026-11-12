@@ -1261,6 +1261,8 @@ def create_app(
         # Untouched Pi detection: never destroy capture data
         return jsonify({"status": "ok", "result": "kept_pi"})
 
+    _coco_lock = threading.Lock()
+
     @flask_app.route("/api/annotate/auto-detect", methods=["POST"])
     def api_annotate_auto_detect():
         data = request.get_json()
@@ -1269,31 +1271,48 @@ def create_app(
             return jsonify({"status": "error", "message": "Image not found"}), 404
 
         try:
-            from ultralytics import YOLO
-            # Cache model in module-level variable
-            if not hasattr(api_annotate_auto_detect, "_coco_model"):
-                import torch
-                device = "cuda:0" if torch.cuda.is_available() else "cpu"
-                api_annotate_auto_detect._coco_model = YOLO("yolov8n.pt").to(device)
-            model = api_annotate_auto_detect._coco_model
-            results = model.predict(str(img_path), verbose=False, conf=0.15)
+            import torch
+            from torchvision.io import ImageReadMode, read_image
+            from torchvision.models.detection import (
+                FasterRCNN_ResNet50_FPN_V2_Weights,
+                fasterrcnn_resnet50_fpn_v2,
+            )
+            # torchvision COCO detector (BSD-3). Chosen over Ultralytics YOLOv8n
+            # (AGPL-3.0) after comparing both against the Pi's Hailo boxes:
+            # it finds every cat and v11 classifier accuracy on its crops matches.
+            min_conf = 0.15
+            with _coco_lock:  # load once; serialize GPU inference
+                if not hasattr(api_annotate_auto_detect, "_coco_model"):
+                    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+                    weights = FasterRCNN_ResNet50_FPN_V2_Weights.DEFAULT
+                    detector = fasterrcnn_resnet50_fpn_v2(
+                        weights=weights, box_score_thresh=min_conf,
+                    ).eval().to(device)
+                    api_annotate_auto_detect._coco_model = (
+                        detector,
+                        weights.transforms(),
+                        weights.meta["categories"].index("cat"),
+                        device,
+                    )
+                detector, preprocess, cat_label, device = api_annotate_auto_detect._coco_model
+                image = read_image(str(img_path), mode=ImageReadMode.RGB)
+                img_h, img_w = image.shape[1], image.shape[2]
+                with torch.no_grad():
+                    output = detector([preprocess(image).to(device)])[0]
             best_box = None
             best_conf = 0.0
-            for r in results:
-                for box in r.boxes:
-                    if int(box.cls) == 15:  # COCO cat class
-                        conf = float(box.conf)
-                        if conf > best_conf:
-                            best_conf = conf
-                            x1, y1, x2, y2 = box.xyxy[0].tolist()
-                            img_h, img_w = r.orig_shape
-                            best_box = {
-                                "cx": ((x1 + x2) / 2) / img_w,
-                                "cy": ((y1 + y2) / 2) / img_h,
-                                "w": (x2 - x1) / img_w,
-                                "h": (y2 - y1) / img_h,
-                                "confidence": best_conf,
-                            }
+            for box, label, score in zip(output["boxes"], output["labels"], output["scores"]):
+                conf = float(score)
+                if int(label) == cat_label and conf >= min_conf and conf > best_conf:
+                    best_conf = conf
+                    x1, y1, x2, y2 = box.tolist()
+                    best_box = {
+                        "cx": ((x1 + x2) / 2) / img_w,
+                        "cy": ((y1 + y2) / 2) / img_h,
+                        "w": (x2 - x1) / img_w,
+                        "h": (y2 - y1) / img_h,
+                        "confidence": best_conf,
+                    }
             if best_box:
                 return jsonify({"status": "ok", "detected": True, **best_box})
             return jsonify({"status": "ok", "detected": False})
