@@ -26,6 +26,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -40,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from utils import PROJECT_ROOT, add_common_args, get_config_with_args, load_config, resolve_path, get_cat_colors_hex
 from utils.display import print_info, print_success, print_error, print_warning, print_header
+from utils.thumbnails import ThumbnailCache
 
 import yaml
 
@@ -164,7 +166,11 @@ class TrainingStepManager:
             return
         for d in sorted(versions_dir.iterdir()):
             if d.is_dir() and d.name not in self._version_size_cache:
-                size_bytes = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+                thumbs = d / ".thumbnails"
+                size_bytes = sum(
+                    f.stat().st_size for f in d.rglob("*")
+                    if f.is_file() and thumbs not in f.parents
+                )
                 self._version_size_cache[d.name] = round(size_bytes / 1024 / 1024, 1)
 
     def _invalidate_size_cache(self, name: str | None = None) -> None:
@@ -280,7 +286,7 @@ class TrainingStepManager:
                 return {"status": "error", "message": f"Version '{new_name}' already exists"}
 
         # Copy outside lock (can be slow for large versions)
-        shutil.copytree(ver_dir, new_dir)
+        shutil.copytree(ver_dir, new_dir, ignore=shutil.ignore_patterns(".thumbnails"))
         self._fix_dataset_yaml_path(new_dir)
 
         self.set_active_version(new_name)
@@ -1029,7 +1035,7 @@ def create_app(
             if (raw_dir / c).is_dir()
         )
         first = images[0].name if images else None
-        filenames = [p.name for p in images[:30]]
+        filenames = [p.name for p in images]
         return jsonify({"count": len(images), "first": first, "total_labeled": labeled_total, "filenames": filenames})
 
     @flask_app.route("/api/label/image/<filename>")
@@ -1038,6 +1044,20 @@ def create_app(
         if not img_path.is_file():
             return "Not found", 404
         return send_file(str(img_path), mimetype="image/jpeg")
+
+    def _send_thumbnail(img_path: Path):
+        """Serve a cached thumbnail for an image under the active raw_images/."""
+        cache = ThumbnailCache(_label_raw_dir(), step_mgr.get_version_dir() / ".thumbnails")
+        thumb = cache.get_or_create(img_path)
+        if thumb is None:
+            return "Not found", 404
+        return send_file(str(thumb), mimetype="image/jpeg", max_age=3600)
+
+    @flask_app.route("/api/label/thumb/<filename>")
+    def api_label_thumb(filename):
+        if not filename or Path(filename).name != filename:
+            return "Not found", 404
+        return _send_thumbnail(_label_raw_dir() / "unlabeled" / filename)
 
     @flask_app.route("/api/label/image-meta/<filename>")
     def api_label_image_meta(filename):
@@ -1162,18 +1182,29 @@ def create_app(
     @flask_app.route("/api/annotate/images")
     def api_annotate_images():
         raw_dir = _label_raw_dir()
-        images = []
+        paths: list[tuple[str, Path]] = []
         for folder in [*cats, "unlabeled"]:
             folder_dir = raw_dir / folder
-            if not folder_dir.is_dir():
-                continue
-            for img in sorted(folder_dir.glob("*.jpg")):
-                images.append({
-                    "cat": folder,
-                    "filename": img.name,
-                    "has_bbox": _ann_best_detection(_ann_read_sidecar(img)) is not None,
-                })
+            if folder_dir.is_dir():
+                paths.extend((folder, img) for img in sorted(folder_dir.glob("*.jpg")))
+        # Sidecar reads are latency-bound (slow on network/WSL mounts); read in parallel.
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            bests = list(pool.map(lambda p: _ann_best_detection(_ann_read_sidecar(p[1])), paths))
+        images = []
+        for (folder, img), best in zip(paths, bests):
+            entry = {"cat": folder, "filename": img.name, "has_bbox": best is not None}
+            if best is not None:
+                xmin, ymin, w, h = (float(v) for v in best["bbox_norm"])
+                entry["bbox"] = {"cx": xmin + w / 2, "cy": ymin + h / 2, "w": w, "h": h}
+            images.append(entry)
         return jsonify({"images": images})
+
+    @flask_app.route("/api/annotate/thumb/<cat>/<filename>")
+    def api_annotate_thumb(cat, filename):
+        img_path = _ann_image_path(cat, filename)
+        if img_path is None:
+            return "Not found", 404
+        return _send_thumbnail(img_path)
 
     @flask_app.route("/api/annotate/image/<cat>/<filename>")
     def api_annotate_image(cat, filename):

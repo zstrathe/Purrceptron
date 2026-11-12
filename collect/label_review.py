@@ -19,14 +19,13 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-import cv2
-
 # ---------------------------------------------------------------------------
 # Project imports
 # ---------------------------------------------------------------------------
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.display import print_info
+from utils.thumbnails import ThumbnailCache
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -92,64 +91,6 @@ class ReviewStateTracker:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Thumbnail Cache
-# ═══════════════════════════════════════════════════════════════════════════
-
-class ThumbnailCache:
-    """Generates and caches thumbnail images for the review strip.
-
-    Thumbnails are stored in data/raw/.thumbnails/ mirroring the directory
-    structure of the source images.
-    """
-
-    THUMB_SIZE = (150, 100)
-    JPEG_QUALITY = 60
-
-    def __init__(self, data_dir: Path):
-        self.data_dir = data_dir
-        self.thumb_dir = data_dir / ".thumbnails"
-        self.thumb_dir.mkdir(parents=True, exist_ok=True)
-
-    def get_or_create(self, image_path: Path) -> Path | None:
-        try:
-            rel = image_path.relative_to(self.data_dir)
-        except ValueError:
-            return None
-
-        thumb_path = self.thumb_dir / rel
-
-        # Return cached thumbnail if it exists and is newer than source
-        if thumb_path.exists():
-            try:
-                if thumb_path.stat().st_mtime >= image_path.stat().st_mtime:
-                    return thumb_path
-            except OSError:
-                pass
-
-        # Generate thumbnail
-        try:
-            thumb_path.parent.mkdir(parents=True, exist_ok=True)
-            img = cv2.imread(str(image_path))
-            if img is None:
-                return None
-            thumb = cv2.resize(img, self.THUMB_SIZE)
-            cv2.imwrite(str(thumb_path), thumb,
-                        [cv2.IMWRITE_JPEG_QUALITY, self.JPEG_QUALITY])
-            return thumb_path
-        except Exception:
-            return None
-
-    def remove(self, image_path: Path) -> None:
-        try:
-            rel = image_path.relative_to(self.data_dir)
-            thumb_path = self.thumb_dir / rel
-            if thumb_path.exists():
-                thumb_path.unlink()
-        except (ValueError, OSError):
-            pass
-
-
-# ═══════════════════════════════════════════════════════════════════════════
 # Label Review App
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -179,7 +120,7 @@ class LabelReviewApp:
         self._review_state = ReviewStateTracker(data_dir)
 
         # Thumbnail cache
-        self._thumbnails = ThumbnailCache(data_dir)
+        self._thumbnails = ThumbnailCache(data_dir, data_dir / ".thumbnails")
 
         self._scan_images()
 

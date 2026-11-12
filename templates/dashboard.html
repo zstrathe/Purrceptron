@@ -8,377 +8,217 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Cat Collection Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231a1e2e'/%3E%3Crect x='8' y='8' width='16' height='16' rx='2' fill='none' stroke='%237ba87a' stroke-width='3'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/theme.css') }}">
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    background: #181a28; color: #e0e0e0;
-    font-family: 'Segoe UI', system-ui, sans-serif;
-    min-height: 100vh;
+  /* ── Layout ── */
+  .main {
+    flex: 1; min-height: 0; display: flex; gap: 16px;
+    width: 100%; max-width: min(var(--app-max), 1440px); margin: 0 auto; padding: 16px 20px;
   }
-
-  /* Top bar */
-  .top-bar {
-    background: #161d30; border-bottom: 1px solid #0f2a4a;
-  }
-  .top-bar-inner {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 8px 12px; max-width: 1096px; margin: 0 auto;
-  }
-  .tab-bar { display: flex; gap: 4px; }
-  .tab-btn {
-    padding: 6px 18px; border: 1px solid #0f2a4a; border-bottom: none;
-    background: #0a0a1a; color: #8892b0; cursor: pointer;
-    border-radius: 6px 6px 0 0; font-size: 0.9rem; font-weight: 600;
-    font-family: monospace;
-  }
-  .tab-btn.active { background: #181a28; color: #e0e0e0; border-color: #0f2a4a; }
-  .tab-btn:hover { color: #e0e0e0; }
-  .top-counts {
-    font-family: monospace; font-size: 0.85rem; color: #8892b0;
-  }
-  .top-counts span { margin-left: 12px; }
-
-  /* Main layout */
-  .main { display: flex; gap: 12px; padding: 12px; justify-content: center; }
-  .content-col { flex: 1; min-width: 0; max-width: 800px; }
-  .sidebar { width: 260px; flex-shrink: 0; }
-
-  /* Tab content */
+  body[data-tab="review"] .main { max-width: var(--app-max); }
+  .content-col { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding-right: 4px; }
+  body[data-tab="review"] .content-col { overflow: hidden; padding-right: 0; }
+  .sidebar { width: 300px; flex-shrink: 0; overflow-y: auto; }
+  body[data-tab="review"] .sidebar { display: none; }
   .tab-content { display: none; }
   .tab-content.active { display: block; }
+  #tab-review.active { height: 100%; }
 
-  /* Buttons */
-  .btn {
-    padding: 10px 20px; border: none; border-radius: 6px;
-    font-size: 1rem; font-weight: 600; cursor: pointer;
-    transition: transform 0.1s, filter 0.1s; font-family: monospace;
-  }
-  .btn:active { transform: scale(0.96); }
-  .btn:hover:not(:disabled) { filter: brightness(1.15); }
-  .btn:disabled { opacity: 0.35; cursor: not-allowed; }
-  .btn-cat { background: #0f2a4a; color: #e0e0e0; flex: 1; min-width: 100px; }
-  .btn-nav { background: #161d30; color: #8892b0; border: 1px solid #0f2a4a; }
-  .btn-delete { background: #3d0000; color: #e63946; }
-  .btn-unlabeled { background: #4a3828; color: #c49a6c; }
+  .top-counts { margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--muted); }
+  .top-counts .tc { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .top-counts .tc b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 
-  /* ── Detection Mode Panel ── */
-  .inference-panel {
-    background: #161d30; border-radius: 6px; padding: 14px;
-    margin-bottom: 12px; border: 1px solid #0f2a4a;
+  /* ── Capture tab ── */
+  .capture-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin-top: 12px; }
+  .inference-panel h3, .settings-group h4 {
+    font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 12px;
   }
-  .inference-panel h3 {
-    font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
-    margin-bottom: 10px; letter-spacing: 1px;
+  .inference-panel, .settings-group {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 16px;
   }
-  .inference-row {
-    display: flex; align-items: center; gap: 10px; margin-bottom: 10px;
-    flex-wrap: wrap;
-  }
-  .inference-row label {
-    font-size: 0.85rem; color: #8892b0; min-width: 70px;
-  }
-  .inference-row label.toggle-switch {
-    min-width: 44px;
-  }
-  .inference-row select, .inference-row input[type="number"], .inference-row input[type="text"] {
-    background: #0a0a1a; color: #e0e0e0; border: 1px solid #0f2a4a;
-    padding: 6px 10px; border-radius: 4px; font-size: 0.85rem;
-    font-family: monospace;
-  }
-  .inference-row select { min-width: 200px; }
+  .inference-row { display: flex; align-items: center; gap: 8px 10px; margin-bottom: 10px; flex-wrap: wrap; }
+  .inference-row:last-child { margin-bottom: 0; }
+  .inference-row > label:first-child { font-size: 13px; color: var(--muted); min-width: 130px; }
   .inference-row input[type="number"] { width: 80px; }
-  .inference-row input[type="text"] { min-width: 120px; }
+  .inference-row .unit { font-size: 12px; color: var(--muted); }
+  .inference-row .hint-text { font-size: 12px; color: var(--faint); font-style: italic; }
+  .roi-coords { font: 11.5px var(--font-mono); color: var(--muted); }
+  #clf-model-status { font-size: 12px; margin-left: auto; }
 
-  .toggle-switch {
-    position: relative; display: inline-block; width: 44px; height: 20px; flex-shrink: 0;
-  }
+  .toggle-switch { position: relative; display: inline-block; width: 40px; height: 22px; flex-shrink: 0; }
   .toggle-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
   .toggle-slider {
-    position: absolute; inset: 0; background: #162040;
-    border-radius: 20px; cursor: pointer;
-    transition: background 0.2s;
+    position: absolute; inset: 0; background: var(--surface-2); border: 1px solid var(--border-strong);
+    border-radius: 22px; cursor: pointer; transition: background .2s, border-color .2s;
   }
   .toggle-slider::before {
-    content: ""; position: absolute; width: 14px; height: 14px;
-    top: 3px; left: 3px; background: #8892b0;
-    border-radius: 50%; transition: transform 0.2s;
+    content: ""; position: absolute; width: 14px; height: 14px; top: 3px; left: 3px;
+    background: var(--muted); border-radius: 50%; transition: transform .2s, background .2s;
   }
-  .toggle-switch input:checked + .toggle-slider { background: #2a3d2e; }
-  .toggle-switch input:checked + .toggle-slider::before { transform: translateX(24px); background: #7ba87a; }
+  .toggle-switch input:checked + .toggle-slider { background: var(--accent-soft); border-color: var(--accent); }
+  .toggle-switch input:checked + .toggle-slider::before { transform: translateX(18px); background: var(--accent); }
+  .toggle-switch input:focus-visible + .toggle-slider { outline: 2px solid var(--info); outline-offset: 2px; }
+  .toggle-switch input:disabled + .toggle-slider { opacity: .5; cursor: not-allowed; }
 
-  .settings-group {
-    background: #0a0a1a; border-radius: 4px; padding: 10px;
-    margin-top: 8px;
-  }
-  .settings-group h4 {
-    font-size: 0.75rem; text-transform: uppercase; color: #555;
-    margin-bottom: 8px; letter-spacing: 1px;
-  }
+  .status-indicator { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .status-dot.stopped { background: var(--danger); }
+  .status-dot.running { background: var(--success); animation: pulse 1.5s infinite; }
+  .status-dot.restarting { background: var(--warn); animation: pulse 1s infinite; }
 
-  .status-indicator {
-    display: inline-flex; align-items: center; gap: 6px;
-    font-family: monospace; font-size: 0.85rem; margin-top: 8px;
-  }
-  .status-dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    display: inline-block;
-  }
-  .status-dot.stopped { background: #e63946; }
-  .status-dot.running { background: #7ba87a; animation: pulse 1.5s infinite; }
-  .status-dot.restarting { background: #b8896a; animation: pulse 1s infinite; }
-  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
-
-  .inference-log-wrap {
-    position: relative; margin-top: 8px; display: none;
-  }
+  .inference-log-wrap { position: relative; margin-top: 10px; display: none; }
   .inference-log-wrap.visible { display: block; }
   .inference-log {
-    max-height: 120px; overflow-y: auto;
-    background: #0a0a1a; border-radius: 4px; padding: 6px;
-    font-family: monospace; font-size: 0.7rem; color: #555;
+    max-height: 140px; overflow-y: auto; background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 8px 10px; font: 11.5px/1.6 var(--font-mono); color: var(--muted);
   }
+  .log-actions { position: absolute; top: 6px; right: 10px; display: flex; gap: 6px; z-index: 1; }
   .log-copy-btn {
-    position: absolute; top: 4px; right: 4px;
-    background: #181a28; border: 1px solid #333; color: #8892b0;
-    font-size: 0.65rem; padding: 2px 8px; border-radius: 3px;
-    cursor: pointer; opacity: 0.7; z-index: 1;
+    background: var(--raised); border: 1px solid var(--border-strong); color: var(--muted);
+    font-size: 11.5px; padding: 3px 9px; border-radius: var(--radius-sm); cursor: pointer;
   }
-  .log-copy-btn:hover { opacity: 1; background: #0f2a4a; }
+  .log-copy-btn:hover { color: var(--text); border-color: var(--muted); }
 
-  /* ── Auto-Capture ── */
-  .auto-row {
-    display: flex; align-items: center; gap: 10px; margin-top: 10px;
-  }
-  .auto-row label { font-size: 0.85rem; color: #8892b0; font-family: monospace; }
-  .auto-row select {
-    background: #0a0a1a; color: #e0e0e0; border: 1px solid #0f2a4a;
-    padding: 6px 10px; border-radius: 4px; font-size: 0.85rem; font-family: monospace;
-  }
-  .btn-toggle {
-    padding: 8px 16px; border: 1px solid #0f2a4a;
-    background: #161d30; color: #8892b0; cursor: pointer;
-    border-radius: 6px; font-size: 0.9rem; font-weight: 600;
-    font-family: monospace; transition: background 0.2s, color 0.2s;
-  }
-  .btn-toggle:hover { color: #e0e0e0; }
-  .btn-toggle.auto-on { background: #4a3828; color: #c49a6c; border-color: #c49a6c; }
+  .auto-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+  .auto-row label { font-size: 13px; color: var(--muted); }
+  .btn-toggle.auto-on { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
 
-  /* ── Camera / Capture ── */
   .stream-wrapper {
-    position: relative; background: #000; border-radius: 6px; overflow: hidden;
-    min-height: 300px;
+    position: relative; background: var(--stage); border-radius: var(--radius-lg); overflow: hidden;
+    min-height: 300px; border: 1px solid var(--border);
     display: flex; align-items: center; justify-content: center;
   }
   .stream-wrapper img { display: block; width: 100%; height: auto; }
-  .no-feed-msg {
-    color: #555; font-family: monospace; text-align: center;
-    padding: 40px;
-  }
-  .flash {
-    position: absolute; inset: 0; pointer-events: none; opacity: 0; border-radius: 6px;
-  }
-  .stream-wrapper canvas {
-    position: absolute; top: 0; left: 0; pointer-events: none;
-  }
+  .no-feed-msg { color: var(--faint); text-align: center; padding: 40px; }
+  .flash { position: absolute; inset: 0; pointer-events: none; opacity: 0; }
+  .stream-wrapper canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
   .stream-wrapper.roi-drawing { cursor: crosshair; }
   .stream-wrapper.roi-drawing canvas { pointer-events: auto; cursor: crosshair; }
-  #roi-draw-btn.active { background: #4a3828; color: #c49a6c; border-color: #c49a6c; }
-  .flash.capture-flash { background: rgba(123, 168, 122, 0.35); }
-  .flash.label-flash { background: rgba(123, 168, 122, 0.35); }
-  .flash.delete-flash { background: rgba(230, 57, 70, 0.35); }
+  #roi-draw-btn.active, #roi-show-btn.active { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+  .flash.capture-flash, .flash.label-flash { background: rgba(123, 168, 122, 0.35); }
+  .flash.delete-flash { background: rgba(229, 72, 77, 0.35); }
   .flash.active { animation: flash-fade 0.3s ease-out; }
   @keyframes flash-fade { from { opacity: 1; } to { opacity: 0; } }
 
-  /* ── Classifier Identity ── */
   .classifier-identity {
-    display: flex; align-items: center; gap: 10px;
-    background: #161d30; border-radius: 6px; padding: 10px 16px;
-    margin-top: 8px; border: 2px solid #0f2a4a;
+    display: flex; align-items: center; gap: 12px; margin-top: 10px; padding: 10px 16px;
+    background: var(--surface); border: 2px solid var(--border); border-radius: var(--radius-lg);
   }
-  .classifier-identity.pending { opacity: 0.7; }
+  .classifier-identity.pending { opacity: .7; }
   .identity-icon { font-size: 1.1rem; }
-  .identity-label {
-    font-family: monospace; font-size: 1.4rem; font-weight: 700;
-    letter-spacing: 0.5px;
-  }
-  .identity-votes {
-    font-family: monospace; font-size: 0.75rem; color: #8892b0;
-  }
-  .identity-conf {
-    font-family: monospace; font-size: 0.85rem; color: #8892b0;
-    margin-left: auto;
-  }
+  .identity-label { font-size: 1.35rem; font-weight: 700; }
+  .identity-votes { font: 12px var(--font-mono); color: var(--muted); }
+  .identity-conf { font: 13px var(--font-mono); color: var(--muted); margin-left: auto; }
 
-  /* ── Detection Info Bar ── */
-  .detection-bar {
-    background: #161d30; border-radius: 6px; padding: 8px 12px;
-    margin-top: 8px; border: 1px solid #0f2a4a;
-  }
-  .detection-pills {
-    display: flex; flex-wrap: wrap; gap: 6px;
-    min-height: 24px; align-items: center;
-  }
-  .det-none {
-    color: #555; font-family: monospace; font-size: 0.75rem;
-  }
+  .detection-bar { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 8px 12px; margin-top: 10px; }
+  .detection-pills { display: flex; flex-wrap: wrap; gap: 6px; min-height: 24px; align-items: center; }
+  .det-none { color: var(--faint); font-size: 12.5px; }
   .det-pill {
-    display: inline-flex; align-items: center; gap: 4px;
-    padding: 3px 10px; border-radius: 12px;
-    font-family: monospace; font-size: 0.8rem; font-weight: 600;
-    color: #000; white-space: nowrap;
+    display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 999px;
+    font-size: 12.5px; font-weight: 600; color: #0b0d10; white-space: nowrap;
   }
-  .det-pill .det-conf {
-    font-weight: 400; font-size: 0.7rem; opacity: 0.7;
-  }
+  .det-pill .det-conf { font-weight: 400; font-size: 11.5px; opacity: .75; font-family: var(--font-mono); }
 
-  .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-  .nav-row { display: flex; gap: 8px; margin-top: 8px; }
+  /* ── Review tab (split workspace) ── */
+  #review-image-wrapper > img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+  #review-info { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .label-badge { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; display: inline-block; }
+  .label-badge.unlabeled { background: var(--warn-soft); color: var(--warn); }
+  .label-badge.labeled { background: var(--success-soft); color: var(--success); }
+  .filename-display { font: 12.5px var(--font-mono); color: var(--muted); word-break: break-all; }
+  .review-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+  .btn-cat {
+    display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: var(--radius);
+    background: color-mix(in srgb, var(--c) 12%, var(--surface));
+    border: 1px solid color-mix(in srgb, var(--c) 45%, transparent);
+    color: var(--text); font-weight: 600; font-size: 14px; cursor: pointer; transition: background .15s;
+  }
+  .btn-cat:hover { background: color-mix(in srgb, var(--c) 24%, var(--surface)); }
+  .btn-cat kbd { margin-left: auto; }
+  .btn-cat.btn-delete { --c: var(--danger); color: var(--danger); }
+  .nav-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .review-empty {
+    display: none; flex: 1; min-height: 240px; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; gap: 8px; color: var(--muted);
+    background: var(--surface); border: 1px dashed var(--border-strong); border-radius: var(--radius-lg);
+  }
+  .review-empty h2 { color: var(--text); font-size: 16px; }
 
-  /* ── Review ── */
-  .image-wrapper {
-    position: relative; background: #000; border-radius: 6px;
-    overflow: hidden; min-height: 400px;
-    display: flex; align-items: center; justify-content: center;
-  }
-  .image-wrapper img {
-    display: block; max-width: 100%; max-height: 70vh; object-fit: contain;
-  }
-  .label-badge {
-    font-family: monospace; font-size: 0.85rem; font-weight: bold;
-    padding: 3px 10px; border-radius: 4px; display: inline-block;
-  }
-  .label-badge.unlabeled { background: #4a3828; color: #c49a6c; }
-  .label-badge.labeled { background: #2a3d2e; color: #7ba87a; }
-  .filename-display {
-    font-family: monospace; font-size: 0.7rem; color: #555;
-    margin-top: 4px; word-break: break-all;
-  }
-
-  /* ── No Review Images ── */
-  .no-review-msg {
-    display: none; flex-direction: column; align-items: center;
-    justify-content: center; min-height: 300px; text-align: center;
-    color: #7ba87a; font-family: monospace;
-  }
-  .no-review-msg h2 { margin-bottom: 10px; }
-
-  .done-screen {
-    display: none; flex-direction: column; align-items: center;
-    justify-content: center; min-height: 300px; text-align: center;
-  }
-  .done-screen h2 { color: #7ba87a; margin-bottom: 16px; }
-
-  /* ── Thumbnail Grid ── */
-  .thumb-sort-row {
-    display: flex; gap: 8px; align-items: center; margin-top: 10px;
-  }
-  .thumb-sort-row span {
-    font-size: 0.8rem; color: #8892b0; font-family: monospace;
-  }
-  .sort-btn {
-    padding: 4px 12px; border: 1px solid #0f2a4a;
-    background: #0a0a1a; color: #8892b0; cursor: pointer;
-    border-radius: 4px; font-size: 0.8rem; font-family: monospace;
-    font-weight: 600; transition: background 0.2s, color 0.2s;
-  }
-  .sort-btn.active { background: #2a3d2e; color: #7ba87a; border-color: #7ba87a; }
-  .sort-btn:hover:not(.active) { color: #e0e0e0; }
-  .thumbnail-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    gap: 4px; padding: 8px 0; margin-top: 4px;
-    max-height: 50vh; overflow-y: auto;
-    scrollbar-width: thin; scrollbar-color: #0f2a4a #0a0a1a;
-  }
-  .thumbnail-grid::-webkit-scrollbar { width: 6px; }
-  .thumbnail-grid::-webkit-scrollbar-track { background: #0a0a1a; }
-  .thumbnail-grid::-webkit-scrollbar-thumb { background: #0f2a4a; border-radius: 3px; }
-  .thumb-item {
-    height: 100px;
-    border-radius: 4px; overflow: hidden; cursor: pointer;
-    border: 2px solid transparent;
-    transition: border-color 0.2s, opacity 0.2s;
-    position: relative;
-  }
-  .thumb-item img { width: 100%; height: 100%; object-fit: cover; }
-  .thumb-item.active { border-color: #7ba87a; }
-  .thumb-item.selected { border-color: #4a90d9; background: rgba(74,144,217,0.15); }
-  .thumb-item.selected::after {
-    content: '\2713'; position: absolute; top: 2px; right: 4px;
-    color: #4a90d9; font-size: 0.9rem; font-weight: bold; text-shadow: 0 0 3px #000;
-  }
-  .thumb-item.reviewed { opacity: 0.5; }
-  .thumb-item.reviewed:hover { opacity: 0.8; }
-  .thumb-item.reviewed.selected { opacity: 0.85; }
+  .thumb-sort-row .seg button.active { background: var(--raised); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.35); }
+  .thumb-sort-row .head-label { font-size: 12px; color: var(--muted); }
+  #select-hint { font-size: 12px; color: var(--faint); margin-left: auto; }
   .selection-bar {
-    display: flex; align-items: center; gap: 6px; padding: 6px 10px;
-    background: #0f1a2e; border: 1px solid #4a90d9; border-radius: 6px;
-    margin-top: 6px; flex-wrap: wrap;
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px; flex-wrap: wrap;
+    background: var(--info-soft); border-bottom: 1px solid color-mix(in srgb, var(--info) 40%, transparent);
   }
-  .selection-bar .sel-count { font-family: monospace; font-size: 0.8rem; color: #4a90d9; margin-right: 6px; }
-  .selection-bar .btn-sel { font-size: 0.7rem; padding: 3px 10px; border: 1px solid #333; border-radius: 4px; cursor: pointer; font-family: monospace; background: #1a1a3e; color: #e0e0e0; }
-  .selection-bar .btn-sel:hover { background: #2a2a5e; }
-  .selection-bar .btn-sel-del { background: #3e1a1a; border-color: #a33; }
-  .selection-bar .btn-sel-del:hover { background: #5e2a2a; }
-  .selection-bar .btn-sel-clear { background: transparent; border-color: #555; color: #8892b0; }
+  .selection-bar .sel-count { font-size: 13px; font-weight: 600; color: var(--info); margin-right: 4px; }
+  .selection-bar select { font-size: 12.5px; padding: 4px 8px; }
+  .selection-bar .divider { width: 1px; height: 18px; background: var(--border-strong); margin: 0 4px; }
+  #thumbnail-grid {
+    flex: 1; min-height: 0; overflow-y: auto; padding: 12px; align-content: start;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--thumb-size, 132px), 1fr)); gap: 6px;
+    grid-auto-rows: max-content;  /* this grid is height-constrained; keep rows at the thumbnails' 16:9 height */
+  }
+  .thumb-item {
+    position: relative; aspect-ratio: 16 / 9; border-radius: 6px; overflow: hidden; cursor: pointer;
+    background: var(--stage); outline: 1px solid var(--border); outline-offset: -1px;
+    transition: outline-color .12s, opacity .12s;
+    content-visibility: auto; contain-intrinsic-size: auto 132px auto 74px;
+  }
+  .thumb-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb-item:hover { outline-color: var(--muted); }
+  .thumb-item.active { outline: 2px solid var(--accent); outline-offset: -2px; box-shadow: 0 0 0 3px var(--accent-soft); }
+  .thumb-item.selected { outline: 2px solid var(--info); outline-offset: -2px; }
+  .thumb-item.selected::after {
+    content: "\2713"; position: absolute; top: 4px; right: 4px; width: 18px; height: 18px; border-radius: 50%;
+    display: grid; place-items: center; font-size: 11px; font-weight: 700; background: var(--info); color: #06161d;
+  }
+  .thumb-item.reviewed { opacity: .5; }
+  .thumb-item.reviewed:hover, .thumb-item.reviewed.selected, .thumb-item.reviewed.active { opacity: .9; }
   .thumb-label {
-    position: absolute; bottom: 0; left: 0; right: 0;
-    background: rgba(0,0,0,0.7); font-size: 0.6rem;
-    font-family: monospace; color: #e0e0e0;
-    padding: 1px 4px; text-align: center;
+    position: absolute; left: 0; right: 0; bottom: 0; padding: 2px 6px; font-size: 11px; font-weight: 600;
+    background: linear-gradient(transparent, rgba(0,0,0,.8)); color: #fff;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
 
   /* ── Sidebar ── */
-  .sidebar-card {
-    background: #161d30; border-radius: 6px; padding: 14px;
-    margin-bottom: 10px;
-  }
-  .sidebar-card h3 {
-    font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
-    margin-bottom: 10px; letter-spacing: 1px;
-  }
-  .cat-stat { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-  .cat-stat .name { width: 70px; font-weight: 600; font-size: 0.85rem; }
-  .cat-stat .bar-bg {
-    flex: 1; height: 14px; background: #0a0a1a; border-radius: 7px; overflow: hidden;
-  }
-  .cat-stat .bar-fill { height: 100%; border-radius: 7px; transition: width 0.3s ease; }
-  .cat-stat .count {
-    width: 70px; text-align: right; font-family: monospace; font-size: 0.85rem;
-  }
-  .bar-low { background: #e63946; }
-  .bar-mid { background: #b8896a; }
-  .bar-good { background: #7ba87a; }
+  .sidebar hr { border: 0; border-top: 1px solid var(--border); margin: 8px 0; }
+  #unlabeled-row.has-unlabeled { background: var(--warn-soft); border-radius: var(--radius-sm); }
+  #unlabeled-row.has-unlabeled .count { color: var(--warn); }
+  .recent-list { font-size: 13px; }
+  .recent-list .row { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
+  .tracked-head { display: flex; align-items: center; justify-content: space-between; }
+  .tracked-head button { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 0 6px; font-size: 14px; }
+  .tracked-head button:hover { color: var(--text); }
+  .tracked-table { width: 100%; font: 12px var(--font-mono); border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  .tracked-table th { color: var(--muted); text-align: left; font-weight: 500; padding: 3px 4px; }
+  .tracked-table td { padding: 3px 4px; }
+  .tracked-table td.dim { color: var(--muted); }
+  .tracked-total { display: flex; justify-content: space-between; padding: 3px 0; font-size: 13px; }
 
-  .stat-row {
-    display: flex; justify-content: space-between; padding: 3px 0;
-    font-family: monospace; font-size: 0.85rem;
-  }
-  .stat-row .label { color: #8892b0; }
-
-  .hints {
-    font-size: 0.75rem; color: #555; font-family: monospace; line-height: 1.6;
-  }
-  .hints kbd {
-    background: #0f2a4a; padding: 1px 5px; border-radius: 3px; color: #8892b0;
-  }
-
-  @media (max-width: 900px) {
-    .main { flex-direction: column; }
-    .sidebar { width: 100%; }
+  @media (max-width: 1100px) {
+    body { overflow: auto; height: auto; }
+    .main { flex-direction: column; flex: unset; min-height: unset; padding: 12px 16px; }
+    .content-col, body[data-tab="review"] .content-col { overflow: visible; }
+    .sidebar { width: 100%; overflow-y: visible; }
+    #tab-review.active { height: auto; }
+    .top-bar-inner { flex-wrap: wrap; gap: 10px 16px; }
+    .top-counts { margin-left: 0; }
   }
 </style>
 </head>
-<body>
+<body data-tab="capture">
 
 <!-- Top Bar -->
 <div class="top-bar">
   <div class="top-bar-inner">
-    <div class="tab-bar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Cat Detector <span class="brand-sub">Pi</span></div>
+    <nav class="tab-bar" aria-label="Dashboard tabs">
       <button class="tab-btn active" data-tab="capture" onclick="switchTab('capture')">Capture</button>
       <button class="tab-btn" data-tab="review" onclick="switchTab('review')">Review</button>
-    </div>
+    </nav>
     <div class="top-counts" id="top-counts"></div>
   </div>
 </div>
@@ -388,89 +228,6 @@
 
     <!-- ════ CAPTURE TAB ════ -->
     <div class="tab-content active" id="tab-capture">
-
-      <!-- Detection Mode Panel -->
-      <div class="inference-panel">
-        <h3>Detection Mode</h3>
-
-        <div class="status-indicator">
-          <span class="status-dot running" id="inf-status-dot"></span>
-          <span id="inf-status-text">Running</span>
-        </div>
-
-        <div class="inference-log-wrap" id="inf-log-wrap">
-          <button class="log-copy-btn" style="right:52px" onclick="copyPipelineLog()">Copy</button>
-          <button class="log-copy-btn" onclick="openLogBrowser()">Logs</button>
-          <div class="inference-log" id="inf-log"></div>
-        </div>
-
-        <!-- Log browser modal -->
-        <div id="log-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:1000; justify-content:center; align-items:center;">
-          <div style="background:#0d1117; border:1px solid #333; border-radius:8px; padding:20px; max-width:500px; width:90%; max-height:70vh; overflow-y:auto;">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-              <h3 style="margin:0; color:#e6f1ff; font-size:0.95rem;">Detection Logs</h3>
-              <button onclick="closeLogBrowser()" style="background:none; border:none; color:#8892b0; font-size:1.2rem; cursor:pointer;">&times;</button>
-            </div>
-            <div id="log-list" style="font-family:monospace; font-size:0.8rem; color:#8892b0;">Loading...</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Detection Capture Settings (visible in both modes) -->
-      <div class="settings-group" id="capture-settings">
-        <h4>Detection Capture</h4>
-        <div class="inference-row">
-          <label>Auto-save detections:</label>
-          <label class="toggle-switch">
-            <input type="checkbox" id="cap-enabled" onchange="saveCaptureSettings()">
-            <span class="toggle-slider"></span>
-          </label>
-          <span id="cap-status-hint" style="font-size:0.7rem;color:#888;font-style:italic;margin-left:8px"></span>
-        </div>
-        <div class="inference-row">
-          <label>Interval (s):</label>
-          <input type="number" id="cap-interval" min="1" step="1" style="width:70px" onchange="saveCaptureSettings()">
-        </div>
-        <div class="inference-row" id="cap-labeled-only-row">
-          <label title="Only save images where the classifier has confirmed a cat identity. Unlabeled detections are discarded.">Save labeled only:</label>
-          <label class="toggle-switch">
-            <input type="checkbox" id="cap-labeled-only" onchange="saveCaptureSettings()">
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-      </div>
-
-      <!-- Classifier Settings -->
-      <div class="settings-group" id="classifier-settings">
-        <h4>Cat Classifier (Stage 2)</h4>
-        <div class="inference-row">
-          <label title="Start/stop the MobileNetV2 identity classifier subprocess. Restarts the detection pipeline.">Enable classifier:</label>
-          <label class="toggle-switch">
-            <input type="checkbox" id="clf-enabled" onchange="saveClassifierSettings()">
-            <span class="toggle-slider"></span>
-          </label>
-          <span id="clf-model-status" style="font-size:0.7rem;font-family:monospace;margin-left:auto"></span>
-        </div>
-        <div class="inference-row">
-          <label title="Minimum average confidence in the vote window to confirm a cat identity (0-1).">Confidence:</label>
-          <input type="number" id="clf-confidence" min="0" max="1" step="0.05" style="width:70px"
-                 onchange="saveClassifierSettings()">
-        </div>
-        <div class="inference-row">
-          <label title="Draw a rectangle on the preview to define the area where cat detections trigger the classifier (e.g. around the food bowl).">Bowl ROI:</label>
-          <button class="btn btn-nav" id="roi-draw-btn" onclick="toggleROIDrawMode()"
-                  style="font-size:0.75rem;padding:4px 12px">Set ROI</button>
-          <button class="btn btn-nav" id="roi-show-btn" onclick="toggleROIOverlay()"
-                  style="font-size:0.75rem;padding:4px 12px">Show ROI</button>
-          <span id="roi-coords" style="font-size:0.65rem;color:#8892b0;font-family:monospace;margin-left:8px"></span>
-        </div>
-        <div class="inference-row">
-          <label title="How much of the ROI must be overlapped by a cat bounding box to trigger classification. 1% = any overlap, 50% = half the ROI covered, 100% = fully covered.">ROI overlap:</label>
-          <input type="number" id="clf-roi-overlap" min="1" max="100" step="1" style="width:70px"
-                 onchange="saveClassifierSettings()" value="1">
-          <span style="font-size:0.75rem;color:#8892b0;margin-left:4px">%</span>
-        </div>
-      </div>
 
       <!-- Live Video Feed (always visible — reads from detect.py preview) -->
       <div class="stream-wrapper">
@@ -498,7 +255,7 @@
 
       <!-- Auto-Capture Controls -->
       <div class="auto-row">
-        <button class="btn-toggle" id="btn-auto" onclick="toggleAutoCapture()">Auto: OFF</button>
+        <button class="btn btn-toggle" id="btn-auto" onclick="toggleAutoCapture()">Auto: OFF</button>
         <label>Target:</label>
         <select id="auto-target" onchange="setAutoTarget(this.value)">
           {% for i, cat in cats %}
@@ -506,74 +263,172 @@
           {% endfor %}
         </select>
       </div>
+      <div class="capture-grid">
+      <!-- Detection Mode Panel -->
+      <div class="inference-panel">
+        <h3>Detection Mode</h3>
+
+        <div class="status-indicator">
+          <span class="status-dot running" id="inf-status-dot"></span>
+          <span id="inf-status-text">Running</span>
+        </div>
+
+        <div class="inference-log-wrap" id="inf-log-wrap">
+          <div class="log-actions">
+            <button class="log-copy-btn" id="log-copy-btn" onclick="copyPipelineLog()">Copy</button>
+            <button class="log-copy-btn" onclick="openLogBrowser()">Logs</button>
+          </div>
+          <div class="inference-log" id="inf-log"></div>
+        </div>
+
+      </div>
+
+      <!-- Detection Capture Settings (visible in both modes) -->
+      <div class="settings-group" id="capture-settings">
+        <h4>Detection Capture</h4>
+        <div class="inference-row">
+          <label>Auto-save detections:</label>
+          <label class="toggle-switch">
+            <input type="checkbox" id="cap-enabled" onchange="saveCaptureSettings()">
+            <span class="toggle-slider"></span>
+          </label>
+          <span id="cap-status-hint" class="hint-text"></span>
+        </div>
+        <div class="inference-row">
+          <label>Interval (s):</label>
+          <input type="number" id="cap-interval" min="1" step="1" onchange="saveCaptureSettings()">
+        </div>
+        <div class="inference-row" id="cap-labeled-only-row">
+          <label title="Only save images where the classifier has confirmed a cat identity. Unlabeled detections are discarded.">Save labeled only:</label>
+          <label class="toggle-switch">
+            <input type="checkbox" id="cap-labeled-only" onchange="saveCaptureSettings()">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- Classifier Settings -->
+      <div class="settings-group" id="classifier-settings">
+        <h4>Cat Classifier (Stage 2)</h4>
+        <div class="inference-row">
+          <label title="Start/stop the MobileNetV2 identity classifier subprocess. Restarts the detection pipeline.">Enable classifier:</label>
+          <label class="toggle-switch">
+            <input type="checkbox" id="clf-enabled" onchange="saveClassifierSettings()">
+            <span class="toggle-slider"></span>
+          </label>
+          <span id="clf-model-status"></span>
+        </div>
+        <div class="inference-row">
+          <label title="Minimum average confidence in the vote window to confirm a cat identity (0-1).">Confidence:</label>
+          <input type="number" id="clf-confidence" min="0" max="1" step="0.05"
+                 onchange="saveClassifierSettings()">
+        </div>
+        <div class="inference-row">
+          <label title="Draw a rectangle on the preview to define the area where cat detections trigger the classifier (e.g. around the food bowl).">Bowl ROI:</label>
+          <button class="btn btn-sm" id="roi-draw-btn" onclick="toggleROIDrawMode()">Set ROI</button>
+          <button class="btn btn-sm" id="roi-show-btn" onclick="toggleROIOverlay()">Show ROI</button>
+          <span id="roi-coords" class="roi-coords"></span>
+        </div>
+        <div class="inference-row">
+          <label title="How much of the ROI must be overlapped by a cat bounding box to trigger classification. 1% = any overlap, 50% = half the ROI covered, 100% = fully covered.">ROI overlap:</label>
+          <input type="number" id="clf-roi-overlap" min="1" max="100" step="1"
+                 onchange="saveClassifierSettings()" value="1">
+          <span class="unit">%</span>
+        </div>
+      </div>
+
+      </div>
+
+      <!-- Log browser modal -->
+      <div id="log-modal" class="modal-backdrop" onclick="if (event.target === this) closeLogBrowser()">
+        <div class="modal" role="dialog" aria-labelledby="log-modal-title">
+          <div class="modal-head">
+            <h3 id="log-modal-title">Detection logs</h3>
+            <button class="modal-close" onclick="closeLogBrowser()" aria-label="Close">&times;</button>
+          </div>
+          <div id="log-list" class="mono" style="font-size:12.5px">Loading...</div>
+        </div>
+      </div>
     </div>
 
     <!-- ════ REVIEW TAB ════ -->
     <div class="tab-content" id="tab-review">
-      <div class="image-wrapper" id="review-image-wrapper">
-        <img id="review-image" src="" alt="Loading...">
-        <div class="flash" id="review-flash"></div>
-      </div>
+      <div class="workspace" id="review-workspace">
+        <div class="pane-main">
+          <div id="review-info" class="toolbar">
+            <span id="review-progress" class="progress-text">0/0</span>
+            <span id="review-label-badge" class="label-badge">--</span>
+            <span class="filename-display" id="review-filename">--</span>
+          </div>
+          <div class="stage" id="review-image-wrapper">
+            <img id="review-image" src="" alt="">
+            <div class="flash" id="review-flash"></div>
+          </div>
 
-      <!-- No unreviewed images message -->
-      <div class="no-review-msg" id="no-review-msg">
-        <h2>No images to review!</h2>
-        <p>All images have been reviewed. New captures will appear here.</p>
-        <button class="btn btn-nav" onclick="reviewRescan()" style="margin-top:12px">
-          Rescan for new images
-        </button>
-      </div>
+          <!-- No unreviewed images message -->
+          <div class="review-empty" id="no-review-msg">
+            <h2>No images to review</h2>
+            <p>All images have been reviewed. New captures will appear here.</p>
+            <button class="btn" onclick="reviewRescan()" style="margin-top:8px">Rescan for new images</button>
+          </div>
 
-      <div class="done-screen" id="done-screen">
-        <h2>Review Complete</h2>
-        <div id="done-stats" style="font-family:monospace"></div>
-      </div>
+          <div class="review-empty" id="done-screen">
+            <h2>Review complete</h2>
+            <div id="done-stats" class="mono"></div>
+          </div>
 
-      <div id="review-info" style="display:flex; align-items:center; gap:10px; margin-top:6px;">
-        <span id="review-progress" style="font-family:monospace; font-size:0.85rem; color:#8892b0;">0/0</span>
-        <span id="review-label-badge" class="label-badge">--</span>
-        <span class="filename-display" id="review-filename">--</span>
-      </div>
-
-      <div class="controls" id="review-controls">
+          <div class="review-controls" id="review-controls">
         {% for i, cat in cats %}
-        <button class="btn btn-cat" onclick="labelAs('{{ cat }}')">{{ i }}: {{ cat }}</button>
+        <button class="btn-cat" style="--c: {{ cat_colors[cat] }}" onclick="labelAs('{{ cat }}')"><span class="dot"></span>{{ cat }}<kbd>{{ i }}</kbd></button>
         {% endfor %}
-        <button class="btn btn-delete" onclick="reviewDelete()">d: Delete</button>
-      </div>
+        <button class="btn-cat btn-delete" onclick="reviewDelete()">Delete<kbd>d</kbd></button>
+          </div>
 
-      <div class="nav-row" id="review-nav">
-        <button class="btn btn-nav" onclick="reviewPrev()">&larr; Prev (p)</button>
-        <button class="btn btn-nav" onclick="reviewSkip()">Skip &rarr; (n)</button>
+          <div class="nav-row" id="review-nav">
+            <button class="btn btn-sm" onclick="reviewPrev()">&larr; Prev <kbd>p</kbd></button>
+            <button class="btn btn-sm" onclick="reviewSkip()">Skip <kbd>n</kbd> &rarr;</button>
+          </div>
+        </div>
+        <div class="splitter" tabindex="0" role="separator" aria-orientation="vertical" aria-label="Resize image browser"></div>
+        <aside class="browser" aria-label="Captured images">
+          <div class="browser-head thumb-sort-row">
+            <div class="browser-head-row">
+              <span class="head-label">Sort</span>
+              <div class="seg seg-sm">
+                <button class="sort-btn active" id="sort-time" onclick="sortThumbnails('time')">Newest</button>
+                <button class="sort-btn" id="sort-name" onclick="sortThumbnails('name')">By label</button>
+              </div>
+              <span id="select-hint">Ctrl-click or right-click to select</span>
+            </div>
+            <div class="chips">
+              <button class="chip sort-btn active" onclick="toggleLabelFilter(this, '')" data-filter="">All</button>
+              <button class="chip sort-btn" style="--c: var(--warn)" onclick="toggleLabelFilter(this, 'unlabeled')" data-filter="unlabeled"><span class="dot"></span>Unlabeled</button>
+              {% for i, cat in cats %}
+                <button class="chip sort-btn" style="--c: {{ cat_colors[cat] }}" onclick="toggleLabelFilter(this, '{{ cat }}')" data-filter="{{ cat }}"><span class="dot"></span>{{ cat }}</button>
+                {% endfor %}
+            </div>
+          </div>
+          <div class="selection-bar" id="selection-bar" style="display:none">
+            <span class="sel-count" id="selection-count">0 selected</span>
+            <select id="batch-label-select" aria-label="Label for selected images">
+              {% for i, cat in cats %}
+              <option value="{{ cat }}">{{ cat }}</option>
+              {% endfor %}
+            </select>
+            <button class="btn btn-sm btn-primary" onclick="batchLabel(document.getElementById('batch-label-select').value)">Apply label</button>
+            <span class="divider"></span>
+            <button class="btn btn-sm btn-danger" onclick="batchDelete()">Delete selected</button>
+            <button class="modal-close" onclick="clearSelection()" title="Exit multi-select" aria-label="Clear selection">&times;</button>
+          </div>
+          <div id="thumbnail-grid"></div>
+          <div class="browser-foot" id="hints-review">
+            {% for i, cat in cats %}<span><kbd>{{ i }}</kbd> {{ cat }}</span>{% endfor %}
+            <span><kbd>d</kbd> delete</span>
+            <span><kbd>n</kbd> <kbd>p</kbd> next / prev</span>
+            <span>Shift-click selects a range</span>
+          </div>
+        </aside>
       </div>
-
-      <!-- Thumbnail Grid -->
-      <div class="thumb-sort-row">
-        <span>Sort:</span>
-        <button class="sort-btn active" id="sort-time" onclick="sortThumbnails('time')">By time</button>
-        <button class="sort-btn" id="sort-name" onclick="sortThumbnails('name')">By name</button>
-        <span style="margin-left:12px">Filter:</span>
-        <button class="sort-btn active" onclick="toggleLabelFilter(this, '')" data-filter="">All</button>
-        <button class="sort-btn" onclick="toggleLabelFilter(this, 'unlabeled')" data-filter="unlabeled">unlabeled</button>
-        {% for i, cat in cats %}
-        <button class="sort-btn" onclick="toggleLabelFilter(this, '{{ cat }}')" data-filter="{{ cat }}">{{ cat }}</button>
-        {% endfor %}
-        <span style="margin-left:auto; font-size:0.7rem; color:#8892b0; font-family:monospace" id="select-hint">Click thumbnails to select</span>
-      </div>
-      <div class="selection-bar" id="selection-bar" style="display:none">
-        <span class="sel-count" id="selection-count">0 selected</span>
-        <select id="batch-label-select" style="font-size:0.75rem;padding:3px 8px;background:#0a0a1a;color:#e0e0e0;border:1px solid #333;border-radius:4px;font-family:monospace;cursor:pointer">
-          {% for i, cat in cats %}
-          <option value="{{ cat }}">{{ cat }}</option>
-          {% endfor %}
-        </select>
-        <button class="btn-sel" style="background:#3d5a42;border-color:#7ba87a;color:#fff" onclick="batchLabel(document.getElementById('batch-label-select').value)">Apply Label</button>
-        <span style="border-left:1px solid #555;height:18px;margin:0 6px"></span>
-        <button class="btn-sel btn-sel-del" onclick="batchDelete()">Delete Selected</button>
-        <span style="flex:1"></span>
-        <button onclick="clearSelection()" style="background:none;border:none;color:#8892b0;cursor:pointer;font-size:1.1rem;padding:0 4px" title="Exit multi-select">&times;</button>
-      </div>
-      <div class="thumbnail-grid" id="thumbnail-grid"></div>
     </div>
 
   </div>
@@ -590,8 +445,8 @@
       </div>
       {% endfor %}
       <div class="cat-stat" id="unlabeled-row">
-        <span class="name" style="color:#c49a6c">unlabeled</span>
-        <div class="bar-bg"><div class="bar-fill" id="bar-unlabeled" style="width:0%;background:#4a3828"></div></div>
+        <span class="name" style="color:var(--warn)">Unlabeled</span>
+        <div class="bar-bg"><div class="bar-fill" id="bar-unlabeled" style="width:0%;background:var(--warn)"></div></div>
         <span class="count" id="count-unlabeled">0</span>
       </div>
     </div>
@@ -600,52 +455,38 @@
       <h3>Session</h3>
       <div class="stat-row"><span class="label">Mode:</span><span id="sidebar-mode">DETECTION</span></div>
       <div class="stat-row"><span class="label">Pipeline:</span><span id="sidebar-pipeline">--</span></div>
-      <hr style="border-color:#0f2a4a; margin:6px 0;">
+      <hr>
       <div class="stat-row"><span class="label">Labeled:</span><span id="sidebar-labeled">0</span></div>
       <div class="stat-row"><span class="label">Deleted:</span><span id="sidebar-deleted">0</span></div>
     </div>
 
-    <div class="sidebar-card hints" id="hints-review" style="display:none">
-      <h3>Review Shortcuts</h3>
-      {% for i, cat in cats %}
-      <kbd>{{ i }}</kbd> {{ cat }}<br>
-      {% endfor %}
-      <kbd>d</kbd> Delete<br>
-      <kbd>n</kbd>/<kbd>&rarr;</kbd> Next &nbsp; <kbd>p</kbd>/<kbd>&larr;</kbd> Prev
-    </div>
-
     <div class="sidebar-card">
       <h3>Recent Detections</h3>
-      <div id="recent-detections" style="font-family:monospace;font-size:0.8rem;color:#e0e0e0">
-        <span style="color:#8892b0">No detections yet</span>
+      <div id="recent-detections" class="recent-list">
+        <span class="muted">No detections yet</span>
       </div>
     </div>
 
     <div class="sidebar-card" id="tracked-card" style="display:none">
-      <h3 style="display:flex;align-items:center;justify-content:space-between;margin:0">
-        <span style="cursor:pointer;padding:0 6px" onclick="changeTrackedDate(-1)">&larr;</span>
+      <h3 class="tracked-head">
+        <button onclick="changeTrackedDate(-1)" aria-label="Previous day">&larr;</button>
         <span id="tracked-date"></span>
-        <span style="cursor:pointer;padding:0 6px" onclick="changeTrackedDate(1)">&rarr;</span>
+        <button onclick="changeTrackedDate(1)" aria-label="Next day">&rarr;</button>
       </h3>
-      <div style="overflow-x:auto;margin-top:6px">
-        <table style="width:100%;font-family:monospace;font-size:0.75rem;color:#e0e0e0;border-collapse:collapse">
+      <div style="overflow-x:auto">
+        <table class="tracked-table">
           <thead>
-            <tr style="color:#8892b0;text-align:left">
-              <th style="padding:2px 4px">Cat</th>
-              <th style="padding:2px 4px">Start</th>
-              <th style="padding:2px 4px">End</th>
-              <th style="padding:2px 4px">Duration</th>
-            </tr>
+            <tr><th>Cat</th><th>Start</th><th>End</th><th>Duration</th></tr>
           </thead>
           <tbody id="tracked-tbody"></tbody>
         </table>
-        <div id="tracked-empty" style="color:#8892b0;font-size:0.8rem;padding:4px;display:none">No events</div>
+        <div id="tracked-empty" class="muted" style="font-size:13px;padding:4px;display:none">No events</div>
       </div>
     </div>
 
     <div class="sidebar-card" id="tracked-totals-card" style="display:none">
       <h3>Total Tracked Time</h3>
-      <div id="tracked-totals" style="font-family:monospace;font-size:0.8rem;color:#e0e0e0"></div>
+      <div id="tracked-totals"></div>
     </div>
   </div>
 </div>
@@ -655,6 +496,9 @@ const CATS = [{% for i, cat in cats %}"{{ cat }}"{% if not loop.last %}, {% endi
 const MIN_IMAGES = {{ min_images }};
 
 let activeTab = 'capture';
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
 let reviewDone = false;
 let lastLogHtml = '';
 let logAutoScroll = true;
@@ -663,9 +507,9 @@ let logUpdating = false;
 // ── Tab switching ──────────────────────────────────────────
 function switchTab(tab) {
   activeTab = tab;
+  document.body.dataset.tab = tab;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + tab));
-  document.getElementById('hints-review').style.display = tab === 'review' ? 'block' : 'none';
 
   // Start preview polling when entering capture tab
   if (tab === 'capture') {
@@ -751,8 +595,8 @@ async function pollClassifierIdentity() {
         } else {
           // Classifier subprocess crashed or failed to start
           labelEl.textContent = data.error;
-          labelEl.style.color = '#e63946';
-          el.style.borderColor = '#e63946';
+          labelEl.style.color = cssVar('--danger');
+          el.style.borderColor = cssVar('--danger');
           confEl.textContent = '';
           votesEl.textContent = '';
           el.classList.remove('pending');
@@ -779,8 +623,8 @@ async function pollClassifierIdentity() {
       } else if (data.ood_rejected) {
         // Energy filter is rejecting frames — show unknown indicator
         labelEl.textContent = 'Unknown';
-        labelEl.style.color = '#b8896a';
-        el.style.borderColor = '#b8896a';
+        labelEl.style.color = cssVar('--warn');
+        el.style.borderColor = cssVar('--warn');
         confEl.textContent = '';
         votesEl.textContent = '';
         el.classList.add('pending');
@@ -788,8 +632,8 @@ async function pollClassifierIdentity() {
       } else if (clfEnabled) {
         // Classifier enabled but no prediction yet — show waiting state
         labelEl.textContent = 'Waiting for detection in ROI...';
-        labelEl.style.color = '#8892b0';
-        el.style.borderColor = '#0f2a4a';
+        labelEl.style.color = cssVar('--muted');
+        el.style.borderColor = cssVar('--border');
         confEl.textContent = '';
         votesEl.textContent = '';
         el.classList.add('pending');
@@ -860,9 +704,9 @@ async function fetchTrackedEvents() {
         const color = DET_COLORS[ev.cat_name] || DET_DEFAULT_COLOR;
         tr.innerHTML =
           '<td style="padding:2px 4px;color:' + color + ';font-weight:700">' + ev.cat_name + '</td>' +
-          '<td style="padding:2px 4px;color:#8892b0">' + formatTime(ev.start_time) + '</td>' +
-          '<td style="padding:2px 4px;color:#8892b0">' + formatTime(ev.end_time) + '</td>' +
-          '<td style="padding:2px 4px;color:#8892b0">' + formatDuration(ev.duration_seconds) + '</td>';
+          '<td class="dim">' + formatTime(ev.start_time) + '</td>' +
+          '<td class="dim">' + formatTime(ev.end_time) + '</td>' +
+          '<td class="dim">' + formatDuration(ev.duration_seconds) + '</td>';
         tbody.appendChild(tr);
       }
     }
@@ -883,10 +727,10 @@ async function fetchTrackedEvents() {
     } else {
       for (const cat of cats) {
         const div = document.createElement('div');
-        div.style.cssText = 'display:flex;justify-content:space-between;padding:2px 0';
+        div.className = 'tracked-total';
         const color = DET_COLORS[cat] || DET_DEFAULT_COLOR;
         div.innerHTML = '<span style="color:' + color + ';font-weight:700">' + cat + '</span>' +
-                        '<span style="color:#8892b0">' + formatDuration(totals[cat]) + '</span>';
+                        '<span class="muted">' + formatDuration(totals[cat]) + '</span>';
         totalsDiv.appendChild(div);
       }
       totalsCard.style.display = 'block';
@@ -926,7 +770,7 @@ function drawROI() {
     const y = Math.min(roiStart.y, roiCurrent.y);
     const w = Math.abs(roiCurrent.x - roiStart.x);
     const h = Math.abs(roiCurrent.y - roiStart.y);
-    ctx.strokeStyle = '#c49a6c';
+    ctx.strokeStyle = cssVar('--warn');
     ctx.lineWidth = 2;
     ctx.fillStyle = 'rgba(196, 154, 108, 0.1)';
     ctx.fillRect(x, y, w, h);
@@ -938,13 +782,13 @@ function drawROI() {
   if (currentROI && showROIOverlay) {
     const scale = getDisplayToSourceScale();
     const [x1, y1, x2, y2] = currentROI;
-    ctx.strokeStyle = '#7ba87a';
+    ctx.strokeStyle = cssVar('--success');
     ctx.lineWidth = 2;
     ctx.setLineDash([6, 4]);
     ctx.strokeRect(x1 / scale.sx, y1 / scale.sy, (x2 - x1) / scale.sx, (y2 - y1) / scale.sy);
     ctx.setLineDash([]);
     ctx.font = '11px monospace';
-    ctx.fillStyle = '#7ba87a';
+    ctx.fillStyle = cssVar('--success');
     ctx.fillText('Bowl ROI', x1 / scale.sx + 4, y1 / scale.sy + 14);
   }
 }
@@ -1126,12 +970,12 @@ function updateRecentLabels(dets) {
 function renderRecentDetections() {
   const container = document.getElementById('recent-detections');
   if (recentLabels.length === 0) {
-    container.innerHTML = '<span style="color:#8892b0">No detections yet</span>';
+    container.innerHTML = '<span class="muted">No detections yet</span>';
     return;
   }
   container.innerHTML = recentLabels.map(label => {
     const color = DET_COLORS[label] || DET_DEFAULT_COLOR;
-    return `<div style="padding:2px 0;display:flex;align-items:center;gap:6px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color}"></span>${label}</div>`;
+    return `<div class="row"><span class="dot" style="--c:${color}"></span>${label}</div>`;
   }).join('');
 }
 
@@ -1139,7 +983,7 @@ function renderRecentDetections() {
 function copyPipelineLog() {
   const log = document.getElementById('inf-log');
   const text = log.innerText;
-  const btn = document.querySelector('.log-copy-btn');
+  const btn = document.getElementById('log-copy-btn');
   if (navigator.clipboard && window.isSecureContext) {
     navigator.clipboard.writeText(text).then(() => {
       btn.textContent = 'Copied!';
@@ -1168,18 +1012,18 @@ async function openLogBrowser() {
     const r = await fetch('/api/logs');
     const d = await r.json();
     if (!d.logs.length) {
-      listEl.innerHTML = '<div style="color:#555;">No log files yet.</div>';
+      listEl.innerHTML = '<div class="faint">No log files yet.</div>';
       return;
     }
     listEl.innerHTML = d.logs.map(l => {
       const date = new Date(l.modified * 1000).toLocaleString();
-      return `<div style="padding:6px 0; border-bottom:1px solid #181a28;">
-        <a href="/api/logs/${l.name}" target="_blank" style="color:#7ba87a; text-decoration:none;">${l.name}</a>
-        <span style="color:#555; margin-left:8px;">${l.size_kb} KB &middot; ${date}</span>
+      return `<div class="log-entry">
+        <a href="/api/logs/${l.name}" target="_blank">${l.name}</a>
+        <span>${l.size_kb} KB &middot; ${date}</span>
       </div>`;
     }).join('');
   } catch(e) {
-    listEl.innerHTML = '<div style="color:#e74c3c;">Failed to load logs.</div>';
+    listEl.innerHTML = '<div class="text-danger">Failed to load logs.</div>';
   }
 }
 
@@ -1255,7 +1099,7 @@ function updateReviewUI(data) {
 
   reviewDone = false;
   document.getElementById('review-image-wrapper').style.display = 'flex';
-  document.getElementById('review-controls').style.display = 'flex';
+  document.getElementById('review-controls').style.display = 'grid';
   document.getElementById('review-nav').style.display = 'flex';
   document.getElementById('review-info').style.display = 'flex';
   document.getElementById('done-screen').style.display = 'none';
@@ -1270,12 +1114,13 @@ function updateReviewUI(data) {
 
   // Update active thumbnail in grid (match by original server index)
   if (current.all_index !== undefined && current.all_index >= 0) {
+    currentAllIndex = current.all_index;
     document.querySelectorAll('.thumb-item').forEach(el => {
       el.classList.toggle('active', parseInt(el.dataset.originalIndex) === current.all_index);
     });
     const activeThumb = document.querySelector('.thumb-item.active');
     if (activeThumb) {
-      activeThumb.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+      activeThumb.scrollIntoView({block: 'nearest'});
     }
   }
 }
@@ -1333,6 +1178,7 @@ async function reviewRescan() {
 
 // ── Thumbnail Grid + Multi-Select ─────────────────────────
 let thumbnailImages = [];
+let currentAllIndex = null;    // server index of the image shown in the review pane
 let displayedThumbnails = [];  // currently rendered (filtered) subset
 let currentSort = 'time';
 let activeFilters = new Set();
@@ -1490,6 +1336,7 @@ function renderThumbnails() {
     div.className = 'thumb-item';
     div.dataset.originalIndex = img.index;
     if (img.reviewed) div.classList.add('reviewed');
+    if (img.index === currentAllIndex) div.classList.add('active');
     if (selectedThumbnails.has(img.index)) div.classList.add('selected');
 
     const imgEl = document.createElement('img');
@@ -1660,21 +1507,15 @@ async function pollStatus() {
         bar.style.width = pct + '%';
         bar.className = 'bar-fill ' + (pct < 33 ? 'bar-low' : pct < 80 ? 'bar-mid' : 'bar-good');
       }
-      topParts.push(cat + ':' + c);
+      topParts.push([cat, c, DET_COLORS[cat] || 'var(--muted)']);
     });
     const uc = counts.unlabeled || 0;
     document.getElementById('count-unlabeled').textContent = uc;
     const unlabeledRow = document.getElementById('unlabeled-row');
-    if (uc > 0) {
-      unlabeledRow.style.background = 'rgba(196,154,108,0.12)';
-      unlabeledRow.style.borderRadius = '4px';
-      document.getElementById('count-unlabeled').style.color = '#c49a6c';
-    } else {
-      unlabeledRow.style.background = '';
-      document.getElementById('count-unlabeled').style.color = '';
-    }
-    topParts.push('unlabeled:' + uc);
-    document.getElementById('top-counts').innerHTML = topParts.map(s => '<span>' + s + '</span>').join('');
+    unlabeledRow.classList.toggle('has-unlabeled', uc > 0);
+    topParts.push(['Unlabeled', uc, 'var(--warn)']);
+    document.getElementById('top-counts').innerHTML = topParts.map(([name, n, color]) =>
+      '<span class="tc"><span class="dot" style="--c:' + color + '"></span>' + name + ' <b>' + n + '</b></span>').join('');
 
     // Pipeline status
     if (d.pipeline) {
@@ -1720,10 +1561,10 @@ async function pollStatus() {
       const statusEl = document.getElementById('clf-model-status');
       if (d.classifier.model_exists) {
         statusEl.textContent = d.classifier.enabled ? 'Active' : 'Model ready';
-        statusEl.style.color = d.classifier.enabled ? '#7ba87a' : '#8892b0';
+        statusEl.style.color = d.classifier.enabled ? cssVar('--success') : cssVar('--muted');
       } else {
         statusEl.textContent = 'No model found';
-        statusEl.style.color = '#e63946';
+        statusEl.style.color = cssVar('--danger');
       }
     }
 
@@ -1742,7 +1583,9 @@ async function pollStatus() {
 
 // ── Keyboard shortcuts ─────────────────────────────────────
 document.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === 'Escape') { closeLogBrowser(); return; }
 
   const num = parseInt(e.key);
   if (num >= 1 && num <= CATS.length) {
@@ -1759,8 +1602,47 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// Draggable divider between the review image and the thumbnail browser.
+function initSplitters() {
+  document.querySelectorAll('.workspace').forEach(ws => {
+    const sp = ws.querySelector('.splitter');
+    if (!sp) return;
+    const key = 'browserWidth:' + ws.id;
+    const setW = (w, save) => {
+      const total = ws.getBoundingClientRect().width;
+      const clamped = Math.max(280, Math.min(w, total - 420));
+      ws.style.setProperty('--browser-w', clamped + 'px');
+      if (save) { try { localStorage.setItem(key, clamped); } catch(e) {} }
+    };
+    try {
+      const saved = parseFloat(localStorage.getItem(key));
+      if (saved > 0) ws.style.setProperty('--browser-w', saved + 'px');
+    } catch(e) {}
+    sp.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      sp.setPointerCapture(e.pointerId);
+      sp.classList.add('drag');
+      const move = (ev) => setW(ws.getBoundingClientRect().right - ev.clientX, false);
+      const up = (ev) => {
+        sp.classList.remove('drag');
+        setW(ws.getBoundingClientRect().right - ev.clientX, true);
+        sp.removeEventListener('pointermove', move);
+        sp.removeEventListener('pointerup', up);
+      };
+      sp.addEventListener('pointermove', move);
+      sp.addEventListener('pointerup', up);
+    });
+    sp.addEventListener('keydown', (e) => {
+      const cur = ws.querySelector('.browser').getBoundingClientRect().width;
+      if (e.key === 'ArrowLeft') { setW(cur + 40, true); e.preventDefault(); e.stopPropagation(); }
+      if (e.key === 'ArrowRight') { setW(cur - 40, true); e.preventDefault(); e.stopPropagation(); }
+    });
+  });
+}
+
 // ── Init ───────────────────────────────────────────────────
 (async function init() {
+  initSplitters();
   startPreviewLoop();
   await loadCaptureSettings();
   await loadClassifierSettings();

@@ -8,391 +8,194 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Training Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231a1e2e'/%3E%3Crect x='8' y='8' width='16' height='16' rx='2' fill='none' stroke='%237ba87a' stroke-width='3'/%3E%3C/svg%3E">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/theme.css') }}">
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    background: #181a28; color: #e0e0e0;
-    font-family: 'Segoe UI', system-ui, sans-serif;
-    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  /* ── Layout ── */
+  .main {
+    flex: 1; min-height: 0; display: flex; gap: 16px;
+    width: 100%; max-width: var(--app-max); margin: 0 auto; padding: 16px 20px;
   }
+  body[data-tab="pipeline"] .main, body[data-tab="metrics"] .main { max-width: min(var(--app-max), 1440px); }
+  .content-col { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+  .sidebar { width: 300px; flex-shrink: 0; overflow-y: auto; }
+  body[data-tab="annotate"] .sidebar, body[data-tab="label"] .sidebar { display: none; }
 
-  /* Top bar */
-  .top-bar {
-    background: #161d30; border-bottom: 1px solid #0f2a4a;
-  }
-  .top-bar-inner {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 8px 12px; max-width: 1096px; margin: 0 auto;
-  }
-  .tab-bar { display: flex; gap: 4px; }
-  .tab-btn {
-    padding: 6px 18px; border: 1px solid #0f2a4a; border-bottom: none;
-    background: #0a0a1a; color: #8892b0; cursor: pointer;
-    border-radius: 6px 6px 0 0; font-size: 0.9rem; font-weight: 600;
-    font-family: monospace;
-  }
-  .tab-btn.active { background: #181a28; color: #e0e0e0; border-color: #0f2a4a; }
-  .tab-btn:hover { color: #e0e0e0; }
-  .top-status {
-    font-family: monospace; font-size: 0.85rem; color: #8892b0;
-  }
-
-  /* Main layout */
-  .main { display: flex; gap: 12px; padding: 12px; justify-content: center; flex: 1; min-height: 0; }
-  .content-col { flex: 1; min-width: 0; max-width: 800px; display: flex; flex-direction: column; min-height: 0; }
-  .sidebar { width: 260px; flex-shrink: 0; overflow-y: auto; }
-
-  /* Tab content */
   .tab-content { display: none; }
   .tab-content.active { display: block; }
   #tab-pipeline.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   #tab-metrics.active { flex: 1; overflow-y: auto; min-height: 0; }
+  #tab-annotate.active, #tab-label.active { flex: 1; min-height: 0; }
 
-  /* Pipeline top section (scrollable when viewport is short) */
-  .pipeline-top { flex: 0 1 auto; overflow-y: auto; min-height: 0; }
+  .top-status .ver {
+    font-family: var(--font-mono); font-size: 12px; color: var(--text);
+    padding: 3px 8px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-2);
+  }
+  .top-status .ver:empty { display: none; }
+  #top-status { overflow: hidden; text-overflow: ellipsis; }
 
-  /* Buttons */
-  .btn {
-    padding: 10px 20px; border: none; border-radius: 6px;
-    font-size: 1rem; font-weight: 600; cursor: pointer;
-    transition: transform 0.1s, filter 0.1s; font-family: monospace;
-  }
-  .btn:active { transform: scale(0.96); }
-  .btn:hover:not(:disabled) { filter: brightness(1.15); }
-  .btn:disabled { opacity: 0.35; cursor: not-allowed; }
-  .btn-primary { background: #2a3d2e; color: #7ba87a; }
-  .btn-danger { background: #3d0000; color: #e63946; }
-  .btn-nav { background: #161d30; color: #8892b0; border: 1px solid #0f2a4a; }
-  .btn-sm { padding: 6px 14px; font-size: 0.85rem; }
+  /* ── Pipeline ── */
+  .pipeline-top { flex: 0 1 auto; overflow-y: auto; min-height: 0; padding-right: 4px; }
+  .version-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; padding: 12px 16px; }
+  .version-bar label { font-size: 13px; color: var(--muted); }
+  .version-bar #version-size { color: var(--faint); font-size: 12px; }
+  .pipeline-controls { display: flex; gap: 8px; margin-bottom: 12px; }
 
-  /* ── Version Bar ── */
-  .version-bar {
-    display: flex; align-items: center; gap: 8px;
-    margin-bottom: 10px; font-family: monospace; font-size: 0.9rem;
-  }
-  .version-bar label { color: #8892b0; font-weight: 600; }
-  .version-bar select {
-    background: #0a0a1a; color: #e0e0e0; border: 1px solid #0f2a4a;
-    padding: 6px 10px; border-radius: 4px; font-family: monospace;
-  }
-
-  /* ── Step Cards ── */
-  .pipeline-controls {
-    display: flex; gap: 8px; margin-bottom: 12px;
-  }
   .step-card {
-    background: #161d30; border-radius: 6px; padding: 12px 16px;
-    margin-bottom: 6px; border: 1px solid #0f2a4a;
-    display: flex; align-items: center; gap: 12px;
+    display: flex; align-items: center; gap: 14px; padding: 11px 14px; margin-bottom: 6px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: inset 3px 0 0 var(--c, transparent);
   }
-  .step-card.active { border-color: #7ba87a; }
-  .step-card.done { border-color: #2a3d2e; }
-  .step-card.error { border-color: #3d0000; }
-  .step-card.ready { border-left: 3px solid #7ba87a; }
-  .step-card.completed { border-left: 3px solid #2a3d2e; }
-  .step-card.blocked { opacity: 0.45; }
-  .step-hint {
-    font-family: monospace; font-size: 0.7rem; color: #555; margin-top: 2px;
-    display: none;
-  }
-  .step-card.ready .step-hint { display: block; color: #7ba87a; }
-  .step-card.completed .step-hint { display: block; color: #2a3d2e; }
-  .step-card.blocked .step-hint { display: block; }
+  .step-card.ready { --c: var(--accent); }
+  .step-card.completed, .step-card.done { --c: var(--success); }
+  .step-card.active { --c: var(--info); border-color: color-mix(in srgb, var(--info) 40%, var(--border)); }
+  .step-card.error { --c: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--border)); }
+  .step-card.blocked { opacity: .5; }
+  .step-card.step-cv { margin-top: 14px; border-style: dashed; }
   .step-num {
-    font-family: monospace; font-size: 1.1rem; font-weight: 700;
-    color: #555; width: 24px; text-align: center;
+    width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; flex-shrink: 0;
+    font: 600 12px var(--font-mono); color: var(--muted); border: 1px solid var(--border-strong);
   }
-  .step-card.done .step-num { color: #7ba87a; }
-  .step-card.active .step-num { color: #7ba87a; }
-  .step-card.error .step-num { color: #e63946; }
-  .step-info { flex: 1; }
-  .step-name { font-weight: 600; font-size: 0.95rem; }
-  .step-elapsed {
-    font-family: monospace; font-size: 0.75rem; color: #555; margin-top: 2px;
-  }
-  .step-status {
-    display: inline-flex; align-items: center; gap: 6px;
-    font-family: monospace; font-size: 0.8rem;
-  }
-  .step-dot {
-    width: 8px; height: 8px; border-radius: 50%; display: inline-block;
-  }
-  .step-dot.idle { background: #555; }
-  .step-dot.running { background: #7ba87a; animation: pulse 1.5s infinite; }
-  .step-dot.done { background: #7ba87a; }
-  .step-dot.error { background: #e63946; }
-  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+  .step-card.completed .step-num, .step-card.done .step-num { background: var(--success-soft); color: var(--success); border-color: transparent; }
+  .step-card.active .step-num { color: var(--info); border-color: var(--info); }
+  .step-card.error .step-num { color: var(--danger); border-color: var(--danger); }
+  .step-cv .step-num { font-size: 10px; }
+  .step-info { flex: 1; min-width: 0; }
+  .step-name { font-weight: 600; }
+  .step-hint { font-size: 12px; color: var(--muted); display: none; }
+  .step-card.ready .step-hint { display: block; color: var(--accent); }
+  .step-card.completed .step-hint, .step-card.blocked .step-hint, .step-cv .step-hint { display: block; }
+  .step-elapsed { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .step-status { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); min-width: 70px; }
+  .step-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .step-dot.idle { background: var(--faint); }
+  .step-dot.running { background: var(--info); animation: pulse 1.5s infinite; }
+  .step-dot.done { background: var(--success); }
+  .step-dot.error { background: var(--danger); }
+  .cv-folds { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .cv-folds input { width: 56px; text-align: center; padding: 4px 6px; }
 
-  /* ── Settings Panel ── */
+  /* ── Settings panels ── */
   .settings-panel {
-    background: #161d30; border-radius: 6px; padding: 14px;
-    margin-top: 12px; border: 1px solid #0f2a4a;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: 12px 16px; margin-top: 12px;
   }
   .settings-panel h3 {
-    font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
-    margin-bottom: 10px; letter-spacing: 1px; cursor: pointer; user-select: none;
+    display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600;
+    color: var(--text); cursor: pointer; user-select: none; margin: 2px 0 14px;
   }
-  .settings-panel.collapsed h3 { margin-bottom: 0; }
+  .settings-panel.collapsed h3 { margin-bottom: 2px; }
   .settings-panel.collapsed .settings-body { display: none; }
-  .settings-toggle { font-size: 0.6rem; margin-right: 4px; }
-  .settings-row {
-    display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
-    flex-wrap: wrap;
+  .settings-toggle { color: var(--muted); font-size: 10px; width: 10px; }
+  .settings-row { display: flex; align-items: center; gap: 8px 10px; margin-bottom: 10px; flex-wrap: wrap; }
+  .settings-row label { font-size: 13px; color: var(--muted); }
+  .settings-row select { min-width: 120px; }
+  .settings-row input[type="number"] { width: 96px; }
+  .settings-subhead {
+    font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--faint); margin: 14px 0 8px;
   }
-  .settings-row label {
-    font-size: 0.85rem; color: #8892b0; min-width: 80px; font-family: monospace;
-  }
-  .settings-row select, .settings-row input[type="number"] {
-    background: #0a0a1a; color: #e0e0e0; border: 1px solid #0f2a4a;
-    padding: 6px 10px; border-radius: 4px; font-size: 0.85rem;
-    font-family: monospace;
-  }
-  .settings-row select { min-width: 140px; }
-  .settings-row input[type="number"] { width: 80px; }
-  .settings-row input[type="checkbox"] {
-    width: 16px; height: 16px; accent-color: #7ba87a; cursor: pointer;
-  }
+  .settings-actions { display: flex; gap: 8px; margin-top: 10px; }
 
-  /* ── Tooltips ── */
   .tip {
-    position: relative; display: inline-block; cursor: help;
-    width: 15px; height: 15px; line-height: 15px; text-align: center;
-    font-size: 0.65rem; font-weight: 700; color: #8892b0;
-    border: 1px solid #0f2a4a; border-radius: 50%; flex-shrink: 0;
-    font-family: sans-serif;
+    position: relative; display: inline-grid; place-items: center; cursor: help; flex-shrink: 0;
+    width: 16px; height: 16px; font-size: 10px; font-weight: 700; color: var(--muted);
+    border: 1px solid var(--border-strong); border-radius: 50%;
   }
   .tip .tip-text {
-    display: none; position: absolute; bottom: 120%; left: 50%;
-    transform: translateX(-50%); width: 240px; padding: 8px 10px;
-    background: #0a0a1a; color: #c0c0c0; border: 1px solid #0f2a4a;
-    border-radius: 6px; font-size: 0.78rem; line-height: 1.4;
-    font-weight: 400; font-family: system-ui, sans-serif; z-index: 100;
-    pointer-events: none; white-space: normal;
+    display: none; position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%);
+    width: 260px; padding: 8px 10px; z-index: 100; pointer-events: none; white-space: normal;
+    background: var(--raised); color: var(--text); border: 1px solid var(--border-strong);
+    border-radius: var(--radius); font-size: 12.5px; line-height: 1.45; font-weight: 400;
+    box-shadow: 0 8px 24px rgba(0,0,0,.4);
   }
   .tip:hover .tip-text { display: block; }
 
-  /* ── Annotate Tab ── */
-  #tab-annotate.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-  .ann-toolbar {
-    display: flex; align-items: center; gap: 10px; padding: 8px 0;
-    flex-wrap: wrap; font-family: monospace; font-size: 0.85rem;
-  }
-  .ann-toolbar .ann-progress { color: #8892b0; }
-  .ann-toolbar .ann-img-info { color: #7ba87a; flex: 1; text-align: right; }
-  .ann-canvas-wrap {
-    position: relative; flex: 1; min-height: 200px; background: #000;
-    display: flex; align-items: center; justify-content: center;
-    border-radius: 6px; overflow: hidden;
-  }
-  .ann-canvas-wrap img {
-    max-width: 100%; max-height: 100%; object-fit: contain;
-    display: block; user-select: none; -webkit-user-drag: none;
-  }
-  .ann-canvas-wrap canvas {
-    position: absolute; top: 0; left: 0; cursor: crosshair;
-  }
-  .ann-actions {
-    display: flex; gap: 8px; padding: 8px 0; flex-wrap: wrap; align-items: center;
-  }
-  .ann-actions .btn { font-size: 0.8rem; }
-  .ann-thumbs {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
-    gap: 3px; max-height: 220px; overflow-y: auto; padding: 4px 0;
-  }
-  .ann-thumb {
-    position: relative; cursor: pointer; border-radius: 3px; overflow: hidden;
-    border: 2px solid transparent; aspect-ratio: 4/3;
-  }
-  .ann-thumb img { width: 100%; height: 100%; object-fit: cover; }
-  .ann-thumb.has-bbox { border-color: #7ba87a; }
-  .ann-thumb.has-bbox::after {
-    content: ''; position: absolute; inset: 0;
-    background: rgba(123,168,122,0.15); pointer-events: none;
-  }
-  .ann-thumb.no-bbox { border-color: #e63946; }
-  .ann-thumb.active { border-color: #4cc9f0; border-width: 3px; }
-  .ann-thumb.active.has-bbox::after { background: transparent; }
-  .ann-thumb .ann-thumb-flag {
-    position: absolute; top: 2px; right: 2px; font-size: 0.6rem;
-    background: rgba(0,0,0,0.7); padding: 1px 3px;
-    border-radius: 2px; z-index: 1;
-  }
-  .ann-thumb .ann-thumb-flag.done { color: #7ba87a; }
-  .ann-thumb .ann-thumb-flag.missing { color: #e63946; }
-
-  /* ── Output Log ── */
-  .log-section {
-    position: relative; margin-top: 12px;
-    flex: 1; min-height: 150px; display: flex; flex-direction: column;
-  }
+  /* ── Output log ── */
+  .log-section { position: relative; margin-top: 12px; flex: 1; min-height: 150px; display: flex; flex-direction: column; }
   .log-section h3 {
-    font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
-    margin-bottom: 6px; letter-spacing: 1px; flex-shrink: 0;
+    font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 8px; flex-shrink: 0;
   }
   .log-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .log-output {
-    overflow-y: auto;
-    background: #0a0a1a; border-radius: 4px; padding: 8px;
-    font-family: monospace; font-size: 0.72rem; color: #8892b0;
-    line-height: 1.5;
-    flex: 1; min-height: 0;
+    overflow-y: auto; flex: 1; min-height: 0;
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 10px 12px; font: 12px/1.6 var(--font-mono); color: var(--muted);
   }
+  .log-actions { position: absolute; top: 6px; right: 10px; display: flex; gap: 6px; z-index: 1; }
   .log-copy-btn {
-    position: absolute; top: 4px; right: 4px;
-    background: #181a28; border: 1px solid #333; color: #8892b0;
-    font-size: 0.65rem; padding: 2px 8px; border-radius: 3px;
-    cursor: pointer; opacity: 0.7; z-index: 1;
+    background: var(--raised); border: 1px solid var(--border-strong); color: var(--muted);
+    font-size: 11.5px; padding: 3px 9px; border-radius: var(--radius-sm); cursor: pointer;
   }
-  .log-copy-btn:hover { opacity: 1; background: #0f2a4a; }
+  .log-copy-btn:hover { color: var(--text); border-color: var(--muted); }
 
-  /* ── Charts ── */
-  .charts-row {
-    display: flex; gap: 12px; margin-bottom: 16px;
+  /* ── Annotate / Label ── */
+  .stage canvas { position: absolute; top: 0; left: 0; }
+  #ann-canvas { cursor: crosshair; }
+  #label-bbox-canvas { pointer-events: none; }
+  .assign { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+  .assign-btn {
+    display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: var(--radius);
+    background: color-mix(in srgb, var(--c) 12%, var(--surface));
+    border: 1px solid color-mix(in srgb, var(--c) 45%, transparent);
+    color: var(--text); font-weight: 600; font-size: 14px; cursor: pointer; transition: background .15s;
   }
-  .chart-box {
-    flex: 1; background: #161d30; border-radius: 6px; padding: 14px;
-    border: 1px solid #0f2a4a; min-width: 0;
-  }
-  .chart-box h3 {
-    font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
-    margin-bottom: 8px; letter-spacing: 1px;
-  }
-  .chart-box canvas { max-height: 250px; }
-  .chart-box.per-class-box canvas { max-height: 180px; }
+  .assign-btn:hover { background: color-mix(in srgb, var(--c) 24%, var(--surface)); }
+  .assign-btn kbd { margin-left: auto; }
 
-  /* ── Phase tabs & panels ── */
-  .phase-tabs {
-    display: flex; gap: 4px; margin-bottom: 12px;
+  /* ── Metrics ── */
+  .metrics-summary, .dataset-panel {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: 16px; margin-bottom: 12px;
   }
-  .phase-tab {
-    padding: 6px 14px; border: 1px solid #0f2a4a;
-    background: #0a0a1a; color: #8892b0; cursor: pointer;
-    border-radius: 4px; font-size: 0.75rem; font-family: monospace;
-    text-transform: uppercase; letter-spacing: 0.5px;
+  .metrics-summary h3, .dataset-panel h3, .chart-box h3 {
+    font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: 12px;
   }
-  .phase-tab:hover { background: #111828; }
-  .phase-tab.active { background: #161d30; color: #e0e0e0; border-color: #233554; }
+  .metric-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+  .metric-item { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; text-align: center; }
+  .metric-value { font: 700 1.35rem var(--font-mono); color: var(--success); font-variant-numeric: tabular-nums; }
+  .metric-value.warn { color: var(--warn); }
+  .metric-value.bad { color: var(--danger); }
+  .metric-label { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .compare-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 13px; }
+  .compare-bar label { color: var(--muted); }
+  .compare-delta { font: 12px var(--font-mono); padding: 2px 8px; border-radius: 999px; margin-left: 8px; }
+  .compare-delta.positive { color: var(--success); background: var(--success-soft); }
+  .compare-delta.negative { color: var(--danger); background: var(--danger-soft); }
+  .phase-tabs { display: inline-flex; gap: 2px; padding: 3px; margin-bottom: 12px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; }
+  .phase-tab { padding: 5px 12px; border-radius: 7px; color: var(--muted); cursor: pointer; font-size: 12.5px; font-weight: 500; }
+  .phase-tab:hover { color: var(--text); }
+  .phase-tab.active { background: var(--raised); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.35); }
   .phase-panel { margin-bottom: 20px; }
   .phase-panel.hidden { display: none; }
-  .phase-header {
-    display: flex; justify-content: space-between; align-items: center;
-    margin-bottom: 8px; padding: 6px 0;
-  }
-  .phase-header h3 {
-    font-size: 0.8rem; text-transform: uppercase; color: #ccd6f6;
-    letter-spacing: 1px; margin: 0;
-  }
-  .phase-best {
-    font-family: monospace; font-size: 0.75rem; color: #7ba87a;
-    background: rgba(123,168,122,0.1); padding: 2px 8px; border-radius: 3px;
-  }
-
-  /* ── Comparison bar ── */
-  .compare-bar {
-    display: flex; align-items: center; gap: 8px;
-    margin-bottom: 12px; font-family: monospace; font-size: 0.8rem;
-  }
-  .compare-bar label { color: #8892b0; }
-  .compare-bar select {
-    background: #0a0a1a; color: #e0e0e0; border: 1px solid #0f2a4a;
-    padding: 4px 8px; border-radius: 4px; font-family: monospace; font-size: 0.8rem;
-  }
-  .compare-delta {
-    font-family: monospace; font-size: 0.75rem; padding: 2px 8px;
-    border-radius: 3px; margin-left: 8px;
-  }
-  .compare-delta.positive { color: #7ba87a; background: rgba(123,168,122,0.1); }
-  .compare-delta.negative { color: #e63946; background: rgba(230,57,70,0.1); }
-
-  .no-metrics {
-    text-align: center; color: #555; font-family: monospace;
-    padding: 40px 20px;
-  }
-
-  /* ── Summary Stats ── */
-  .metrics-summary {
-    background: #161d30; border-radius: 6px; padding: 14px;
-    margin-bottom: 12px; border: 1px solid #0f2a4a;
-  }
-  .metrics-summary h3 {
-    font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
-    margin-bottom: 10px; letter-spacing: 1px;
-  }
-  .metric-grid {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-    gap: 10px;
-  }
-  .metric-item {
-    background: #0a0a1a; border-radius: 4px; padding: 10px;
-    text-align: center;
-  }
-  .metric-value {
-    font-family: monospace; font-size: 1.3rem; font-weight: 700;
-    color: #7ba87a;
-  }
-  .metric-value.warn { color: #b8896a; }
-  .metric-value.bad { color: #e63946; }
-  .metric-label {
-    font-size: 0.75rem; color: #8892b0; margin-top: 2px;
-    font-family: monospace;
-  }
-
-  /* ── Dataset Stats ── */
-  .dataset-panel {
-    background: #161d30; border-radius: 6px; padding: 14px;
-    border: 1px solid #0f2a4a;
-  }
-  .dataset-panel h3 {
-    font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
-    margin-bottom: 10px; letter-spacing: 1px;
-  }
+  .phase-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding: 6px 0; }
+  .phase-header h3 { font-size: 13px; font-weight: 600; color: var(--text); }
+  .phase-best { font: 12px var(--font-mono); color: var(--success); background: var(--success-soft); padding: 2px 9px; border-radius: 999px; }
+  .charts-row { display: flex; gap: 12px; margin-bottom: 12px; }
+  .chart-box { flex: 1; min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 14px; }
+  .chart-box canvas { max-height: 260px; }
+  .chart-box.per-class-box canvas { max-height: 190px; }
+  .no-metrics { text-align: center; color: var(--muted); padding: 60px 20px; line-height: 1.7; }
+  .cv-table { border-collapse: collapse; width: 100%; font: 12.5px var(--font-mono); font-variant-numeric: tabular-nums; }
+  .cv-table th, .cv-table td { padding: 5px 8px; text-align: center; }
+  .cv-table th:first-child, .cv-table td:first-child { text-align: left; }
+  .cv-table thead tr { border-bottom: 1px solid var(--border-strong); color: var(--muted); }
+  .cv-table tr.mean { border-top: 2px solid var(--border-strong); font-weight: 700; }
+  .cv-table tr.std { color: var(--muted); }
 
   /* ── Sidebar ── */
-  .sidebar-card {
-    background: #161d30; border-radius: 6px; padding: 14px;
-    margin-bottom: 10px;
-  }
-  .sidebar-card h3 {
-    font-size: 0.8rem; text-transform: uppercase; color: #8892b0;
-    margin-bottom: 10px; letter-spacing: 1px;
-  }
-  .cat-stat { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-  .cat-stat .name { width: 70px; font-weight: 600; font-size: 0.85rem; }
-  .cat-stat .bar-bg {
-    flex: 1; height: 14px; background: #0a0a1a; border-radius: 7px; overflow: hidden;
-  }
-  .cat-stat .bar-fill { height: 100%; border-radius: 7px; transition: width 0.3s ease; }
-  .cat-stat .count {
-    width: 50px; text-align: right; font-family: monospace; font-size: 0.85rem;
-  }
-  .bar-low { background: #e63946; }
-  .bar-mid { background: #b8896a; }
-  .bar-good { background: #7ba87a; }
+  .output-file { display: flex; align-items: center; gap: 8px; padding: 4px 0; font: 12.5px var(--font-mono); }
+  .output-file .sz { margin-left: auto; color: var(--muted); }
+  .file-check { color: var(--success); }
+  .file-missing { color: var(--faint); }
+  .shortcuts { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; align-items: center; font-size: 12.5px; color: var(--muted); }
 
-  .stat-row {
-    display: flex; justify-content: space-between; padding: 3px 0;
-    font-family: monospace; font-size: 0.85rem;
-  }
-  .stat-row .label { color: #8892b0; }
-
-  .output-file {
-    display: flex; align-items: center; gap: 8px; padding: 3px 0;
-    font-family: monospace; font-size: 0.8rem;
-  }
-  .file-check { color: #7ba87a; }
-  .file-missing { color: #555; }
-
-  .hints {
-    font-size: 0.75rem; color: #555; font-family: monospace; line-height: 1.6;
-  }
-  .hints kbd {
-    background: #0f2a4a; padding: 1px 5px; border-radius: 3px; color: #8892b0;
-  }
-
-  @media (max-width: 900px) {
-    body { height: auto; display: block; overflow: auto; }
-    .main { flex-direction: column; flex: unset; min-height: unset; }
+  @media (max-width: 1100px) {
+    body { overflow: auto; height: auto; }
+    .main { flex-direction: column; flex: unset; min-height: unset; padding: 12px 16px; }
     .content-col { display: block; }
     #tab-pipeline.active { display: block; }
     #tab-metrics.active { overflow-y: visible; }
@@ -402,21 +205,28 @@
     .log-output { max-height: 400px; }
     .sidebar { width: 100%; overflow-y: visible; }
     .charts-row { flex-direction: column; }
+    .top-bar-inner { flex-wrap: wrap; gap: 10px 16px; }
+    .top-status { margin-left: 0; }
   }
 </style>
 </head>
-<body>
+<body data-tab="pipeline">
 
 <!-- Top Bar -->
 <div class="top-bar">
   <div class="top-bar-inner">
-    <div class="tab-bar">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Cat Detector <span class="brand-sub">Training</span></div>
+    <nav class="tab-bar" aria-label="Dashboard tabs">
       <button class="tab-btn active" data-tab="pipeline" onclick="switchTab('pipeline')">Pipeline</button>
-      <button class="tab-btn" data-tab="label" onclick="switchTab('label')">Label</button>
-      <button class="tab-btn" data-tab="annotate" onclick="switchTab('annotate')">Annotate</button>
+      <button class="tab-btn" data-tab="label" onclick="switchTab('label')">Label<span class="badge" id="badge-label"></span></button>
+      <button class="tab-btn" data-tab="annotate" onclick="switchTab('annotate')">Annotate<span class="badge attn" id="badge-annotate"></span></button>
       <button class="tab-btn" data-tab="metrics" onclick="switchTab('metrics')">Metrics</button>
+    </nav>
+    <div class="top-status">
+      <span class="ver" id="top-ver"></span>
+      <span class="live-dot" id="top-live" hidden></span>
+      <span id="top-status">Pipeline idle</span>
     </div>
-    <div class="top-status" id="top-status">Pipeline idle</div>
   </div>
 </div>
 
@@ -427,19 +237,20 @@
     <div class="tab-content active" id="tab-pipeline">
       <div class="pipeline-top">
 
-      <div class="version-bar">
+      <div class="card version-bar">
         <label>Version:</label>
         <select id="version-select" onchange="switchVersion(this.value)"></select>
-        <span id="version-size" style="color:#555;font-size:0.8rem"></span>
-        <button class="btn btn-nav btn-sm" onclick="newVersion()">+ New</button>
-        <button class="btn btn-nav btn-sm" onclick="renameVersion()">Rename</button>
-        <button class="btn btn-nav btn-sm" onclick="duplicateVersion()">Duplicate</button>
-        <button class="btn btn-nav btn-sm" style="color:#e63946" onclick="deleteVersion()">Delete</button>
+        <span id="version-size"></span>
+        <span class="spacer"></span>
+        <button class="btn btn-ghost btn-sm" onclick="newVersion()">+ New</button>
+        <button class="btn btn-ghost btn-sm" onclick="renameVersion()">Rename</button>
+        <button class="btn btn-ghost btn-sm" onclick="duplicateVersion()">Duplicate</button>
+        <button class="btn btn-ghost btn-sm text-danger" onclick="deleteVersion()">Delete</button>
       </div>
 
       <div class="pipeline-controls">
-        <button class="btn btn-primary" id="btn-run-all" onclick="runAll()">Run All</button>
-        <button class="btn btn-danger btn-sm" id="btn-stop" onclick="stopPipeline()" style="display:none">Stop</button>
+        <button class="btn btn-primary" id="btn-run-all" onclick="runAll()">Run all <kbd>r</kbd></button>
+        <button class="btn btn-danger" id="btn-stop" onclick="stopPipeline()" style="display:none">Stop <kbd>s</kbd></button>
       </div>
 
       <!-- Step Cards -->
@@ -455,7 +266,7 @@
             <span class="step-dot idle" id="dot-pull"></span>
             <span id="state-pull">idle</span>
           </div>
-          <button class="btn btn-nav btn-sm" onclick="runStep('pull')">Run</button>
+          <button class="btn btn-sm" onclick="runStep('pull')">Run</button>
         </div>
         <div class="step-card" id="step-label" data-step="label">
           <span class="step-num">2</span>
@@ -468,7 +279,7 @@
             <span class="step-dot idle" id="dot-label"></span>
             <span id="state-label">idle</span>
           </div>
-          <button class="btn btn-nav btn-sm" onclick="switchTab('label')">Label</button>
+          <button class="btn btn-sm" onclick="switchTab('label')">Label</button>
         </div>
         <div class="step-card" id="step-crop" data-step="crop">
           <span class="step-num">3</span>
@@ -481,7 +292,7 @@
             <span class="step-dot idle" id="dot-crop"></span>
             <span id="state-crop">idle</span>
           </div>
-          <button class="btn btn-nav btn-sm" onclick="runStep('crop')">Run</button>
+          <button class="btn btn-sm" onclick="runStep('crop')">Run</button>
         </div>
         <div class="step-card" id="step-prepare" data-step="prepare">
           <span class="step-num">4</span>
@@ -494,7 +305,7 @@
             <span class="step-dot idle" id="dot-prepare"></span>
             <span id="state-prepare">idle</span>
           </div>
-          <button class="btn btn-nav btn-sm" onclick="runStep('prepare')">Run</button>
+          <button class="btn btn-sm" onclick="runStep('prepare')">Run</button>
         </div>
         <div class="step-card" id="step-train" data-step="train">
           <span class="step-num">5</span>
@@ -507,7 +318,7 @@
             <span class="step-dot idle" id="dot-train"></span>
             <span id="state-train">idle</span>
           </div>
-          <button class="btn btn-nav btn-sm" onclick="runStep('train')">Run</button>
+          <button class="btn btn-sm" onclick="runStep('train')">Run</button>
         </div>
         <div class="step-card" id="step-deploy" data-step="deploy">
           <span class="step-num">6</span>
@@ -520,10 +331,10 @@
             <span class="step-dot idle" id="dot-deploy"></span>
             <span id="state-deploy">idle</span>
           </div>
-          <button class="btn btn-nav btn-sm" onclick="runStep('deploy')">Run</button>
+          <button class="btn btn-sm" onclick="runStep('deploy')">Run</button>
         </div>
-        <div class="step-card" id="step-crossval" data-step="crossval" style="margin-top:12px; border-top:2px dashed #0f2a4a; padding-top:14px;">
-          <span class="step-num" style="font-size:0.8rem; min-width:22px;">CV</span>
+        <div class="step-card step-cv" id="step-crossval" data-step="crossval">
+          <span class="step-num">CV</span>
           <div class="step-info">
             <div class="step-name">Cross-Validate</div>
             <div class="step-hint" id="hint-crossval">Requires cropped images</div>
@@ -533,9 +344,10 @@
             <span class="step-dot idle" id="dot-crossval"></span>
             <span id="state-crossval">idle</span>
           </div>
-          <label style="color:#8892b0;font-size:0.75rem;margin-right:4px;">Folds:</label>
-          <input type="number" id="set-cv-folds" value="5" min="2" max="10" step="1" style="width:48px;background:#0a0a1a;border:1px solid #233554;color:#ccd6f6;border-radius:4px;padding:2px 4px;text-align:center;font-size:0.8rem;">
-          <button class="btn btn-nav btn-sm" onclick="runStep('crossval')">Run</button>
+          <label class="cv-folds" for="set-cv-folds">Folds
+            <input type="number" id="set-cv-folds" value="5" min="2" max="10" step="1">
+          </label>
+          <button class="btn btn-sm" onclick="runStep('crossval')">Run</button>
         </div>
       </div>
 
@@ -594,8 +406,8 @@
           <span class="tip">?<span class="tip-text">Percentile of known-cat energy scores used as the OOD rejection threshold. 0.99 = only reject the most extreme 1% of energy scores (permissive). 0.95 = reject 5% (aggressive). Lower values catch more unknowns but risk rejecting legitimate cats.</span></span>
           <input type="number" id="set-energy-pct" value="0.99" min="0.9" max="1" step="0.01">
         </div>
-        <div style="margin-top:8px">
-          <button class="btn btn-nav btn-sm" onclick="saveSettings()">Save Settings</button>
+        <div class="settings-actions">
+          <button class="btn btn-sm" onclick="saveSettings()">Save Settings</button>
         </div>
         </div>
       </div>
@@ -607,12 +419,12 @@
         <div class="settings-row">
           <label>Padding:</label>
           <span class="tip">?<span class="tip-text">Fractional padding added around the detected bounding box on each side (0 = tight crop, 0.20 = 20% padding). Re-run Crop Images after changing.</span></span>
-          <input type="number" id="set-crop-padding" value="0.20" min="0" max="1" step="0.05" style="width:80px">
-          <label style="color:#8892b0;font-size:0.8rem">Output size: 224×224 px</label>
+          <input type="number" id="set-crop-padding" value="0.20" min="0" max="1" step="0.05">
+          <span class="hint">Output size: 224×224 px</span>
         </div>
-        <div style="margin-top:8px; display:flex; gap:8px;">
-          <button class="btn btn-nav btn-sm" onclick="saveCropSettings()">Save</button>
-          <button class="btn btn-nav btn-sm" onclick="saveCropSettingsAndRecrop()" style="color:#7ba87a">Save &amp; Re-crop</button>
+        <div class="settings-actions">
+          <button class="btn btn-sm" onclick="saveCropSettings()">Save</button>
+          <button class="btn btn-sm btn-primary" onclick="saveCropSettingsAndRecrop()">Save &amp; Re-crop</button>
         </div>
         </div>
       </div>
@@ -626,9 +438,7 @@
           <span class="tip">?<span class="tip-text">Weight the loss function by inverse class frequency so minority classes contribute more to gradient updates. Recommended when class counts differ by &gt;35%.</span></span>
           <input type="checkbox" id="set-balance-classes" checked>
         </div>
-        <div style="margin-top:10px; margin-bottom:6px;">
-          <label style="color:#8892b0; font-size:0.75rem; text-transform:uppercase; letter-spacing:0.5px">Online Augmentation (applied during training)</label>
-        </div>
+        <div class="settings-subhead">Online Augmentation (applied during training)</div>
         <div class="settings-row">
           <label>Horizontal flip:</label>
           <span class="tip">?<span class="tip-text">50% chance of horizontal flip per image. Simple and effective for symmetric subjects.</span></span>
@@ -659,9 +469,7 @@
           <span class="tip">?<span class="tip-text">Contrast Limited Adaptive Histogram Equalization. Enhances local contrast. Useful for fixed cameras with shadow variation across the frame.</span></span>
           <input type="checkbox" id="set-aug-clahe">
         </div>
-        <div style="margin-top:10px; margin-bottom:6px;">
-          <label style="color:#8892b0; font-size:0.75rem; text-transform:uppercase; letter-spacing:0.5px">Strength Parameters</label>
-        </div>
+        <div class="settings-subhead">Strength Parameters</div>
         <div class="settings-row">
           <label>Brightness limit:</label>
           <span class="tip">?<span class="tip-text">Max brightness shift factor (0-1). Default: 0.3 = ±30%.</span></span>
@@ -673,11 +481,8 @@
           <span class="tip">?<span class="tip-text">Max rotation in degrees. Keep low for fixed-camera setups. Default: 10.</span></span>
           <input type="number" id="set-aug-rotate-limit" value="10" min="0" max="45" step="1">
         </div>
-        <div style="margin-top:10px; margin-bottom:6px;">
-          <label style="color:#8892b0; font-size:0.75rem; text-transform:uppercase; letter-spacing:0.5px">Cross-Validation</label>
-        </div>
-        <div style="margin-top:8px">
-          <button class="btn btn-nav btn-sm" onclick="saveAugSettings()">Save Settings</button>
+        <div class="settings-actions">
+          <button class="btn btn-sm" onclick="saveAugSettings()">Save Settings</button>
         </div>
         </div>
       </div>
@@ -687,68 +492,120 @@
       <div class="log-section">
         <h3>Output</h3>
         <div class="log-wrap">
-          <button class="log-copy-btn" style="right:52px" onclick="copyLog()">Copy</button>
-          <button class="log-copy-btn" onclick="openLogBrowser()">Logs</button>
+          <div class="log-actions">
+            <button class="log-copy-btn" id="log-copy-btn" onclick="copyLog()">Copy</button>
+            <button class="log-copy-btn" onclick="openLogBrowser()">Logs</button>
+          </div>
           <div class="log-output" id="log-output">Waiting for pipeline...</div>
         </div>
       </div>
 
       <!-- Log browser modal -->
-      <div id="log-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:1000; justify-content:center; align-items:center;">
-        <div style="background:#0d1117; border:1px solid #333; border-radius:8px; padding:20px; max-width:500px; width:90%; max-height:70vh; overflow-y:auto;">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-            <h3 style="margin:0; color:#e6f1ff; font-size:0.95rem;">Training Logs</h3>
-            <button onclick="closeLogBrowser()" style="background:none; border:none; color:#8892b0; font-size:1.2rem; cursor:pointer;">&times;</button>
+      <div id="log-modal" class="modal-backdrop" onclick="if (event.target === this) closeLogBrowser()">
+        <div class="modal" role="dialog" aria-labelledby="log-modal-title">
+          <div class="modal-head">
+            <h3 id="log-modal-title">Training logs</h3>
+            <button class="modal-close" onclick="closeLogBrowser()" aria-label="Close">&times;</button>
           </div>
-          <div id="log-list" style="font-family:monospace; font-size:0.8rem; color:#8892b0;">Loading...</div>
+          <div id="log-list" class="mono" style="font-size:12.5px">Loading...</div>
         </div>
       </div>
     </div>
 
     <!-- ════ LABEL TAB ════ -->
     <div class="tab-content" id="tab-label">
-      <div class="ann-toolbar">
-        <span class="ann-progress" id="label-progress">Loading...</span>
-        <button class="btn btn-nav btn-sm" onclick="labelUndo()">Undo Last</button>
-        <span class="ann-img-info" id="label-img-info"></span>
-      </div>
-      <div style="text-align:center; padding:12px 0; position:relative; display:inline-block; width:100%;">
-        <div style="position:relative; display:inline-block; max-width:100%;">
-          <img id="label-img" style="max-width:100%; max-height:500px; object-fit:contain; border:2px solid #181a28; border-radius:4px; display:block;" onload="labelDrawBbox()">
-          <canvas id="label-bbox-canvas" style="position:absolute; top:0; left:0; pointer-events:none; border-radius:4px;"></canvas>
+      <div class="workspace" id="label-workspace">
+        <div class="pane-main">
+          <div class="toolbar">
+            <div class="progress-text" id="label-progress">Loading...</div>
+            <div class="fileinfo">
+              <span class="mono" id="label-img-info"></span>
+              <span class="tag warn" id="label-src"></span>
+            </div>
+            <div class="tb-actions">
+              <button class="btn btn-sm btn-ghost" onclick="labelUndo()">Undo last</button>
+            </div>
+          </div>
+          <div class="stage" id="label-stage">
+            <img id="label-img" alt="" onload="labelDrawBbox()" hidden>
+            <canvas id="label-bbox-canvas"></canvas>
+            <div class="stage-empty" id="label-empty" hidden>No unlabeled images</div>
+          </div>
+          <div class="assign" id="label-buttons">
+            <!-- Populated by JS from CATS -->
+          </div>
+          <div class="actionrow">
+            <button class="btn btn-sm" onclick="labelSkip()">Skip <kbd>s</kbd></button>
+            <span class="spacer"></span>
+            <span class="hint">Labeling moves the image and its sidecar into that cat's folder</span>
+          </div>
         </div>
+        <div class="splitter" tabindex="0" role="separator" aria-orientation="vertical" aria-label="Resize image browser"></div>
+        <aside class="browser" aria-label="Label queue">
+          <div class="browser-scroll" id="label-browser">
+            <div class="browser-section-title">Queue <span class="n" id="label-queue-count"></span></div>
+            <div class="thumb-grid" id="label-thumbs"></div>
+            <div class="browser-section-title" id="label-recent-title" hidden>Recently labeled <span class="n" id="label-recent-count"></span></div>
+            <div class="thumb-grid" id="label-recent"></div>
+          </div>
+          <div class="browser-foot" id="label-foot"></div>
+        </aside>
       </div>
-      <div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap; margin:10px 0;" id="label-buttons">
-        <!-- Populated by JS from CATS -->
-      </div>
-      <div style="display:flex; gap:10px; justify-content:center; margin-bottom:12px;">
-        <button class="btn btn-nav btn-sm" onclick="labelSkip()" style="color:#888">Skip (s)</button>
-      </div>
-      <div id="label-thumbs" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; max-height:200px; overflow-y:auto;"></div>
     </div>
 
     <!-- ════ ANNOTATE TAB ════ -->
     <div class="tab-content" id="tab-annotate">
-      <div class="ann-toolbar">
-        <span class="ann-progress" id="ann-progress">0/0 annotated</span>
-        <button class="btn btn-nav btn-sm" onclick="annAutoDetectCurrent()">Auto-detect</button>
-        <button class="btn btn-nav btn-sm" onclick="annClearBbox()">Clear</button>
-        <label style="font-size:0.8rem;color:#8892b0;cursor:pointer">
-          <input type="checkbox" id="ann-skip-done" checked onchange="annRenderThumbs()"> Hide annotated
-        </label>
-        <span class="ann-img-info" id="ann-img-info"></span>
+      <div class="workspace" id="ann-workspace">
+        <div class="pane-main">
+          <div class="toolbar">
+            <div class="progress-block">
+              <div class="progress-text" id="ann-progress">0/0 annotated</div>
+              <div class="meter"><span id="ann-meter" style="width:0"></span></div>
+            </div>
+            <div class="fileinfo">
+              <span class="dot" id="ann-dot"></span>
+              <span class="mono" id="ann-img-info"></span>
+              <span class="tag" id="ann-src"></span>
+            </div>
+            <div class="tb-actions">
+              <button class="btn btn-sm" onclick="annAutoDetectCurrent()">Auto-detect <kbd>a</kbd></button>
+              <button class="btn btn-sm btn-ghost" onclick="annClearBbox()">Clear <kbd>d</kbd></button>
+            </div>
+          </div>
+          <div class="stage" id="ann-canvas-wrap">
+            <img id="ann-img" crossorigin="anonymous" alt="">
+            <canvas id="ann-canvas" aria-label="Drag on the image to draw a bounding box"></canvas>
+            <div class="stage-note" id="ann-note" hidden>No box yet. Drag to draw one, or press a to auto-detect.</div>
+          </div>
+          <div class="actionrow">
+            <button class="btn btn-sm" onclick="annPrev()">&larr; Prev <kbd>p</kbd></button>
+            <button class="btn btn-sm" onclick="annNext()">Next <kbd>n</kbd> &rarr;</button>
+            <span class="spacer"></span>
+            <span class="hint">Boxes save as soon as you draw them</span>
+            <button class="btn btn-primary btn-sm" id="ann-auto-all" onclick="annAutoDetectAll()">Auto-detect all missing</button>
+          </div>
+        </div>
+        <div class="splitter" tabindex="0" role="separator" aria-orientation="vertical" aria-label="Resize image browser"></div>
+        <aside class="browser" aria-label="Image browser">
+          <div class="browser-head">
+            <div class="browser-head-row">
+              <div class="seg seg-sm" id="ann-status-seg" role="group" aria-label="Filter by annotation status">
+                <button data-s="all">All<span class="n" id="ann-cnt-all"></span></button>
+                <button data-s="missing">Missing<span class="n" id="ann-cnt-missing"></span></button>
+                <button data-s="done">Annotated<span class="n" id="ann-cnt-done"></span></button>
+              </div>
+              <label class="size-ctl" for="ann-thumb-size">Size <input type="range" id="ann-thumb-size" min="96" max="260" value="132"></label>
+            </div>
+            <div class="chips" id="ann-cat-chips"></div>
+          </div>
+          <div class="browser-scroll" id="ann-thumbs"></div>
+          <div class="browser-foot">
+            <span><kbd>n</kbd> <kbd>p</kbd> step through filtered images</span>
+            <span><kbd>a</kbd> auto-detect</span>
+            <span><kbd>d</kbd> clear</span>
+          </div>
+        </aside>
       </div>
-      <div class="ann-canvas-wrap" id="ann-canvas-wrap">
-        <img id="ann-img" crossorigin="anonymous">
-        <canvas id="ann-canvas"></canvas>
-      </div>
-      <div class="ann-actions">
-        <button class="btn btn-nav btn-sm" onclick="annPrev()">&larr; Prev (p)</button>
-        <button class="btn btn-nav btn-sm" onclick="annNext()">Next (n) &rarr;</button>
-        <span style="flex:1"></span>
-        <button class="btn btn-primary btn-sm" onclick="annAutoDetectAll()">Auto-detect All Missing</button>
-      </div>
-      <div class="ann-thumbs" id="ann-thumbs"></div>
     </div>
 
     <!-- ════ METRICS TAB ════ -->
@@ -801,7 +658,7 @@
         <!-- CV Results -->
         <div class="dataset-panel" id="cv-results-panel" style="display:none">
           <h3>Cross-Validation Results</h3>
-          <div id="cv-results-content" style="font-family:monospace; font-size:0.8rem; color:#ccd6f6; overflow-x:auto;"></div>
+          <div id="cv-results-content" style="overflow-x:auto;"></div>
         </div>
 
         <!-- Dataset Stats -->
@@ -839,10 +696,10 @@
     <div class="sidebar-card">
       <h3>Artifacts</h3>
       <div id="output-files">
-        <div class="output-file"><span class="file-missing">-</span> raw_images/</div>
-        <div class="output-file"><span class="file-missing">-</span> cropped_images/</div>
-        <div class="output-file"><span class="file-missing">-</span> cat_classifier.pt</div>
-        <div class="output-file"><span class="file-missing">-</span> models/cat_classifier.pt</div>
+        <div class="output-file"><span class="file-missing">&middot;</span> raw_images/</div>
+        <div class="output-file"><span class="file-missing">&middot;</span> cropped_images/</div>
+        <div class="output-file"><span class="file-missing">&middot;</span> cat_classifier.pt</div>
+        <div class="output-file"><span class="file-missing">&middot;</span> models/cat_classifier.pt</div>
       </div>
     </div>
 
@@ -851,19 +708,83 @@
       <div id="raw-counts"></div>
     </div>
 
-    <div class="sidebar-card hints">
+    <div class="sidebar-card">
       <h3>Shortcuts</h3>
-      <kbd>1</kbd>-<kbd>6</kbd> Run step<br>
-      <kbd>r</kbd> Run All<br>
-      <kbd>s</kbd> Stop
+      <div class="shortcuts">
+        <span><kbd>1</kbd>-<kbd>6</kbd></span><span>Run step</span>
+        <span><kbd>r</kbd></span><span>Run all</span>
+        <span><kbd>s</kbd></span><span>Stop</span>
+      </div>
     </div>
   </div>
 </div>
+
+<div class="toast" id="toast" role="status"></div>
 
 <script>
 const CATS = {{ cat_names | tojson }};
 const CAT_COLORS = {{ cat_colors | tojson }};
 const STEPS = ['pull', 'label', 'crop', 'prepare', 'train', 'deploy', 'crossval'];
+
+// ── UI helpers ─────────────────────────────────────────────
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+let _toastTimer = null;
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => t.classList.remove('show'), 3000);
+}
+function currentVersionName() {
+  const sel = document.getElementById('version-select');
+  return (sel && sel.value) || '';
+}
+function setTopStatus(ver, text, running) {
+  document.getElementById('top-ver').textContent = ver && ver !== '?' ? ver : '';
+  document.getElementById('top-status').textContent = text;
+  document.getElementById('top-live').hidden = !running;
+}
+
+// Draggable divider between the viewer and the image browser.
+function initSplitters() {
+  document.querySelectorAll('.workspace').forEach(ws => {
+    const sp = ws.querySelector('.splitter');
+    if (!sp) return;
+    const key = 'browserWidth:' + ws.id;
+    const setW = (w, save) => {
+      const total = ws.getBoundingClientRect().width;
+      const clamped = Math.max(280, Math.min(w, total - 420));
+      ws.style.setProperty('--browser-w', clamped + 'px');
+      if (save) { try { localStorage.setItem(key, clamped); } catch(e) {} }
+    };
+    try {
+      const saved = parseFloat(localStorage.getItem(key));
+      if (saved > 0) ws.style.setProperty('--browser-w', saved + 'px');
+    } catch(e) {}
+    sp.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      sp.setPointerCapture(e.pointerId);
+      sp.classList.add('drag');
+      const move = (ev) => setW(ws.getBoundingClientRect().right - ev.clientX, false);
+      const up = (ev) => {
+        sp.classList.remove('drag');
+        setW(ws.getBoundingClientRect().right - ev.clientX, true);
+        sp.removeEventListener('pointermove', move);
+        sp.removeEventListener('pointerup', up);
+      };
+      sp.addEventListener('pointermove', move);
+      sp.addEventListener('pointerup', up);
+    });
+    sp.addEventListener('keydown', (e) => {
+      const cur = ws.querySelector('.browser').getBoundingClientRect().width;
+      if (e.key === 'ArrowLeft') { setW(cur + 40, true); e.preventDefault(); e.stopPropagation(); }
+      if (e.key === 'ArrowRight') { setW(cur - 40, true); e.preventDefault(); e.stopPropagation(); }
+    });
+  });
+}
 let activeTab = 'pipeline';
 // ── Per-phase chart state ────────────────────────────────────
 let phaseCharts = {};   // { phase1: { loss: Chart, acc: Chart, perClass: Chart }, ... }
@@ -909,6 +830,7 @@ let logUpdating = false;
 // ── Tab switching ──────────────────────────────────────────
 function switchTab(tab) {
   activeTab = tab;
+  document.body.dataset.tab = tab;
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
   document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + tab));
   if (tab === 'metrics') pollMetrics();
@@ -1176,7 +1098,7 @@ async function saveSettings() {
 function copyLog() {
   const log = document.getElementById('log-output');
   const text = log.innerText;
-  const btn = document.querySelector('.log-copy-btn');
+  const btn = document.getElementById('log-copy-btn');
   if (navigator.clipboard && window.isSecureContext) {
     navigator.clipboard.writeText(text).then(() => {
       btn.textContent = 'Copied!';
@@ -1205,7 +1127,7 @@ async function openLogBrowser() {
     const r = await fetch('/api/logs');
     const d = await r.json();
     if (!d.logs.length) {
-      listEl.innerHTML = '<div style="color:#555;">No log files yet.</div>';
+      listEl.innerHTML = '<div class="faint">No log files yet.</div>';
       return;
     }
     // Group by version
@@ -1216,18 +1138,18 @@ async function openLogBrowser() {
     });
     let html = '';
     for (const [ver, logs] of Object.entries(groups)) {
-      html += `<div style="color:#7ba87a; margin-top:10px; font-weight:600;">${ver}</div>`;
+      html += `<div class="log-group">${ver}</div>`;
       html += logs.map(l => {
         const date = new Date(l.modified * 1000).toLocaleString();
-        return `<div style="padding:4px 0 4px 12px; border-bottom:1px solid #181a28;">
-          <a href="/api/logs/${l.path}" target="_blank" style="color:#ccd6f6; text-decoration:none;">${l.name}</a>
-          <span style="color:#555; margin-left:8px;">${l.size_kb} KB &middot; ${date}</span>
+        return `<div class="log-entry">
+          <a href="/api/logs/${l.path}" target="_blank">${l.name}</a>
+          <span>${l.size_kb} KB &middot; ${date}</span>
         </div>`;
       }).join('');
     }
     listEl.innerHTML = html;
   } catch(e) {
-    listEl.innerHTML = '<div style="color:#e74c3c;">Failed to load logs.</div>';
+    listEl.innerHTML = '<div class="text-danger">Failed to load logs.</div>';
   }
 }
 
@@ -1289,13 +1211,12 @@ async function pollStatus() {
     // Top status
     const ver = d.active_version || '?';
     if (isRunning) {
-      document.getElementById('top-status').textContent = '[' + ver + '] Running: ' + currentLabel +
-        (d.auto_pipeline ? ' (auto-pipeline)' : '');
+      setTopStatus(ver, 'Running: ' + currentLabel + (d.auto_pipeline ? ' (auto-pipeline)' : ''), true);
     } else {
       const cachedDone = JSON.parse(localStorage.getItem('stepCompleted') || '{}');
       const doneCount = STEPS.filter(n => (steps[n] || {}).state === 'done' || cachedDone[n]).length;
-      document.getElementById('top-status').textContent = '[' + ver + '] ' + (doneCount > 0
-        ? doneCount + '/' + STEPS.length + ' steps complete' : 'Pipeline idle');
+      setTopStatus(ver, doneCount > 0
+        ? doneCount + '/' + STEPS.length + ' steps complete' : 'Pipeline idle', false);
     }
 
     // Sidebar
@@ -1361,6 +1282,10 @@ async function pollStatus() {
       latestLabelStats = steps.label.label_stats;
       try { localStorage.setItem('cachedLabelStats', JSON.stringify(latestLabelStats)); } catch(e) {}
       const hint = document.getElementById('hint-label');
+      if (activeTab !== 'label') {
+        document.getElementById('badge-label').textContent =
+          latestLabelStats.unlabeled > 0 ? Number(latestLabelStats.unlabeled).toLocaleString() : '';
+      }
       if (latestLabelStats.unlabeled > 0) {
         hint.textContent = latestLabelStats.labeled + ' labeled, ' + latestLabelStats.unlabeled + ' remaining';
       } else if (latestLabelStats.labeled > 0) {
@@ -1379,10 +1304,10 @@ function updateOutputFiles(outputs) {
   // Directory artifact counts
   const rawInfo = outputs.raw_images || {};
   const cropInfo = outputs.cropped_images || {};
-  const rawIcon = rawInfo.exists ? '<span class="file-check">&#10003;</span>' : '<span class="file-missing">-</span>';
-  const cropIcon = cropInfo.exists ? '<span class="file-check">&#10003;</span>' : '<span class="file-missing">-</span>';
-  const rawCount = rawInfo.count != null ? ' (' + rawInfo.count + ')' : '';
-  const cropCount = cropInfo.count != null ? ' (' + cropInfo.count + ')' : '';
+  const rawIcon = rawInfo.exists ? '<span class="file-check">&#10003;</span>' : '<span class="file-missing">&middot;</span>';
+  const cropIcon = cropInfo.exists ? '<span class="file-check">&#10003;</span>' : '<span class="file-missing">&middot;</span>';
+  const rawCount = rawInfo.count != null ? '<span class="sz">' + Number(rawInfo.count).toLocaleString() + '</span>' : '';
+  const cropCount = cropInfo.count != null ? '<span class="sz">' + Number(cropInfo.count).toLocaleString() + '</span>' : '';
   container.innerHTML += '<div class="output-file">' + rawIcon + ' raw_images/' + rawCount + '</div>';
   container.innerHTML += '<div class="output-file">' + cropIcon + ' cropped_images/' + cropCount + '</div>';
 
@@ -1393,8 +1318,8 @@ function updateOutputFiles(outputs) {
   };
   for (const [key, label] of Object.entries(fileMap)) {
     const info = outputs[key] || {};
-    const icon = info.exists ? '<span class="file-check">&#10003;</span>' : '<span class="file-missing">-</span>';
-    const size = info.exists && info.size_mb != null ? ' (' + info.size_mb + ' MB)' : '';
+    const icon = info.exists ? '<span class="file-check">&#10003;</span>' : '<span class="file-missing">&middot;</span>';
+    const size = info.exists && info.size_mb != null ? '<span class="sz">' + info.size_mb + ' MB</span>' : '';
     container.innerHTML += '<div class="output-file">' + icon + ' ' + label + size + '</div>';
   }
 }
@@ -1440,7 +1365,7 @@ async function pollMetrics() {
       pcEl.innerHTML = Object.entries(d.per_class).map(([cat, accs]) => {
         const last = accs[accs.length - 1] || 0;
         const pct = Math.round(last * 100);
-        const color = pct >= 90 ? '#7ba87a' : pct >= 75 ? '#b8896a' : '#e63946';
+        const color = pct >= 90 ? 'var(--success)' : pct >= 75 ? 'var(--warn)' : 'var(--danger)';
         return '<div class="cat-stat"><span class="name">' + cat + '</span>' +
           '<div class="bar-bg"><div class="bar-fill" style="width:' + pct + '%;background:' + color + '"></div></div>' +
           '<span class="count">' + pct + '%</span></div>';
@@ -1506,34 +1431,24 @@ async function pollCvResults() {
     panel.style.display = 'block';
     const cv = d.results;
     const cats = Object.keys(cv.per_class_mean || {});
-    let html = '<strong>Cross-Validation Results (' + cv.n_folds + '-fold)</strong><br><br>';
-    html += '<table style="border-collapse:collapse;width:100%">';
-    html += '<tr style="border-bottom:1px solid #233554"><th style="text-align:left;padding:4px 8px">Fold</th><th style="padding:4px 8px">Overall</th>';
-    cats.forEach(c => { html += '<th style="padding:4px 8px">' + c + '</th>'; });
-    html += '</tr>';
+    const pct = v => (v * 100).toFixed(1) + '%';
+    let html = '<div class="muted" style="margin-bottom:10px">' + cv.n_folds + '-fold cross-validation</div>';
+    html += '<table class="cv-table"><thead><tr><th>Fold</th><th>Overall</th>';
+    cats.forEach(c => { html += '<th>' + c + '</th>'; });
+    html += '</tr></thead><tbody>';
     (cv.folds || []).forEach(f => {
-      html += '<tr><td style="padding:4px 8px">Fold ' + (f.fold + 1) + '</td>';
-      html += '<td style="text-align:center;padding:4px 8px">' + (f.best_val_acc * 100).toFixed(1) + '%</td>';
+      html += '<tr><td>Fold ' + (f.fold + 1) + '</td><td>' + pct(f.best_val_acc) + '</td>';
       cats.forEach(c => {
         const v = (f.per_class || {})[c];
-        html += '<td style="text-align:center;padding:4px 8px">' + (v != null ? (v * 100).toFixed(1) + '%' : '--') + '</td>';
+        html += '<td>' + (v != null ? pct(v) : '--') + '</td>';
       });
       html += '</tr>';
     });
-    // Mean row
-    html += '<tr style="border-top:2px solid #233554;font-weight:bold"><td style="padding:4px 8px">Mean</td>';
-    html += '<td style="text-align:center;padding:4px 8px">' + (cv.mean_acc * 100).toFixed(1) + '%</td>';
-    cats.forEach(c => {
-      html += '<td style="text-align:center;padding:4px 8px">' + ((cv.per_class_mean[c] || 0) * 100).toFixed(1) + '%</td>';
-    });
-    html += '</tr>';
-    // Std row
-    html += '<tr style="color:#8892b0"><td style="padding:4px 8px">Std</td>';
-    html += '<td style="text-align:center;padding:4px 8px">&plusmn;' + (cv.std_acc * 100).toFixed(1) + '%</td>';
-    cats.forEach(c => {
-      html += '<td style="text-align:center;padding:4px 8px">&plusmn;' + ((cv.per_class_std[c] || 0) * 100).toFixed(1) + '%</td>';
-    });
-    html += '</tr></table>';
+    html += '<tr class="mean"><td>Mean</td><td>' + pct(cv.mean_acc) + '</td>';
+    cats.forEach(c => { html += '<td>' + pct(cv.per_class_mean[c] || 0) + '</td>'; });
+    html += '</tr><tr class="std"><td>Std</td><td>&plusmn;' + pct(cv.std_acc) + '</td>';
+    cats.forEach(c => { html += '<td>&plusmn;' + pct(cv.per_class_std[c] || 0) + '</td>'; });
+    html += '</tr></tbody></table>';
     content.innerHTML = html;
   } catch(e) { /* no CV results yet */ }
 }
@@ -1545,15 +1460,15 @@ function getChartOpts(bestEpoch) {
     animation: { duration: 0 },
     scales: {
       x: {
-        title: { display: true, text: 'Epoch', color: '#8892b0' },
-        ticks: { color: '#555' }, grid: { color: '#181a28' },
+        title: { display: true, text: 'Epoch', color: cssVar('--muted') },
+        ticks: { color: cssVar('--faint') }, grid: { color: cssVar('--border') },
       },
       y: {
-        ticks: { color: '#555' }, grid: { color: '#0f2a4a' },
+        ticks: { color: cssVar('--faint') }, grid: { color: cssVar('--border') },
       },
     },
     plugins: {
-      legend: { labels: { color: '#8892b0', font: { family: 'monospace', size: 11 } } },
+      legend: { labels: { color: cssVar('--muted'), font: { family: cssVar('--font-ui'), size: 12 } } },
       bestEpochLine: { epoch: bestEpoch || 0 },
     },
   };
@@ -1613,15 +1528,15 @@ function updatePhaseCharts(data, cmpData) {
 
     // Build datasets
     const lossSets = [
-      { label: 'Train Loss', data: phData.train_loss, borderColor: '#7ba87a',
+      { label: 'Train Loss', data: phData.train_loss, borderColor: cssVar('--success'),
         backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
-      { label: 'Val Loss', data: phData.val_loss, borderColor: '#e63946',
+      { label: 'Val Loss', data: phData.val_loss, borderColor: cssVar('--danger'),
         backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
     ];
     const accSets = [
-      { label: 'Train Acc', data: phData.train_acc, borderColor: '#7ba87a',
+      { label: 'Train Acc', data: phData.train_acc, borderColor: cssVar('--success'),
         backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
-      { label: 'Val Acc', data: phData.val_acc, borderColor: '#b8896a',
+      { label: 'Val Acc', data: phData.val_acc, borderColor: cssVar('--warn'),
         backgroundColor: 'transparent', borderWidth: 1.5, pointRadius: 0, tension: 0.3 },
     ];
 
@@ -1631,13 +1546,13 @@ function updatePhaseCharts(data, cmpData) {
       lossSets.push(
         { label: 'Train Loss (' + cmpName + ')', data: cPh.train_loss, borderColor: 'rgba(123,168,122,0.4)',
           backgroundColor: 'transparent', borderWidth: 1, pointRadius: 0, tension: 0.3, borderDash: [5, 5] },
-        { label: 'Val Loss (' + cmpName + ')', data: cPh.val_loss, borderColor: 'rgba(230,57,70,0.4)',
+        { label: 'Val Loss (' + cmpName + ')', data: cPh.val_loss, borderColor: 'rgba(229,72,77,0.4)',
           backgroundColor: 'transparent', borderWidth: 1, pointRadius: 0, tension: 0.3, borderDash: [5, 5] },
       );
       accSets.push(
         { label: 'Train Acc (' + cmpName + ')', data: cPh.train_acc, borderColor: 'rgba(123,168,122,0.4)',
           backgroundColor: 'transparent', borderWidth: 1, pointRadius: 0, tension: 0.3, borderDash: [5, 5] },
-        { label: 'Val Acc (' + cmpName + ')', data: cPh.val_acc, borderColor: 'rgba(184,137,106,0.4)',
+        { label: 'Val Acc (' + cmpName + ')', data: cPh.val_acc, borderColor: 'rgba(208,164,106,0.4)',
           backgroundColor: 'transparent', borderWidth: 1, pointRadius: 0, tension: 0.3, borderDash: [5, 5] },
       );
     }
@@ -1646,7 +1561,7 @@ function updatePhaseCharts(data, cmpData) {
     const cats = Object.keys(phData.per_class || {});
     const pcSets = cats.map((cat, ci) => ({
       label: cat, data: phData.per_class[cat],
-      borderColor: CAT_COLORS[ci % CAT_COLORS.length], backgroundColor: 'transparent',
+      borderColor: CAT_COLORS[cat] || cssVar('--muted'), backgroundColor: 'transparent',
       borderWidth: 1.5, pointRadius: 0, tension: 0.3,
     }));
     if (cmpPd && cmpPd[pk]) {
@@ -1654,7 +1569,7 @@ function updatePhaseCharts(data, cmpData) {
       cCats.forEach((cat, ci) => {
         pcSets.push({
           label: cat + ' (' + cmpName + ')', data: cmpPd[pk].per_class[cat],
-          borderColor: CAT_COLORS[ci % CAT_COLORS.length] + '66', backgroundColor: 'transparent',
+          borderColor: (CAT_COLORS[cat] || '#8b93ad') + '66', backgroundColor: 'transparent',
           borderWidth: 1, pointRadius: 0, tension: 0.3, borderDash: [5, 5],
         });
       });
@@ -1745,7 +1660,7 @@ function renderRawCounts(d) {
     const cc = (d.crop_counts || {})[cat] || 0;
     const pct = Math.min(100, (c / minImages) * 100);
     const barClass = pct < 33 ? 'bar-low' : pct < 80 ? 'bar-mid' : 'bar-good';
-    const cropSuffix = cc > 0 ? ' <span style="color:#555;font-size:0.75em">(+' + cc + 'c)</span>' : '';
+    const cropSuffix = cc > 0 ? ' <span class="faint" title="cropped">+' + cc + 'c</span>' : '';
     rawEl.innerHTML += '<div class="cat-stat">' +
       '<span class="name">' + cat + '</span>' +
       '<div class="bar-bg"><div class="bar-fill ' + barClass + '" style="width:' + pct + '%"></div></div>' +
@@ -1754,8 +1669,8 @@ function renderRawCounts(d) {
   const uc = d.raw_counts.unlabeled || 0;
   if (uc > 0) {
     rawEl.innerHTML += '<div class="cat-stat">' +
-      '<span class="name" style="color:#c49a6c">unlbl</span>' +
-      '<div class="bar-bg"><div class="bar-fill" style="width:10%;background:#4a3828"></div></div>' +
+      '<span class="name" style="color:var(--warn)">Unlabeled</span>' +
+      '<div class="bar-bg"><div class="bar-fill" style="width:10%;background:var(--warn-soft)"></div></div>' +
       '<span class="count">' + uc + '</span></div>';
   }
 }
@@ -1767,7 +1682,7 @@ function renderDatasetStatsPanel(d) {
     dsEl.innerHTML = '<div class="stat-row"><span class="label">Train:</span><span>' + (sc.train || 0) + '</span></div>' +
       '<div class="stat-row"><span class="label">Val:</span><span>' + (sc.val || 0) + '</span></div>';
   } else {
-    dsEl.innerHTML = '<div style="color:#555;font-family:monospace;font-size:0.85rem">Dataset not prepared yet — run Prepare Dataset</div>';
+    dsEl.innerHTML = '<div class="faint">Dataset not prepared yet. Run Prepare Dataset.</div>';
   }
 }
 
@@ -1810,7 +1725,7 @@ function updateReadiness() {
   let blocked_by_running = false;
   STEPS.forEach(name => {
     const state = latestStepStates[name] || 'idle';
-    if (blocked_by_running) {
+    if (blocked_by_running && readiness[name]) {
       readiness[name].ready = false;
       completed[name] = false;
     }
@@ -1824,7 +1739,7 @@ function updateReadiness() {
     const stateEl = document.getElementById('state-' + name);
     const hintEl = document.getElementById('hint-' + name);
     const r = readiness[name];
-    if (!card) return;
+    if (!card || !r) return;  // crossval has no readiness rule
 
     card.classList.remove('ready', 'completed', 'blocked', 'done');
     if (completed[name] && state !== 'running') {
@@ -1904,7 +1819,7 @@ function restoreCachedCompletion() {
     const doneCount = STEPS.filter(n => cached[n]).length;
     const ver = cachedVersions.active || '?';
     if (doneCount > 0) {
-      document.getElementById('top-status').textContent = '[' + ver + '] ' + doneCount + '/' + STEPS.length + ' steps complete';
+      setTopStatus(ver, doneCount + '/' + STEPS.length + ' steps complete', false);
     }
 
     // Restore sidebar pipeline status
@@ -1933,123 +1848,270 @@ let annIndex = 0;
 let annBbox = null;  // {cx, cy, w, h} normalized or null
 let annBboxSource = null;  // 'auto' | 'manual' for unsaved boxes
 let annBboxConf = null;    // detector confidence for 'auto' boxes
+let annBboxOrigin = null;  // {source, confidence} of the saved box, for the info tag
 let annDirty = false;      // true only when the box changed and is not yet saved
 let annDrawing = false;
 let annDrawStart = null;
+let annThumbEls = [];      // index-aligned with annImages
+let annGroupEls = {};      // folder -> <section>
+let annStatus = null;      // 'all' | 'missing' | 'done'
+const annCats = new Set(); // folder filter; empty = all
+
+function annFolderLabel(folder) { return folder === 'unlabeled' ? 'Unlabeled' : folder; }
+function annThumbUrl(img) {
+  return '/api/annotate/thumb/' + encodeURIComponent(img.cat) + '/' + encodeURIComponent(img.filename) +
+    '?v=' + encodeURIComponent(currentVersionName());
+}
 
 async function loadAnnotateTab() {
+  if (!annImages.length) {
+    document.getElementById('ann-thumbs').innerHTML = '<div class="browser-empty">Loading images...</div>';
+    document.getElementById('ann-progress').textContent = 'Loading...';
+  }
   try {
     const r = await fetch('/api/annotate/images');
     const d = await r.json();
     annImages = d.images || [];
-    annIndex = 0;
     // Jump to first un-annotated image
     const firstMissing = annImages.findIndex(img => !img.has_bbox);
-    if (firstMissing >= 0) annIndex = firstMissing;
-    annRenderThumbs();
+    annIndex = firstMissing >= 0 ? firstMissing : 0;
+    if (annStatus === null) {
+      let saved = null;
+      try { saved = localStorage.getItem('annStatus'); } catch(e) {}
+      annStatus = saved || (firstMissing >= 0 ? 'missing' : 'all');
+    }
+    annBuildThumbs();
+    annSyncStatusSeg();
+    annApplyFilters();
     annLoadImage();
   } catch(e) { console.error(e); }
+}
+
+function annBuildThumbs() {
+  const el = document.getElementById('ann-thumbs');
+  el.innerHTML = '';
+  annThumbEls = [];
+  annGroupEls = {};
+  if (annImages.length === 0) {
+    el.innerHTML = '<div class="browser-empty">No images in raw_images/ for this version.</div>';
+  }
+  const grids = {};
+  [...CATS, 'unlabeled'].forEach(folder => {
+    if (!annImages.some(img => img.cat === folder)) return;
+    const g = document.createElement('section');
+    g.innerHTML =
+      '<div class="group-head"><span class="dot" style="--c:' + (CAT_COLORS[folder] || 'var(--muted)') + '"></span>' +
+      '<span>' + annFolderLabel(folder) + '</span><span class="gh-count"></span><span class="gh-missing"></span></div>' +
+      '<div class="thumb-grid"></div>';
+    el.appendChild(g);
+    annGroupEls[folder] = g;
+    grids[folder] = document.createDocumentFragment();
+  });
+  annImages.forEach((img, idx) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'thumb';
+    b.title = img.cat + ' / ' + img.filename;
+    b.innerHTML = '<img loading="lazy" decoding="async" alt="" src="' + annThumbUrl(img) + '">' +
+      '<span class="thumb-box"></span><span class="thumb-badge">Missing</span>';
+    b.addEventListener('click', () => annGoto(idx));
+    annThumbEls[idx] = b;
+    annSyncThumb(idx);
+    if (grids[img.cat]) grids[img.cat].appendChild(b);
+  });
+  Object.entries(grids).forEach(([folder, frag]) => {
+    annGroupEls[folder].querySelector('.thumb-grid').appendChild(frag);
+  });
+  annBuildChips();
+  annUpdateProgress();
+}
+
+function annBuildChips() {
+  const el = document.getElementById('ann-cat-chips');
+  el.innerHTML = '';
+  const folders = Object.keys(annGroupEls);
+  for (const f of [...annCats]) if (!folders.includes(f)) annCats.delete(f);
+  el.hidden = folders.length < 2;
+  folders.forEach(folder => {
+    const ch = document.createElement('button');
+    ch.type = 'button';
+    ch.className = 'chip' + (annCats.has(folder) ? ' on' : '');
+    ch.style.setProperty('--c', CAT_COLORS[folder] || 'var(--muted)');
+    ch.innerHTML = '<span class="dot"></span>' + annFolderLabel(folder);
+    ch.addEventListener('click', () => {
+      if (annCats.has(folder)) annCats.delete(folder); else annCats.add(folder);
+      ch.classList.toggle('on', annCats.has(folder));
+      annApplyFilters();
+    });
+    el.appendChild(ch);
+  });
+}
+
+function annSyncThumb(idx) {
+  const el = annThumbEls[idx];
+  const img = annImages[idx];
+  if (!el || !img) return;
+  el.classList.toggle('missing', !img.has_bbox);
+  el.classList.toggle('active', idx === annIndex);
+  el.querySelector('.thumb-badge').hidden = img.has_bbox;
+  const box = el.querySelector('.thumb-box');
+  const b = img.has_bbox ? img.bbox : null;
+  box.hidden = !b;
+  if (b) {
+    box.style.left = ((b.cx - b.w / 2) * 100) + '%';
+    box.style.top = ((b.cy - b.h / 2) * 100) + '%';
+    box.style.width = (b.w * 100) + '%';
+    box.style.height = (b.h * 100) + '%';
+  }
+}
+
+function annPasses(img) {
+  const okStatus = annStatus === 'all' || (annStatus === 'missing' ? !img.has_bbox : img.has_bbox);
+  return okStatus && (annCats.size === 0 || annCats.has(img.cat));
+}
+
+function annApplyFilters() {
+  annImages.forEach((img, idx) => {
+    const el = annThumbEls[idx];
+    if (el) el.hidden = !annPasses(img) && idx !== annIndex;
+  });
+  Object.values(annGroupEls).forEach(g => {
+    g.hidden = !g.querySelector('.thumb:not([hidden])');
+  });
+}
+
+function annSyncStatusSeg() {
+  document.querySelectorAll('#ann-status-seg button').forEach(b => b.classList.toggle('on', b.dataset.s === annStatus));
 }
 
 function annUpdateProgress() {
   const total = annImages.length;
   const done = annImages.filter(i => i.has_bbox).length;
-  document.getElementById('ann-progress').textContent = done + '/' + total + ' annotated';
+  const missing = total - done;
+  document.getElementById('ann-progress').innerHTML =
+    '<strong>' + done.toLocaleString() + '</strong> / ' + total.toLocaleString() + ' annotated';
+  document.getElementById('ann-meter').style.width = (total ? done / total * 100 : 0) + '%';
+  document.getElementById('ann-cnt-all').textContent = total.toLocaleString();
+  document.getElementById('ann-cnt-missing').textContent = missing.toLocaleString();
+  document.getElementById('ann-cnt-done').textContent = done.toLocaleString();
+  document.getElementById('badge-annotate').textContent = missing > 0 ? missing.toLocaleString() : '';
+  const allBtn = document.getElementById('ann-auto-all');
+  allBtn.textContent = missing > 0 ? 'Auto-detect ' + missing.toLocaleString() + ' missing' : 'Auto-detect all missing';
+  allBtn.disabled = missing === 0;
+  Object.entries(annGroupEls).forEach(([folder, g]) => {
+    const imgs = annImages.filter(i => i.cat === folder);
+    const miss = imgs.filter(i => !i.has_bbox).length;
+    g.querySelector('.gh-count').textContent = imgs.length.toLocaleString();
+    const m = g.querySelector('.gh-missing');
+    m.textContent = miss ? miss.toLocaleString() + ' missing' : 'All annotated';
+    m.classList.toggle('ok', !miss);
+  });
 }
 
-function annRenderThumbs() {
-  const el = document.getElementById('ann-thumbs');
-  const skipDone = document.getElementById('ann-skip-done').checked;
-  let html = '';
-  annImages.forEach((img, idx) => {
-    if (skipDone && img.has_bbox && idx !== annIndex) return;
-    const cls = (img.has_bbox ? 'has-bbox' : 'no-bbox') + (idx === annIndex ? ' active' : '');
-    const flag = img.has_bbox
-      ? '<span class="ann-thumb-flag done">&#10003;</span>'
-      : '<span class="ann-thumb-flag missing">!</span>';
-    html += '<div class="ann-thumb ' + cls + '" onclick="annGoto(' + idx + ')">' +
-      '<img src="/api/annotate/image/' + img.cat + '/' + img.filename + '" loading="lazy">' +
-      flag + '</div>';
-  });
-  el.innerHTML = html;
-  annUpdateProgress();
-  // Scroll active into view
-  const active = el.querySelector('.active');
-  if (active) active.scrollIntoView({block: 'nearest'});
+function annUpdateSourceTag() {
+  const tag = document.getElementById('ann-src');
+  if (!annImages.length) { tag.textContent = ''; return; }
+  if (!annBbox) {
+    tag.textContent = 'No box';
+    tag.className = 'tag missing';
+    return;
+  }
+  const src = (annBboxOrigin && annBboxOrigin.source) || annBboxSource || 'manual';
+  const conf = annBboxOrigin ? annBboxOrigin.confidence : annBboxConf;
+  const names = { pi: 'Pi capture', auto: 'Auto-detect', manual: 'Manual' };
+  tag.textContent = (names[src] || src) + (conf != null && src !== 'manual' ? ' · ' + Number(conf).toFixed(2) : '');
+  tag.className = 'tag';
 }
 
 async function annLoadImage() {
+  const imgEl = document.getElementById('ann-img');
   if (annImages.length === 0) {
     document.getElementById('ann-img-info').textContent = 'No images';
+    document.getElementById('ann-note').hidden = true;
+    imgEl.hidden = true;
+    annBbox = null;
+    annUpdateSourceTag();
+    annResizeCanvas();
+    annDrawBbox();
     return;
   }
+  imgEl.hidden = false;
   const img = annImages[annIndex];
-  const imgEl = document.getElementById('ann-img');
   document.getElementById('ann-img-info').textContent = img.cat + ' / ' + img.filename;
+  document.getElementById('ann-dot').style.setProperty('--c', CAT_COLORS[img.cat] || 'var(--muted)');
 
   imgEl.onload = async () => {
     annResizeCanvas();
     // Load existing bbox (from the image's sidecar)
     await annFetchBbox(img);
     annDrawBbox();
-    annRenderThumbs();
+    annSyncThumb(annImages.indexOf(img));
+    annUpdateProgress();
+    annUpdateSourceTag();
   };
-  imgEl.src = '/api/annotate/image/' + img.cat + '/' + img.filename + '?' + Date.now();
+  imgEl.src = '/api/annotate/image/' + encodeURIComponent(img.cat) + '/' + encodeURIComponent(img.filename) + '?' + Date.now();
 }
 
 async function annFetchBbox(img) {
   annDirty = false;
   annBboxSource = null;
   annBboxConf = null;
+  annBboxOrigin = null;
   try {
-    const r = await fetch('/api/annotate/bbox/' + img.cat + '/' + img.filename);
+    const r = await fetch('/api/annotate/bbox/' + encodeURIComponent(img.cat) + '/' + encodeURIComponent(img.filename));
     const d = await r.json();
     annBbox = d.exists ? {cx: d.cx, cy: d.cy, w: d.w, h: d.h} : null;
+    if (d.exists) annBboxOrigin = {source: d.source, confidence: d.confidence};
   } catch(e) { annBbox = null; }
   img.has_bbox = annBbox !== null;
+  img.bbox = annBbox ? {...annBbox} : null;
 }
 
 function annResizeCanvas() {
   const imgEl = document.getElementById('ann-img');
   const canvas = document.getElementById('ann-canvas');
   const wrap = document.getElementById('ann-canvas-wrap');
+  if (imgEl.hidden) { canvas.width = 0; canvas.height = 0; return; }
   // Match canvas to rendered image size and position
   const wrapRect = wrap.getBoundingClientRect();
   const imgRect = imgEl.getBoundingClientRect();
   canvas.width = imgRect.width;
   canvas.height = imgRect.height;
-  canvas.style.left = (imgRect.left - wrapRect.left) + 'px';
-  canvas.style.top = (imgRect.top - wrapRect.top) + 'px';
+  canvas.style.left = (imgRect.left - wrapRect.left - wrap.clientLeft) + 'px';
+  canvas.style.top = (imgRect.top - wrapRect.top - wrap.clientTop) + 'px';
 }
 
 function annDrawBbox() {
   const canvas = document.getElementById('ann-canvas');
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  document.getElementById('ann-note').hidden = !!annBbox || annImages.length === 0 || annDrawing;
   if (!annBbox) return;
   const {cx, cy, w, h} = annBbox;
   const x = (cx - w/2) * canvas.width;
   const y = (cy - h/2) * canvas.height;
   const bw = w * canvas.width;
   const bh = h * canvas.height;
-  ctx.strokeStyle = '#7ba87a';
+  const color = cssVar('--success');
+  ctx.strokeStyle = color;
   ctx.lineWidth = 2;
   ctx.strokeRect(x, y, bw, bh);
-  // Label
+  // Label chip
   const img = annImages[annIndex];
   if (img) {
-    ctx.fillStyle = 'rgba(123,168,122,0.8)';
-    ctx.font = '12px monospace';
+    ctx.font = '600 12px ' + cssVar('--font-ui');
     const label = img.cat;
-    const tw = ctx.measureText(label).width;
-    ctx.fillRect(x, y - 16, tw + 6, 16);
-    ctx.fillStyle = '#000';
-    ctx.fillText(label, x + 3, y - 4);
+    const tw = ctx.measureText(label).width + 12;
+    const ly = y - 20 < 0 ? y + 2 : y - 20;
+    ctx.fillStyle = color;
+    ctx.fillRect(x - 1, ly, tw, 18);
+    ctx.fillStyle = cssVar('--on-accent');
+    ctx.fillText(label, x + 5, ly + 13);
   }
 }
 
 function annDrawCrosshairs(ctx, mx, my, canvas) {
-  ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
   ctx.lineWidth = 1;
   ctx.setLineDash([3, 3]);
   ctx.beginPath();
@@ -2081,8 +2143,9 @@ function annDrawCrosshairs(ctx, mx, my, canvas) {
   });
 
   canvas.addEventListener('mousedown', (e) => {
-    if (activeTab !== 'annotate') return;
+    if (activeTab !== 'annotate' || annImages.length === 0) return;
     annDrawing = true;
+    document.getElementById('ann-note').hidden = true;
     const rect = canvas.getBoundingClientRect();
     annDrawStart = {x: e.clientX - rect.left, y: e.clientY - rect.top};
   });
@@ -2096,7 +2159,7 @@ function annDrawCrosshairs(ctx, mx, my, canvas) {
     const my = Math.max(0, Math.min(canvas.height, e.clientY - rect.top));
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = '#4cc9f0';
+    ctx.strokeStyle = cssVar('--info');
     ctx.lineWidth = 2;
     ctx.setLineDash([5, 3]);
     ctx.strokeRect(annDrawStart.x, annDrawStart.y, mx - annDrawStart.x, my - annDrawStart.y);
@@ -2138,24 +2201,18 @@ function annDrawCrosshairs(ctx, mx, my, canvas) {
   });
 })();
 
-// Resize canvas when window resizes
-window.addEventListener('resize', () => {
-  if (activeTab === 'annotate' && annImages.length > 0) {
-    annResizeCanvas();
-    annDrawBbox();
-  }
-});
-
 // Saves only a box the user drew or auto-detected; navigating past an image
 // never rewrites its existing (e.g. Pi-captured) box.
 async function annSave() {
   if (!annBbox || !annDirty || annImages.length === 0) return;
   const img = annImages[annIndex];
-  const body = {...annBbox, source: annBboxSource || 'manual'};
+  const idx = annIndex;
+  const bbox = {...annBbox};
+  const body = {...bbox, source: annBboxSource || 'manual'};
   if (annBboxSource === 'auto' && annBboxConf !== null) body.confidence = annBboxConf;
   annDirty = false;
   try {
-    const r = await fetch('/api/annotate/bbox/' + img.cat + '/' + img.filename, {
+    const r = await fetch('/api/annotate/bbox/' + encodeURIComponent(img.cat) + '/' + encodeURIComponent(img.filename), {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify(body),
@@ -2163,7 +2220,13 @@ async function annSave() {
     const d = await r.json();
     if (d.status !== 'ok') { alert('Save failed: ' + (d.message || r.status)); return; }
     img.has_bbox = true;
-    annRenderThumbs();
+    img.bbox = bbox;
+    if (idx === annIndex) {
+      annBboxOrigin = {source: body.source, confidence: body.confidence ?? null};
+      annUpdateSourceTag();
+    }
+    annSyncThumb(idx);
+    annUpdateProgress();
   } catch(e) { console.error(e); }
 }
 
@@ -2173,48 +2236,42 @@ async function annClearBbox() {
   if (annImages.length === 0) return;
   const img = annImages[annIndex];
   try {
-    const r = await fetch('/api/annotate/bbox/' + img.cat + '/' + img.filename, {method: 'DELETE'});
+    const r = await fetch('/api/annotate/bbox/' + encodeURIComponent(img.cat) + '/' + encodeURIComponent(img.filename), {method: 'DELETE'});
     const d = await r.json();
     if (d.result === 'kept_pi') {
-      alert('This box came from the Pi capture and was kept. Draw a new box to replace it.');
+      showToast('This box came from the Pi capture and was kept. Draw a new box to replace it.');
     }
   } catch(e) { console.error(e); }
   await annFetchBbox(img);
   annDrawBbox();
-  annRenderThumbs();
+  annSyncThumb(annIndex);
+  annUpdateProgress();
+  annUpdateSourceTag();
 }
 
-function annNext() {
-  if (annImages.length === 0) return;
+function annSelect(idx) {
+  if (idx < 0 || idx >= annImages.length) return;
   annSave();
-  const skipDone = document.getElementById('ann-skip-done').checked;
-  if (skipDone) {
-    for (let i = annIndex + 1; i < annImages.length; i++) {
-      if (!annImages[i].has_bbox) { annIndex = i; annLoadImage(); return; }
-    }
-  } else {
-    if (annIndex < annImages.length - 1) { annIndex++; annLoadImage(); }
-  }
-}
-
-function annPrev() {
-  if (annImages.length === 0) return;
-  annSave();
-  const skipDone = document.getElementById('ann-skip-done').checked;
-  if (skipDone) {
-    for (let i = annIndex - 1; i >= 0; i--) {
-      if (!annImages[i].has_bbox) { annIndex = i; annLoadImage(); return; }
-    }
-  } else {
-    if (annIndex > 0) { annIndex--; annLoadImage(); }
-  }
-}
-
-function annGoto(idx) {
-  annSave();
+  const prev = annIndex;
   annIndex = idx;
+  annSyncThumb(prev);
+  annSyncThumb(idx);
+  annApplyFilters();
+  const el = annThumbEls[idx];
+  if (el) el.scrollIntoView({block: 'nearest'});
   annLoadImage();
 }
+
+function annStep(dir) {
+  if (annImages.length === 0) return;
+  for (let i = annIndex + dir; i >= 0 && i < annImages.length; i += dir) {
+    if (annPasses(annImages[i])) { annSelect(i); return; }
+  }
+  showToast(dir > 0 ? 'No more images match the current filter' : 'Already at the first matching image');
+}
+function annNext() { annStep(1); }
+function annPrev() { annStep(-1); }
+function annGoto(idx) { annSelect(idx); }
 
 async function annAutoDetectCurrent() {
   if (annImages.length === 0) return;
@@ -2226,27 +2283,32 @@ async function annAutoDetectCurrent() {
       body: JSON.stringify({cat: img.cat, filename: img.filename}),
     });
     const d = await r.json();
+    if (img !== annImages[annIndex]) return;  // user moved on while detecting
     if (d.detected) {
       annBbox = {cx: d.cx, cy: d.cy, w: d.w, h: d.h};
       annBboxSource = 'auto';
       annBboxConf = d.confidence;
+      annBboxOrigin = null;
       annDirty = true;
       annDrawBbox();
+      annUpdateSourceTag();
       annSave();
     } else if (d.status === 'error') {
       alert('Auto-detect failed: ' + d.message);
     } else {
-      alert('No cat detected in this image');
+      showToast('No cat detected in this image');
     }
   } catch(e) { console.error(e); }
 }
 
 async function annAutoDetectAll() {
   const missing = annImages.filter(i => !i.has_bbox);
-  if (missing.length === 0) { alert('All images are annotated'); return; }
+  if (missing.length === 0) { showToast('All images are annotated'); return; }
   if (!confirm('Auto-detect bboxes for ' + missing.length + ' images? This may take a while.')) return;
   const prog = document.getElementById('ann-progress');
-  let done = 0;
+  const btn = document.getElementById('ann-auto-all');
+  btn.disabled = true;
+  let done = 0, found = 0;
   for (const img of missing) {
     prog.textContent = 'Auto-detecting... ' + (++done) + '/' + missing.length;
     try {
@@ -2257,18 +2319,32 @@ async function annAutoDetectAll() {
       });
       const d = await r.json();
       if (d.detected) {
-        const s = await fetch('/api/annotate/bbox/' + img.cat + '/' + img.filename, {
+        const s = await fetch('/api/annotate/bbox/' + encodeURIComponent(img.cat) + '/' + encodeURIComponent(img.filename), {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({cx: d.cx, cy: d.cy, w: d.w, h: d.h, source: 'auto', confidence: d.confidence}),
         });
-        if ((await s.json()).status === 'ok') img.has_bbox = true;
+        if ((await s.json()).status === 'ok') {
+          img.has_bbox = true;
+          img.bbox = {cx: d.cx, cy: d.cy, w: d.w, h: d.h};
+          annSyncThumb(annImages.indexOf(img));
+          found++;
+        }
       }
     } catch(e) { console.error(e); }
   }
-  annRenderThumbs();
+  annUpdateProgress();
+  annApplyFilters();
   annLoadImage();
+  showToast('Auto-detected ' + found + ' of ' + missing.length + ' missing boxes');
 }
+
+document.querySelectorAll('#ann-status-seg button').forEach(b => b.addEventListener('click', () => {
+  annStatus = b.dataset.s;
+  try { localStorage.setItem('annStatus', annStatus); } catch(e) {}
+  annSyncStatusSeg();
+  annApplyFilters();
+}));
 
 // ═══════════════════════════════════════════════════════════
 // LABEL TAB
@@ -2374,49 +2450,68 @@ async function saveAugSettings() {
 // ═══════════════════════════════════════════════════════════
 let labelCurrent = null;
 let labelCurrentMeta = null;          // sidecar JSON for current image
-let unlabeledFilenames = [];          // up to 30 remaining unlabeled filenames
+let unlabeledFilenames = [];          // all remaining unlabeled filenames
 let recentlyLabeled = [];             // [{filename, catName}] from this session
+let labelThumbEls = new Map();        // filename -> thumbnail button
+let labelLabeledTotal = 0;
 
 function _buildLabelButtons() {
   const container = document.getElementById('label-buttons');
   if (!container || container.children.length > 0) return;
   CATS.forEach((cat, i) => {
-    const color = CAT_COLORS[cat] || '#ccd6f6';
+    const color = CAT_COLORS[cat] || 'var(--muted)';
     const btn = document.createElement('button');
-    btn.className = 'btn btn-nav btn-sm';
-    btn.style.borderColor = color;
-    btn.style.color = color;
-    btn.textContent = cat + ' (' + (i + 1) + ')';
+    btn.type = 'button';
+    btn.className = 'assign-btn';
+    btn.style.setProperty('--c', color);
+    btn.innerHTML = '<span class="dot"></span><span></span><kbd>' + (i + 1) + '</kbd>';
+    btn.children[1].textContent = cat;
     btn.onclick = () => labelAssign(cat);
     container.appendChild(btn);
   });
+  const keys = CATS.length > 1 ? '<kbd>1</kbd>-<kbd>' + CATS.length + '</kbd>' : '<kbd>1</kbd>';
+  document.getElementById('label-foot').innerHTML =
+    '<span>' + keys + ' assign</span><span><kbd>s</kbd> skip</span><span>Click a thumbnail to label it next</span>';
+}
+
+function _labelBestDetection() {
+  if (!labelCurrentMeta || !labelCurrentMeta.exists) return null;
+  const dets = (labelCurrentMeta.detections || []).filter(d => Array.isArray(d.bbox_norm) && d.bbox_norm.length === 4);
+  if (!dets.length) return null;
+  return dets.reduce((a, b) => (b.confidence > a.confidence ? b : a), dets[0]);
 }
 
 function labelDrawBbox() {
   const img = document.getElementById('label-img');
   const canvas = document.getElementById('label-bbox-canvas');
-  canvas.width = img.offsetWidth;
-  canvas.height = img.offsetHeight;
-  canvas.style.width = img.offsetWidth + 'px';
-  canvas.style.height = img.offsetHeight + 'px';
+  const stage = document.getElementById('label-stage');
   const ctx = canvas.getContext('2d');
+  if (img.hidden || !img.naturalWidth) {
+    canvas.width = 0; canvas.height = 0;
+    return;
+  }
+  const sRect = stage.getBoundingClientRect();
+  const iRect = img.getBoundingClientRect();
+  canvas.width = iRect.width;
+  canvas.height = iRect.height;
+  canvas.style.left = (iRect.left - sRect.left - stage.clientLeft) + 'px';
+  canvas.style.top = (iRect.top - sRect.top - stage.clientTop) + 'px';
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  if (!labelCurrentMeta || !labelCurrentMeta.exists) return;
-  const dets = labelCurrentMeta.detections || [];
-  if (!dets.length) return;
-  const best = dets.reduce((a, b) => (b.confidence > a.confidence ? b : a), dets[0]);
-  const bbox = best.bbox_norm;
-  if (!bbox || bbox.length !== 4) return;
-  const [xmin, ymin, bw, bh] = bbox;
+  const best = _labelBestDetection();
+  if (!best) return;
+  const [xmin, ymin, bw, bh] = best.bbox_norm;
   const x = xmin * canvas.width;
   const y = ymin * canvas.height;
   const w = bw * canvas.width;
   const h = bh * canvas.height;
-  ctx.strokeStyle = 'rgba(196, 154, 108, 0.85)';
+  const color = cssVar('--warn');
+  ctx.globalAlpha = 0.15;
+  ctx.fillStyle = color;
+  ctx.fillRect(x, y, w, h);
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = color;
   ctx.lineWidth = 2;
   ctx.strokeRect(x, y, w, h);
-  ctx.fillStyle = 'rgba(196, 154, 108, 0.15)';
-  ctx.fillRect(x, y, w, h);
 }
 
 async function _loadLabelMeta(filename) {
@@ -2428,61 +2523,117 @@ async function _loadLabelMeta(filename) {
   }
 }
 
+function _labelThumbUrl(filename) {
+  return '/api/label/thumb/' + encodeURIComponent(filename) + '?v=' + encodeURIComponent(currentVersionName());
+}
+
+function _labelUpdateCounts() {
+  const n = unlabeledFilenames.length;
+  document.getElementById('label-progress').innerHTML =
+    '<strong>' + n.toLocaleString() + '</strong> unlabeled &middot; ' + labelLabeledTotal.toLocaleString() + ' labeled';
+  document.getElementById('label-queue-count').textContent = n.toLocaleString();
+  document.getElementById('badge-label').textContent = n > 0 ? n.toLocaleString() : '';
+}
+
+async function labelShow(filename) {
+  const img = document.getElementById('label-img');
+  const prevEl = labelThumbEls.get(labelCurrent);
+  if (prevEl) prevEl.classList.remove('active');
+  labelCurrent = filename || null;
+  if (!labelCurrent) {
+    labelCurrentMeta = null;
+    img.hidden = true;
+    img.removeAttribute('src');
+    document.getElementById('label-empty').hidden = false;
+    document.getElementById('label-img-info').textContent = '';
+    document.getElementById('label-src').textContent = '';
+    labelDrawBbox();
+    return;
+  }
+  document.getElementById('label-empty').hidden = true;
+  await _loadLabelMeta(filename);
+  if (labelCurrent !== filename) return;  // superseded while loading
+  img.hidden = false;
+  img.src = '/api/label/image/' + encodeURIComponent(filename);
+  document.getElementById('label-img-info').textContent = filename;
+  const best = _labelBestDetection();
+  document.getElementById('label-src').textContent =
+    best ? 'Pi detector box' + (best.confidence != null ? ' · ' + Number(best.confidence).toFixed(2) : '') : '';
+  const el = labelThumbEls.get(filename);
+  if (el) {
+    el.classList.add('active');
+    el.scrollIntoView({block: 'nearest'});
+  }
+}
+
+function _labelBuildQueue() {
+  const grid = document.getElementById('label-thumbs');
+  grid.innerHTML = '';
+  labelThumbEls = new Map();
+  if (!unlabeledFilenames.length) {
+    grid.innerHTML = '<div class="browser-empty" style="grid-column:1/-1">Nothing left to label.</div>';
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  unlabeledFilenames.forEach(fname => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'thumb';
+    b.title = fname;
+    b.innerHTML = '<img loading="lazy" decoding="async" alt="" src="' + _labelThumbUrl(fname) + '">';
+    b.addEventListener('click', () => labelJumpTo(fname));
+    labelThumbEls.set(fname, b);
+    frag.appendChild(b);
+  });
+  grid.appendChild(frag);
+}
+
+function _labelRemoveFromQueue(filename) {
+  unlabeledFilenames = unlabeledFilenames.filter(f => f !== filename);
+  const el = labelThumbEls.get(filename);
+  if (el) el.remove();
+  labelThumbEls.delete(filename);
+  if (!unlabeledFilenames.length) _labelBuildQueue();
+}
+
+function renderLabelRecent() {
+  const el = document.getElementById('label-recent');
+  const title = document.getElementById('label-recent-title');
+  title.hidden = recentlyLabeled.length === 0;
+  document.getElementById('label-recent-count').textContent = recentlyLabeled.length;
+  el.innerHTML = '';
+  // Most recent first. Labeled images now live in raw_images/<cat>/.
+  for (const item of recentlyLabeled.slice().reverse()) {
+    const b = document.createElement('div');
+    b.className = 'thumb tinted';
+    b.style.setProperty('--c', CAT_COLORS[item.catName] || 'var(--muted)');
+    b.style.cursor = 'default';
+    b.title = item.catName + ': ' + item.filename;
+    b.innerHTML = '<img loading="lazy" decoding="async" alt="" src="/api/annotate/thumb/' +
+      encodeURIComponent(item.catName) + '/' + encodeURIComponent(item.filename) +
+      '?v=' + encodeURIComponent(currentVersionName()) + '"><span class="thumb-name"></span>';
+    b.querySelector('.thumb-name').textContent = item.catName;
+    el.appendChild(b);
+  }
+}
+
 async function loadLabelTab() {
   _buildLabelButtons();
   try {
     const r = await fetch('/api/label/images');
     const d = await r.json();
     unlabeledFilenames = d.filenames || (d.first ? [d.first] : []);
-    document.getElementById('label-progress').textContent =
-      d.total_labeled + ' labeled, ' + d.count + ' remaining';
-    if (d.first) {
-      labelCurrent = d.first;
-      await _loadLabelMeta(d.first);
-      document.getElementById('label-img').src = '/api/label/image/' + encodeURIComponent(d.first);
-      document.getElementById('label-img-info').textContent = d.first;
-    } else {
-      document.getElementById('label-img').src = '';
-      document.getElementById('label-img-info').textContent = 'No unlabeled images';
-      labelCurrent = null;
-      labelCurrentMeta = null;
-    }
-    renderLabelThumbs();
+    labelLabeledTotal = d.total_labeled || 0;
+    _labelBuildQueue();
+    _labelUpdateCounts();
+    renderLabelRecent();
+    labelCurrent = null;
+    await labelShow(d.first || null);
   } catch(e) { console.error(e); }
 }
 
-function renderLabelThumbs() {
-  const el = document.getElementById('label-thumbs');
-  let html = '';
-
-  // Recently labeled (cat-colored borders), most recent first
-  for (const item of recentlyLabeled.slice().reverse()) {
-    const color = CAT_COLORS[item.catName] || '#ccd6f6';
-    html += '<div style="border:2px solid ' + color + ';border-radius:3px;overflow:hidden;' +
-      'width:56px;height:56px;flex-shrink:0;cursor:default;" title="' + item.catName + '">' +
-      '<img src="/api/label/image/' + encodeURIComponent(item.filename) + '" ' +
-      'style="width:100%;height:100%;object-fit:cover;" loading="lazy"></div>';
-  }
-
-  // Remaining unlabeled (red border), skip the currently displayed one
-  for (const fname of unlabeledFilenames) {
-    if (fname === labelCurrent) continue;
-    html += '<div style="border:2px solid #e63946;border-radius:3px;overflow:hidden;' +
-      'width:56px;height:56px;flex-shrink:0;cursor:pointer;" title="' + fname + '" ' +
-      'onclick="labelJumpTo(\'' + fname.replace(/'/g, "\\'") + '\')">' +
-      '<img src="/api/label/image/' + encodeURIComponent(fname) + '" ' +
-      'style="width:100%;height:100%;object-fit:cover;" loading="lazy"></div>';
-  }
-
-  el.innerHTML = html;
-}
-
 async function labelJumpTo(filename) {
-  labelCurrent = filename;
-  await _loadLabelMeta(filename);
-  document.getElementById('label-img').src = '/api/label/image/' + encodeURIComponent(filename);
-  document.getElementById('label-img-info').textContent = filename;
-  renderLabelThumbs();
+  await labelShow(filename);
 }
 
 async function labelAssign(catName) {
@@ -2499,22 +2650,11 @@ async function labelAssign(catName) {
     // Track in recently labeled (max 20)
     recentlyLabeled.push({ filename: assigned, catName });
     if (recentlyLabeled.length > 20) recentlyLabeled.shift();
-    // Remove from unlabeled list
-    unlabeledFilenames = unlabeledFilenames.filter(f => f !== assigned);
-    document.getElementById('label-progress').textContent =
-      '-- labeled, ' + d.remaining + ' remaining';
-    if (d.next) {
-      labelCurrent = d.next;
-      await _loadLabelMeta(d.next);
-      document.getElementById('label-img').src = '/api/label/image/' + encodeURIComponent(d.next);
-      document.getElementById('label-img-info').textContent = d.next;
-    } else {
-      document.getElementById('label-img').src = '';
-      document.getElementById('label-img-info').textContent = 'All done!';
-      labelCurrent = null;
-      labelCurrentMeta = null;
-    }
-    renderLabelThumbs();
+    labelLabeledTotal++;
+    _labelRemoveFromQueue(assigned);
+    _labelUpdateCounts();
+    renderLabelRecent();
+    await labelShow(d.next || null);
   } catch(e) { console.error(e); }
 }
 
@@ -2529,20 +2669,9 @@ async function labelSkip() {
     });
     const d = await r.json();
     if (d.status !== 'ok') return;
-    unlabeledFilenames = unlabeledFilenames.filter(f => f !== skipped);
-    if (d.next) {
-      labelCurrent = d.next;
-      await _loadLabelMeta(d.next);
-      document.getElementById('label-img').src = '/api/label/image/' + encodeURIComponent(d.next);
-      document.getElementById('label-img-info').textContent = d.next;
-    } else {
-      document.getElementById('label-img').src = '';
-      labelCurrent = null;
-      labelCurrentMeta = null;
-      document.getElementById('label-img-info').textContent = 'No more images';
-    }
-    document.getElementById('label-progress').textContent = d.remaining + ' remaining';
-    renderLabelThumbs();
+    _labelRemoveFromQueue(skipped);
+    _labelUpdateCounts();
+    await labelShow(d.next || null);
   } catch(e) { console.error(e); }
 }
 
@@ -2550,18 +2679,19 @@ async function labelUndo() {
   try {
     const r = await fetch('/api/label/undo', { method: 'POST' });
     const d = await r.json();
-    if (d.status !== 'ok') { alert(d.message || 'Nothing to undo'); return; }
-    labelCurrent = d.restored;
-    await _loadLabelMeta(d.restored);
-    document.getElementById('label-img').src = '/api/label/image/' + encodeURIComponent(d.restored);
-    document.getElementById('label-img-info').textContent = d.restored;
-    loadLabelTab();
+    if (d.status !== 'ok') { showToast(d.message || 'Nothing to undo'); return; }
+    const idx = recentlyLabeled.map(x => x.filename).lastIndexOf(d.restored);
+    if (idx >= 0) recentlyLabeled.splice(idx, 1);
+    await loadLabelTab();
+    await labelShow(d.restored);
   } catch(e) { console.error(e); }
 }
 
 // ── Keyboard shortcuts ─────────────────────────────────────
 document.addEventListener('keydown', (e) => {
-  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === 'Escape') { closeLogBrowser(); return; }
 
   // Label tab shortcuts: 1/2/3=assign cat, s=skip
   if (activeTab === 'label') {
@@ -2599,6 +2729,29 @@ document.getElementById('log-output').addEventListener('scroll', function() {
   if (logUpdating) return;
   logAutoScroll = (this.scrollHeight - this.scrollTop - this.clientHeight) < 30;
 });
+initSplitters();
+(function initThumbSize() {
+  const slider = document.getElementById('ann-thumb-size');
+  const apply = v => document.getElementById('ann-thumbs').style.setProperty('--thumb-size', v + 'px');
+  try { const saved = localStorage.getItem('annThumbSize'); if (saved) slider.value = saved; } catch(e) {}
+  apply(slider.value);
+  slider.addEventListener('input', () => {
+    apply(slider.value);
+    try { localStorage.setItem('annThumbSize', slider.value); } catch(e) {}
+  });
+})();
+if (window.ResizeObserver) {
+  new ResizeObserver(() => {
+    if (activeTab === 'annotate' && annImages.length > 0) { annResizeCanvas(); annDrawBbox(); }
+  }).observe(document.getElementById('ann-canvas-wrap'));
+  new ResizeObserver(() => { if (activeTab === 'label') labelDrawBbox(); })
+    .observe(document.getElementById('label-stage'));
+} else {
+  window.addEventListener('resize', () => {
+    if (activeTab === 'annotate' && annImages.length > 0) { annResizeCanvas(); annDrawBbox(); }
+    if (activeTab === 'label') labelDrawBbox();
+  });
+}
 restoreCachedCompletion();
 loadSettings();
 loadCropSettings();
