@@ -253,6 +253,11 @@ class ClassifierGate:
         self._consecutive_misses: int = 0
         self._last_classify_time: float = 0.0
         self._was_tracking: bool = False
+        # Wall-clock times (time.time()) of the first and latest in-ROI frame of
+        # the current visit, so the visit log records when the cat actually
+        # arrived and left rather than when the classifier caught up.
+        self._visit_start: float | None = None
+        self._last_hit: float | None = None
         self.pending_bbox: tuple | None = None  # normalized (xmin, ymin, w, h)
 
     _last_log_time: float = 0.0
@@ -300,11 +305,17 @@ class ClassifierGate:
             self._consecutive_misses += 1
             if self._was_tracking and self._consecutive_misses >= self._miss_tolerance:
                 print("[classifier-gate] Cat left ROI — sending departure", flush=True)
-                self.send_reset()
+                self.send_reset(last_seen=self._last_hit)
                 self._roi_consecutive_frames = 0
                 self._was_tracking = False
+                self._visit_start = None
+                self._last_hit = None
             return False
 
+        wall_now = time.time()
+        if self._visit_start is None:
+            self._visit_start = wall_now
+        self._last_hit = wall_now
         self._consecutive_misses = 0
         self._roi_consecutive_frames += 1
         self._was_tracking = True
@@ -340,14 +351,14 @@ class ClassifierGate:
         crop = cv2.resize(frame[y1:y2, x1:x2], (224, 224))
 
         try:
-            self._queue.put_nowait(crop)
+            self._queue.put_nowait((crop, self._visit_start))
         except QueueFull:
             pass
 
-    def send_reset(self) -> None:
-        """Send departure sentinel to classifier worker."""
+    def send_reset(self, last_seen: float | None = None) -> None:
+        """Tell the classifier worker the cat left, with the time it was last seen."""
         try:
-            self._queue.put_nowait(None)
+            self._queue.put_nowait(("departed", last_seen))
         except QueueFull:
             pass
 

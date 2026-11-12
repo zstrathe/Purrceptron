@@ -131,11 +131,23 @@ class FeedingEventLogger:
         conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
-    def on_confirmed(self, cat_name: str, confidence: float) -> None:
-        """Insert a new in-progress event row."""
+    @staticmethod
+    def _to_utc(ts: float | None) -> datetime:
+        """Convert a time.time() timestamp to an aware UTC datetime (now if None)."""
+        if ts is None:
+            return datetime.now(timezone.utc)
+        return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+    def on_confirmed(self, cat_name: str, confidence: float,
+                     start_time: float | None = None) -> None:
+        """Insert a new in-progress event row.
+
+        start_time is when the cat first appeared at the bowl (time.time()),
+        supplied by the detector; falls back to now if unknown.
+        """
         if self._active_row_id is not None:
             return  # Already tracking; ignore duplicate confirmation
-        self._start_time = datetime.now(timezone.utc)
+        self._start_time = self._to_utc(start_time)
         self._confidence_sum = confidence
         self._frame_count = 1
         with self._connect() as conn:
@@ -154,11 +166,15 @@ class FeedingEventLogger:
         self._confidence_sum += confidence
         self._frame_count += 1
 
-    def on_departure(self) -> None:
-        """Finalise the active event row and reset state."""
+    def on_departure(self, end_time: float | None = None) -> None:
+        """Finalise the active event row and reset state.
+
+        end_time is when the cat was last seen at the bowl (time.time());
+        falls back to now if unknown (e.g. on shutdown).
+        """
         if self._active_row_id is None:
             return
-        end_time = datetime.now(timezone.utc)
+        end_time = self._to_utc(end_time)
         duration = (end_time - self._start_time).total_seconds() if self._start_time else None
         avg_conf = self._confidence_sum / max(self._frame_count, 1)
         with self._connect() as conn:
@@ -282,6 +298,7 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
     print(f"[classifier] Ready -- {len(cats)} classes: {cats}", flush=True)
 
     consecutive_ood = 0
+    visit_start: float | None = None  # detector time of the visit's first frame
 
     while True:
         try:
@@ -289,15 +306,27 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
         except Empty:
             continue
 
-        if item is None:
-            # Departure sentinel -- finalise active event, reset votes
+        # Queue items: (crop, visit_start) | ("departed", last_seen) | None (shutdown)
+        # A bare ndarray (older sender) is treated as a crop with no timestamp.
+        if item is None or (isinstance(item, tuple) and isinstance(item[0], str)
+                             and item[0] == "departed"):
+            # Departure -- finalise active event at the last-seen time, reset votes
+            last_seen = item[1] if item is not None else None
             vote_window.reset()
-            logger.on_departure()
+            logger.on_departure(end_time=last_seen)
+            visit_start = None
             consecutive_ood = 0
             _write_status({"prediction": None})
             continue
 
-        tensor = _preprocess(item)
+        if isinstance(item, tuple):
+            crop, item_start = item
+            if item_start is not None:
+                visit_start = item_start
+        else:
+            crop = item
+
+        tensor = _preprocess(crop)
         with torch.no_grad():
             logits = model(tensor)
 
@@ -329,7 +358,7 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
         confirmed_cat = None
         if result is not None:
             confirmed_cat = cats[result[0]] if result[0] < len(cats) else "unknown"
-            logger.on_confirmed(confirmed_cat, result[1])
+            logger.on_confirmed(confirmed_cat, result[1], start_time=visit_start)
             print(f"[classifier] Confirmed: {confirmed_cat} ({result[1]:.1%})", flush=True)
         elif logger._active_row_id is not None:
             logger.on_vote(confidence)

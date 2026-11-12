@@ -58,33 +58,35 @@ the training dashboard's auto-detect currently looks for cats only.
 
 ## How it works
 
+The system is a loop between the two machines. The Pi captures training images
+while it runs; the training machine turns them into a classifier; the classifier
+goes back to the Pi, where it identifies cats and files new captures under their
+names, so the next round of training needs less manual labeling.
+
 ```mermaid
-%%{init: {"flowchart": {"wrappingWidth": 320, "nodeSpacing": 40, "rankSpacing": 45}}}%%
 flowchart TB
-    subgraph S1["Raspberry Pi, Stage 1: detect cats (always on)"]
-        CAM["USB camera"] --> DET["YOLOv8m detector on the Hailo-10H NPU<br/>draws a bounding box around each detected cat<br/>and assigns it a tracking ID"]
-        DET --> GATE{"Is the cat at the food bowl?<br/>(its bounding box overlaps the configured<br/>bowl area for several consecutive frames)"}
-    end
-    subgraph S2["Raspberry Pi, Stage 2: identify the cat (once a model is trained)"]
-        EN{"Trained model deployed?<br/>(the first collection round<br/>runs without one)"}
-        EN -- yes --> CROP["Crop the cat out of the frame<br/>resized to 224x224"] --> CLS["MobileNetV2 classifier, INT8<br/>runs on one Pi CPU core<br/>predicts which cat this is"]
-        CLS --> OOD{"Does it look like one of<br/>the known cats?<br/>(energy score vs. threshold)"}
-        OOD -- no --> UNK["Reported as Unknown"]
-        OOD -- yes --> VOTE["Majority vote over<br/>the last 10 predictions"]
-        VOTE --> LOG[("Visit log, SQLite<br/>cat, start time, end time, duration")]
-    end
-    subgraph S3["Raspberry Pi: training-image capture"]
-        CAP["Save a training image<br/>JPEG frame + bounding-box JSON file<br/>filed under the identified cat, or 'unlabeled'"]
+    subgraph PI["Raspberry Pi 5 + Hailo-10H"]
+        DET["Stage 1: detect any cat<br/>stock YOLOv8m on the NPU<br/>bounding box + tracking ID"] --> GATE{"At the food bowl?"}
+        GATE -- "yes: bounding box overlapped the bowl<br/>region of interest (ROI) for 5 frames" --> MODEL{"Classifier deployed<br/>and enabled?"}
+        MODEL -- "not yet: save the image<br/>with its bounding box, unlabeled" --> CAP["Training image saved<br/>(when detection capture is on):<br/>frame + bounding-box JSON,<br/>labeled with the confirmed cat's name,<br/>otherwise left unlabeled"]
+        MODEL -- yes --> CLS["Stage 2: identify which cat<br/>crop to 224x224, MobileNetV2 fine-tuned<br/>on your cats: best-guess name<br/>+ an energy score calculated<br/>from the model's raw outputs"]
+        CLS --> KNOWN{"Is the calculated energy<br/>score low enough to be<br/>a known cat?"}
+        KNOWN -- "no: score above the threshold,<br/>skipped, not counted as a vote" --> UNK["Reported as Unknown<br/>(after 5 rejections in a row),<br/>image saved unlabeled"]
+        KNOWN -- yes --> TALLY["Add the guess to the last 10 votes.<br/>Confirmed when one cat has 6+ votes<br/>and their average confidence<br/>is above the threshold"]
+        TALLY --> VOTE{"Identity confirmed?"}
+        VOTE -- "not yet" --> WAIT["Not confirmed yet:<br/>image saved unlabeled,<br/>classify the next crop"]
+        WAIT --> CLS
+        WAIT --> CAP
+        VOTE -- yes --> ID["Cat identified:<br/>log the visit, and save the<br/>image labeled with its name"]
+        ID --> LOG[("Visit log: cat name,<br/>arrival = first frame at the bowl,<br/>departure = last frame at the bowl")]
+        ID --> CAP
+        UNK --> CAP
     end
     subgraph PC["Training machine (CUDA recommended)"]
-        PULL["Pull images from the Pi"] --> LABEL["Label each cat by name;<br/>add missing or adjust existing bounding boxes"] --> CROPS["Crop each cat<br/>using its bounding box"]
-        CROPS --> PREP["Split into<br/>training / validation sets"] --> TRAIN["Train the classifier<br/>4 phases, INT8 export"] --> DEPLOY["Copy the model to the Pi"]
+        PULL["Pull images + bounding boxes"] --> LABEL["Label cats,<br/>add or fix bounding boxes"] --> TRAIN["Crop, split train/val,<br/>train 4 phases, INT8 export"]
     end
-    GATE -- yes --> EN
-    EN -- "not yet: save as 'unlabeled'" --> CAP
-    VOTE -- "confirmed identity" --> CAP
-    CAP -. "rsync: images + box files" .-> PULL
-    DEPLOY -. "scp: cat_classifier.pt" .-> CLS
+    CAP -- "images + bounding boxes copied<br/>to the training machine (rsync)" --> PULL
+    TRAIN -- "trained model copied<br/>back to the Pi (scp)" --> CLS
 ```
 
 1. hailo-apps runs a GStreamer pipeline with YOLOv8m on the Hailo-10H, plus a
@@ -94,13 +96,22 @@ flowchart TB
    configured bowl region for `classifier.stability_frames` consecutive frames.
 3. The crop is resized to 224x224 and classified by MobileNetV2 in a separate
    process on one CPU core, at most once per `classify_interval_seconds`.
-4. The crop's energy score is compared with a threshold calibrated at training time.
-   Crops above the threshold are rejected and do not vote.
+4. The classifier can only choose among the cats it was trained on, so it always
+   names one of them, even for a cat it has never seen. To catch that, each
+   prediction also gets an energy score, which measures how familiar the crop looks
+   to the model. The classifier produces one raw score (logit) per cat, and the
+   energy is `-log(sum(exp(logits)))`. One strong logit, which is what your own
+   cats produce, gives a low energy; uniformly weak logits, typical of an
+   unfamiliar cat, give a high one. At the end of training every validation image is scored this way, and
+   the threshold is set so that 99% of them pass (`energy_ood_percentile`). It is
+   stored in the model file. A crop whose energy is above the threshold is rejected
+   and does not vote, so an unfamiliar cat is reported as Unknown.
 5. A rolling window of predictions confirms an identity once one cat holds a
    majority and the average confidence is above `confidence_threshold`.
-6. Each confirmed visit is written to `classifier_log.db` with the cat, start and
-   end time, duration, average confidence and frame count. The Pi dashboard lists
-   these by day with total tracked time per cat.
+6. Each confirmed visit is written to `classifier_log.db` with the cat, the time of
+   the first and last frame it was seen at the bowl, the duration, average
+   confidence and frame count. The Pi dashboard lists these by day with total
+   tracked time per cat.
 7. If detection capture is enabled, stable in-bowl detections are saved with their
    bounding box in a JSON sidecar, under the confirmed cat's name or in
    `unlabeled/`, ready for the next training round.
@@ -119,12 +130,10 @@ flowchart TB
 
 **Training side**
 
-- A Linux or WSL2 machine, ideally with a CUDA-capable NVIDIA GPU. CUDA is the only
-  accelerator the code uses; on other hardware, including Apple Silicon, it runs on
-  the CPU. CUDA is not required: training
-  falls back to the CPU when CUDA is unavailable, but the fine-tuning phases and the
-  Annotate tab's auto-detect are much slower there. Quantization-aware training and
-  the INT8 export always run on the CPU.
+- A Linux or WSL2 machine. An NVIDIA GPU with CUDA is recommended but not
+  required: without one, training and auto-detect run on the CPU, much more
+  slowly. Quantization-aware training and the INT8 export run on the CPU either
+  way.
 
 ## Software requirements
 
@@ -214,7 +223,7 @@ python pi_dashboard.py --config alt.yaml
 ### Capture tab
 
 The live feed is a JPEG preview that the browser polls about 15 times a second.
-Boxes are drawn with the detector label, confidence and tracker ID. Around it:
+Bounding boxes are drawn with the detector label, confidence and tracker ID. Around it:
 
 - Detection Mode: pipeline status, the tail of the detector log, and a viewer for
   the log files in `logs/detection/`.
@@ -235,22 +244,27 @@ Boxes are drawn with the detector label, confidence and tracker ID. Around it:
 
 ### Review tab
 
-Captures are reviewed one at a time with a thumbnail grid beside the image. There is
-one label button per cat, plus Delete (moves the file to `data/trash/`), Prev and
-Skip. Skip marks the image as reviewed. Unreviewed images are queued newest first.
+A split view: the current image and its controls on the left, and a resizable,
+full-height image browser on the right. There is one label button per cat, plus
+Delete (moves the file to `data/trash/`), Prev and Skip. Skip marks the image as
+reviewed. Unreviewed images are queued newest first; the browser shows every image,
+with reviewed ones dimmed.
 
-In the thumbnail grid, click jumps to an image, Ctrl/Cmd-click or right-click
-selects, and Shift-click selects a range. Selected images can be labeled or deleted
-in a batch. The grid can be sorted by time or name and filtered by label.
+In the browser, click opens an image, Ctrl/Cmd-click or right-click selects, and
+Shift-click selects a range. Selected images can be labeled or deleted together.
+The browser sorts by newest or by label and filters with chips for All, Unlabeled
+and each cat. Thumbnails are generated once and cached under `data/raw/.thumbnails/`.
 
 Keyboard shortcuts: `1` to `9` label as that cat, `d` delete, `n` or `→` skip, `p` or
-`←` previous.
+`←` previous, `Esc` closes the log viewer.
 
 ### Sidebar
 
-Image counts per cat against `collection.min_images_per_cat`, pipeline status,
-recent detections, and, when the classifier is enabled, a day-by-day table of
-identified visits from `classifier_log.db` with total tracked time per cat.
+Shown on the Capture tab: image counts per cat against
+`collection.min_images_per_cat`, session counters, pipeline status, recent
+detections, and, when the classifier is enabled, the day's identified visits from
+`classifier_log.db` with total tracked time per cat. Arrow buttons step through
+earlier days.
 
 ## Training dashboard
 
@@ -269,8 +283,8 @@ Label step. Each step's output is streamed to the page and saved under
 | Step | What it does |
 |------|--------------|
 | **Pull** | `rsync` the Pi's `data/raw/` to the local `data/raw/` (using `.env`; the local copy mirrors the Pi, deletions included), then copy images and sidecars into `versions/<v>/raw_images/`. |
-| **Label** | Opens the Label tab. Assign each `unlabeled/` image to a cat; the image and its sidecar move to that cat's folder. Skip and Undo are available. |
-| **Crop** | `train/crop_images.py`: cut each cat out using the highest-confidence box in its sidecar, padded by `classifier.crop_padding`, and resize to 224x224. Images without a sidecar are skipped and reported. |
+| **Label** | Opens the Label tab: every `unlabeled/` image, oldest first, with the Pi's detector bounding box overlaid. Assign each to a cat and the image and its sidecar move to that cat's folder. Skip moves it to `unlabeled/skipped/`; Undo reverses the last 20 actions. Keys `1` to `9` assign, `s` skips. |
+| **Crop** | `train/crop_images.py`: cut each cat out using the highest-confidence bounding box in its sidecar, padded by `classifier.crop_padding`, and resize to 224x224. Images without a sidecar are skipped and reported. |
 | **Prepare** | `train/prepare_classifier_dataset.py`: split crops into `train/` and `val/`. Images are grouped into sessions by timestamp (`session_gap_minutes`) and 20% of each cat's sessions go to validation, so consecutive frames from one session cannot end up on both sides of the split. |
 | **Train** | `train/train_classifier.py`: the four-phase training described below. |
 | **Deploy** | `scripts/transfer_model.sh`: `scp` the model to `models/cat_classifier.pt` on the Pi, with retries. The Pi dashboard restarts the pipeline with the new model if the classifier is enabled. |
@@ -282,18 +296,22 @@ training run.
 
 Collapsible panels on the same tab edit the training hyperparameters, the crop
 padding ("Save & Re-crop") and the augmentation switches. They are written back to
-`configs/project.yaml`.
+`configs/project.yaml`. Keyboard: `1` to `7` run the steps in order (7 is
+Cross-validate), `r` runs all, `s` stops.
 
 ### Annotate tab
 
-For images that have no bounding box (phone photos, older captures, or images added
-by hand). Draw a box by dragging, or click Auto-detect to get one from a
-COCO-pretrained torchvision Faster R-CNN (ResNet50 FPN v2), using the GPU when
-one is available.
-"Auto-detect All Missing" processes every image without a box. Boxes are saved in
-the same sidecar format the Pi writes, so the Crop step treats them the same way.
-Editing a Pi-generated box keeps a backup, and Clear restores it. Keyboard shortcuts:
-`a` auto-detect, `d` clear, `n`/`p` or the arrow keys to navigate.
+Lists every image in the version, grouped by folder, with each saved bounding box drawn on
+its thumbnail and a "Missing" badge on those without one. A status filter (All,
+Missing, Annotated) and per-cat chips narrow the list; it opens on Missing. This is
+where images that arrived without a bounding box (phone photos, older captures) get one:
+draw a bounding box by dragging, or click Auto-detect to get one from a COCO-pretrained
+torchvision Faster R-CNN (ResNet50 FPN v2), using the GPU when one is available.
+"Auto-detect all missing" processes every image without a bounding box. Bounding boxes are saved as
+soon as they are drawn, in the same sidecar format the Pi writes, so the Crop step
+treats them the same way. Editing a Pi-generated bounding box keeps a backup, and Clear
+restores it. Keyboard shortcuts: `a` auto-detect, `d` clear, `n`/`p` or the arrow
+keys step through the filtered list.
 
 ### Metrics tab
 
@@ -394,8 +412,11 @@ reported after half a window of consecutive rejections.
 
 Event log: `classifier_log.db`, table `classifier_events`, with `cat_name`,
 `start_time`, `end_time` (UTC), `duration_seconds`, `confidence_avg` and
-`frame_count`. A row is opened at the first confirmation and closed when the cat
-departs or the pipeline shuts down.
+`frame_count`. The detector timestamps the first and last frame of each visit at
+the bowl, so `start_time` is when the cat arrived, not when the vote confirmed it
+(at least several seconds later). The row is written once the identity is
+confirmed and closed when the cat leaves; on shutdown the end time is the shutdown
+time.
 
 Detection-triggered capture: when enabled, a detection is saved once it is stable
 inside the bowl region, at most once per `min_interval_seconds` per label. Labels
@@ -425,7 +446,7 @@ a key is omitted, it is noted.
 | `cats` | `[Cat1, Cat2, Cat3]` | Your cats' names. Required. Used as folder names, labels and dashboard buttons. Training needs at least two. |
 | **Camera** | | |
 | `camera.device` | `/dev/video0` | Passed to hailo-apps as `--input`. |
-| `camera.width` / `height` | 1920 / 1080 | The camera's frame size. Used to convert normalized boxes to pixels for the bowl-region test, so it must match the real frame size. |
+| `camera.width` / `height` | 1920 / 1080 | The camera's frame size. Used to convert normalized bounding boxes to pixels for the bowl-region test, so it must match the real frame size. |
 | **Collection** | | |
 | `collection.output_dir` | `data/raw` | Root of captured images on the Pi, used for review and counts. Required. |
 | `collection.min_images_per_cat` | 300 | Per-cat target shown by the dashboard's progress bars. |
@@ -446,11 +467,11 @@ a key is omitted, it is noted.
 | `classifier.enabled` | false | Run the identity classifier. |
 | `classifier.model_path` | `models/cat_classifier.pt` | TorchScript model. |
 | `classifier.bowl_roi` | `[760, 390, 1160, 790]` (code fallback: full frame) | Bowl region `[x_min, y_min, x_max, y_max]` in frame pixels. Set it by dragging in the dashboard. |
-| `classifier.roi_overlap_threshold` | 0.01 | Fraction of the bowl region a box must cover to count. |
+| `classifier.roi_overlap_threshold` | 0.01 | Fraction of the bowl region a bounding box must cover to count. |
 | `classifier.stability_frames` | 5 | Consecutive in-region frames before classifying (also gates detection capture). |
 | `classifier.miss_tolerance` | not in template; code default 15 | Missed frames tolerated before a cat counts as departed. |
 | `classifier.classify_interval_seconds` | 1.0 | Minimum time between crops sent to the classifier. |
-| `classifier.crop_padding` | 0.0 (code fallback 0.2) | Padding around the box as a fraction of its size, for live crops and the Crop step. |
+| `classifier.crop_padding` | 0.0 (code fallback 0.2) | Padding around the bounding box as a fraction of its size, for live crops and the Crop step. |
 | `classifier.vote_window_size` | 10 | Votes in the rolling window. |
 | `classifier.confidence_threshold` | 0.5 (code fallback 0.85) | Minimum average confidence to confirm. |
 | `classifier.energy_ood_enabled` | not in template; code default true | Reject crops above the energy threshold. |
@@ -583,7 +604,7 @@ Wrong cat identified: check per-class accuracy on the Metrics tab and run
 Cross-validate. Collect more images of the weak cat in varied lighting and retrain,
 lengthening phase 2 first.
 
-Crop step skips images: those images have no bounding-box sidecar. Add boxes on
+Crop step skips images: those images have no bounding-box sidecar. Add bounding boxes on
 the Annotate tab, or pull again after enabling detection capture on the Pi.
 
 Dashboard not reachable: both dashboards bind to all interfaces. Check the Pi's
