@@ -1,502 +1,591 @@
-# Cat Detector - Raspberry Pi 5 + Hailo 10H
+# Purrceptron
 
-Identify your individual cats by name from a live camera feed using a two-stage
-detection and classification pipeline on Raspberry Pi 5 with the Hailo 10H AI
-accelerator.
+Purrceptron identifies individual cats at a food bowl using a Raspberry Pi 5 and a
+Hailo-10H accelerator. The stock COCO detector on the NPU finds the cat, an INT8
+MobileNetV2 on the CPU identifies which cat it is, and each visit is logged with its
+start time, end time and duration. An IR camera keeps it working at night.
 
-- **Stage 1 (Detection):** Stock COCO YOLOv8n runs on the Hailo accelerator (26 TOPS)
-  to detect cats in the camera stream. No fine-tuning required.
-- **Stage 2 (Classification):** A MobileNetV2 INT8 classifier runs on the CPU to
-  identify which cat is in each detection crop.
+The project has two parts that run on different machines:
 
-While built for cats, the same architecture works for any pet or animal. Just point
-the camera, collect images, and train the classifier on your own classes.
+- `pi_dashboard.py` runs on the Pi. It collects training images from the camera,
+  provides a labeling interface, runs detection and identification continuously, and
+  displays the visit log. It launches `deploy/detect.py` and the classifier worker.
+- `training_dashboard.py` runs on a PC with an NVIDIA GPU (Linux or WSL2). It pulls
+  images from the Pi, provides labeling and annotation tools, trains the classifier,
+  and copies the finished model back to the Pi.
+
+The two sides communicate over SSH: `rsync` to push code and pull images, `scp` to
+send the model.
+
+Design points:
+
+- No detector is trained. hailo-apps ships with a COCO-trained YOLOv8m that detects
+  cats reliably, and its bounding box is saved alongside every capture. The only
+  trained model is the classifier that distinguishes your cats.
+- Once a classifier is deployed, detection-triggered capture saves new images under
+  the cat name the classifier confirmed, so each training round has more labeled
+  data than the previous one with little manual effort.
+- The classifier computes an energy score for every crop and rejects crops that do
+  not resemble any cat it was trained on. A visiting cat is reported as "Unknown"
+  rather than assigned the nearest known name.
+- The classifier is trained with quantization-aware training and exported as INT8
+  TorchScript, which runs comfortably on one Pi CPU core.
+
+The same approach applies to other animals in the COCO classes (dogs, birds, horses).
+Animals outside those classes, such as rabbits, would need a different detector, and
+the training dashboard's auto-detect currently looks for cats only.
 
 > **License notice:** source-available for noncommercial use only. No redistribution,
 > no commercial use, and no use as AI/ML training data. Models you train with this
 > software are for your own noncommercial use only. See [License](#license).
 
-## Overview
+## Contents
 
-The workflow has three phases:
+- [How it works](#how-it-works)
+- [Hardware](#hardware)
+- [Software requirements](#software-requirements)
+- [Quick start](#quick-start)
+- [Pi dashboard](#pi-dashboard)
+- [Training dashboard](#training-dashboard)
+- [How training works](#how-training-works)
+- [Inference details](#inference-details)
+- [Configuration reference](#configuration-reference)
+- [Project structure](#project-structure)
+- [Troubleshooting](#troubleshooting)
+- [Known limitations](#known-limitations)
+- [Contributing](#contributing)
+- [License](#license)
 
-1. **Collect**: Capture and label images of each cat using a web dashboard on the Pi
-2. **Train**: Crop detections, train the MobileNetV2 classifier on a GPU machine
-3. **Deploy**: Run two-stage inference on the Pi (Hailo detection + CPU classification)
+## How it works
 
-Two web dashboards manage the pipeline:
-- `pi_dashboard.py`: Data collection, image review, and live inference control (runs on Pi)
-- `training_dashboard.py`: Classifier training pipeline with version management, live
-  metrics, and image labeling (runs on GPU machine)
+```
+                 Raspberry Pi 5                                 Training machine (GPU)
+ ┌──────────────────────────────────────────────┐     ┌──────────────────────────────────┐
+ │ USB camera                                   │     │ Pull (rsync) ──> Label ──> Crop  │
+ │   │  GStreamer                               │     │   │                          │   │
+ │   ▼                                          │     │   │      Annotate (optional) │   │
+ │ YOLOv8m on Hailo-10H ──> "cat" boxes + IDs   │     │   ▼                          ▼   │
+ │   │                                          │     │ Prepare ──> Train ──> Deploy     │
+ │   ├─> bowl-ROI gate ─> crop ─> MobileNetV2   │     │ (train/val)  (4 phases)  (scp)   │
+ │   │                  (INT8, CPU core 3)      │     └──────────────────────────────────┘
+ │   │                     │ energy check            ▲                         │
+ │   │                     ▼ vote window             │ images + bbox sidecars   │ cat_classifier.pt
+ │   │                 identity ──> classifier_log.db│                          ▼
+ │   └─> detection-triggered capture ───────────────┘                   models/ on the Pi
+ └──────────────────────────────────────────────┘
+```
 
-## Hardware Requirements
+1. hailo-apps runs a GStreamer pipeline with YOLOv8m on the Hailo-10H, plus a
+   tracker that gives each detection a persistent ID. Detections whose label is not
+   in `deployment.tracking_objects` (default `["cat"]`) are discarded.
+2. A detection is passed to the classifier only after it has overlapped the
+   configured bowl region for `classifier.stability_frames` consecutive frames.
+3. The crop is resized to 224x224 and classified by MobileNetV2 in a separate
+   process on one CPU core, at most once per `classify_interval_seconds`.
+4. The crop's energy score is compared with a threshold calibrated at training time.
+   Crops above the threshold are rejected and do not vote.
+5. A rolling window of predictions confirms an identity once one cat holds a
+   majority and the average confidence is above `confidence_threshold`.
+6. Each confirmed visit is written to `classifier_log.db` with the cat, start and
+   end time, duration, average confidence and frame count. The Pi dashboard lists
+   these by day with total tracked time per cat.
+7. If detection capture is enabled, stable in-bowl detections are saved with their
+   bounding box in a JSON sidecar, under the confirmed cat's name or in
+   `unlabeled/`, ready for the next training round.
 
-**Raspberry Pi (collection + deployment):**
+## Hardware
+
+**Raspberry Pi side (capture and inference)**
+
 - Raspberry Pi 5
-- Hailo 10H AI HAT+ (26 TOPS) with hailort and hailo-apps 25.12.0
-- USB camera (e.g., Arducam)
+- [Raspberry Pi AI HAT+ 2](https://www.raspberrypi.com/documentation/accessories/ai-hat-plus.html)
+  with the Hailo-10H accelerator (40 TOPS INT4)
+- USB camera. Built and tested with the
+  [Arducam B0205 1080P Day & Night Vision USB Camera](https://www.amazon.com/dp/B0829HZ3Q7)
+  (2MP, IR LEDs, automatic IR-cut switching), which lets detection run in the dark.
+  Other V4L2 USB cameras work for daytime use.
 
-**Training machine (WSL2/Linux x86_64):**
-- NVIDIA GPU with CUDA support (6+ GB VRAM recommended)
+**Training side**
 
-## Quick Start
+- A Linux or WSL2 machine with an NVIDIA GPU. Training runs on the CPU if CUDA is
+  unavailable, but much more slowly. Quantization-aware training and export always run
+  on the CPU.
+
+## Software requirements
+
+**Pi**
+
+- 64-bit Raspberry Pi OS with the AI HAT+ 2 drivers installed
+  (`sudo apt install hailo-h10-all`) as described in the Raspberry Pi documentation.
+  `scripts/setup_pi.sh` does not install the Hailo runtime; it expects it to be there.
+- [hailo-apps](https://github.com/hailo-ai/hailo-apps). `setup_pi.sh` clones it into
+  `hailo-apps/` inside the project and runs its installer. This project was developed
+  against the early-2026 releases.
+- Everything runs in the single Python virtual environment that hailo-apps creates
+  (`hailo-apps/venv_hailo_apps`), activated with `source hailo-apps/setup_env.sh`.
+  `setup_pi.sh` installs `requirements-pi.txt` (Flask, OpenCV, NumPy, PyTorch, PyYAML)
+  into it.
+
+**Training machine**
+
+- Python 3.10 or newer (developed on 3.12), `rsync`, `ssh` and `scp`.
+- `scripts/setup_training.sh` creates `venv_train` and installs
+  `requirements-training.txt` (PyTorch, torchvision, Albumentations, scikit-learn,
+  OpenCV, Flask, PyYAML). The training dashboard runs every step with
+  `venv_train/bin/python`, so that environment must exist.
+
+## Quick start
 
 ```bash
-# === On the Dev/Training Machine (WSL2/Linux) ===
+# ── On the training machine ─────────────────────────────────────────────
+git clone https://github.com/zstrathe/Purrceptron.git
+cd Purrceptron
+bash scripts/setup_training.sh          # creates venv_train, reports your GPU
 
-# 1. Clone and setup
-git clone <your-repo-url> ~/cat-detector
-cd ~/cat-detector
-bash scripts/setup_training.sh
-
-# 2. Create your config
 cp configs/project.yaml.example configs/project.yaml
-# Edit configs/project.yaml: set your cat names under "cats:"
+# Edit configs/project.yaml: list your cats under "cats:", set camera.device.
 
-# 3. Set up passwordless SSH to the Pi
-ssh-keygen -t ed25519       # skip if you already have a key
+ssh-keygen -t ed25519                   # skip if you already have a key
 ssh-copy-id <user>@<pi-hostname>
 
-# 4. Create .env with your Pi connection details
 cat > .env << 'EOF'
 PI_USER=<user>
 PI_HOST=<pi-hostname>
 PI_REMOTE_DIR=~/Repos/cat_detection
 EOF
 
-# 5. Push code + config to the Pi
-./scripts/sync_to_pi.sh
+./scripts/sync_to_pi.sh                 # rsync the project (including project.yaml) to the Pi
 
-
-# === On the Raspberry Pi (via SSH) ===
-
-# 6. One-time Pi setup
+# ── On the Pi ───────────────────────────────────────────────────────────
 ssh <user>@<pi-hostname>
 cd ~/Repos/cat_detection
-bash scripts/setup_pi.sh
-
-# 7. Start the dashboard
+bash scripts/setup_pi.sh                # one time: hailo-apps, Python deps, data dirs
 source hailo-apps/setup_env.sh
-python pi_dashboard.py
-# Open http://<pi-ip>:5003 in your browser
-# Capture tab: select a cat, capture 300+ images per cat
-# Review tab: label unlabeled images, delete bad captures
+python pi_dashboard.py                  # open http://<pi-ip>:5003
 
+# In the browser: turn on "Auto-save" under Detection Capture, or use the
+# Auto button to capture a chosen cat every few seconds. Aim for 300+ images
+# per cat. Label anything in "unlabeled" on the Review tab or later in the
+# training dashboard.
 
-# === Back on the Dev/Training Machine ===
-
-# 8. Train the classifier via the training dashboard
+# ── Back on the training machine ────────────────────────────────────────
 source venv_train/bin/activate
-python training_dashboard.py
-# Open http://localhost:5004, run steps: pull > label > crop > prepare > train
-# The "Pull" step imports captures from the Pi automatically
+python training_dashboard.py            # open http://localhost:5004
+# Run the steps in order: Pull > Label > Crop > Prepare > Train > Deploy.
+# Deploy copies the model to the Pi over scp.
 
-# 9. Deploy: use the training dashboard's "Deploy" step to push the model to the Pi
-# Restart the dashboard on the Pi to load the new model
-# Toggle the classifier on/off from the Pi dashboard's detection mode switcher
+# ── On the Pi ───────────────────────────────────────────────────────────
+# Turn on "Enable classifier" in the dashboard. The pipeline restarts with
+# the new model and the identity bar shows who is at the bowl.
 ```
 
-## Phase 1: Collecting Data
+`sync_to_pi.sh` pushes `configs/project.yaml` too, so edit it on the training machine.
+Settings changed in the Pi dashboard are stored separately in `configs/runtime.yaml`
+on the Pi, which is never synced, so they survive the next push.
 
-### Setup
+## Pi dashboard
 
-Push the project to the Pi from your dev machine, then set up on the Pi:
+`pi_dashboard.py` runs on the Pi and serves on port 5003. It starts `deploy/detect.py`
+as a subprocess from inside `hailo-apps/` with `setup_env.sh` sourced, restarts it if
+it crashes, and restarts it when a new classifier model is copied over (provided the
+classifier was enabled when the dashboard started).
 
 ```bash
-# On the dev machine
-./scripts/sync_to_pi.sh
-
-# On the Pi (via SSH)
-cd ~/cat-detector
-bash scripts/setup_pi.sh    # one-time
-source hailo-apps/setup_env.sh
+python pi_dashboard.py --no-camera        # review only, no detection pipeline
+python pi_dashboard.py --host 0.0.0.0 --port 8080
+python pi_dashboard.py --config alt.yaml
 ```
 
-### Running the Dashboard
+### Capture tab
+
+The live feed is a JPEG preview that the browser polls about 15 times a second.
+Boxes are drawn with the detector label, confidence and tracker ID. Around it:
+
+- Detection Mode: pipeline status, the tail of the detector log, and a viewer for
+  the log files in `logs/detection/`.
+- Detection Capture: an auto-save toggle, the minimum seconds between saves per
+  cat, and "Save labeled only", which skips captures the classifier has not
+  identified. Changes take effect immediately.
+- Cat Classifier (Stage 2): an enable toggle (restarts the pipeline with the
+  model), model status, confidence threshold, and the bowl region. Drag on the
+  preview to set the region, show or hide it, and set the overlap percentage that
+  counts as being at the bowl. Changes take effect immediately and are saved to
+  `runtime.yaml`.
+- The identity bar shows the current result with vote counts (for example
+  `Cat1:6 Cat2:2 / 10`), "Unknown" for rejected crops, and "Waiting for detection in
+  ROI..." between visits.
+- Auto capture: a toggle and a target-cat dropdown. While on, a full frame is saved
+  under that cat every `collection.auto_capture_interval_sec` seconds (default 3),
+  with a bounding-box sidecar whenever the detector saw a cat in the frame.
+
+### Review tab
+
+Captures are reviewed one at a time with a thumbnail grid beside the image. There is
+one label button per cat, plus Delete (moves the file to `data/trash/`), Prev and
+Skip. Skip marks the image as reviewed. Unreviewed images are queued newest first.
+
+In the thumbnail grid, click jumps to an image, Ctrl/Cmd-click or right-click
+selects, and Shift-click selects a range. Selected images can be labeled or deleted
+in a batch. The grid can be sorted by time or name and filtered by label.
+
+Keyboard shortcuts: `1` to `9` label as that cat, `d` delete, `n` or `→` skip, `p` or
+`←` previous.
+
+### Sidebar
+
+Image counts per cat against `collection.min_images_per_cat`, pipeline status,
+recent detections, and, when the classifier is enabled, a day-by-day table of
+identified visits from `classifier_log.db` with total tracked time per cat.
+
+## Training dashboard
+
+`training_dashboard.py` runs on the GPU machine and serves on port 5004 (`--host`,
+`--port` and `--config` are the only options). Work is organized into versions. Each
+version is a directory under `versions/` holding that round's images, crops, dataset,
+training output and model. Versions can be created, renamed, duplicated and deleted
+from the Pipeline tab.
+
+### Pipeline tab
+
+The six steps can be run individually or with Run All, which skips the interactive
+Label step. Each step's output is streamed to the page and saved under
+`logs/training/`.
+
+| Step | What it does |
+|------|--------------|
+| **Pull** | `rsync` the Pi's `data/raw/` to the local `data/raw/` (using `.env`; the local copy mirrors the Pi, deletions included), then copy images and sidecars into `versions/<v>/raw_images/`. |
+| **Label** | Opens the Label tab. Assign each `unlabeled/` image to a cat; the image and its sidecar move to that cat's folder. Skip and Undo are available. |
+| **Crop** | `train/crop_images.py`: cut each cat out using the highest-confidence box in its sidecar, padded by `classifier.crop_padding`, and resize to 224x224. Images without a sidecar are skipped and reported. |
+| **Prepare** | `train/prepare_classifier_dataset.py`: split crops into `train/` and `val/`. Images are grouped into sessions by timestamp (`session_gap_minutes`) and 20% of each cat's sessions go to validation, so consecutive frames from one session cannot end up on both sides of the split. |
+| **Train** | `train/train_classifier.py`: the four-phase training described below. |
+| **Deploy** | `scripts/transfer_model.sh`: `scp` the model to `models/cat_classifier.pt` on the Pi, with retries. The Pi dashboard restarts the pipeline with the new model if the classifier is enabled. |
+
+A separate Cross-validate button runs `train/cross_validate.py` on the crops:
+session-aware stratified k-fold (`cv_folds`, default 5) with a simplified recipe (no
+SWA, warmup or export). It gives an estimate of generalization before a full
+training run.
+
+Collapsible panels on the same tab edit the training hyperparameters, the crop
+padding ("Save & Re-crop") and the augmentation switches. They are written back to
+`configs/project.yaml`.
+
+### Annotate tab
+
+For images that have no bounding box (phone photos, older captures, or images added
+by hand). Draw a box by dragging, or click Auto-detect to get one from a
+COCO-pretrained torchvision Faster R-CNN (ResNet50 FPN v2) running on the GPU.
+"Auto-detect All Missing" processes every image without a box. Boxes are saved in
+the same sidecar format the Pi writes, so the Crop step treats them the same way.
+Editing a Pi-generated box keeps a backup, and Clear restores it. Keyboard shortcuts:
+`a` auto-detect, `d` clear, `n`/`p` or the arrow keys to navigate.
+
+### Metrics tab
+
+Loss, accuracy and per-class validation accuracy charts for each training phase, the
+best epoch, dataset counts, and a "Compare with" dropdown that overlays another
+version's curves and shows the difference in best validation accuracy.
+
+### Manual CLI
+
+The same scripts can be run directly. Paths have to be given explicitly because the
+scripts do not know about versions:
 
 ```bash
-python pi_dashboard.py
-```
-
-Open `http://<pi-ip>:5003` in your browser. The dashboard has two tabs:
-
-**Capture tab:**
-- **Live camera preview** via MJPEG streaming
-- **Cat selection buttons** (keyboard shortcuts 1-9) to capture and label images
-- **Auto-capture mode** that takes images at a regular interval
-- **Detection mode switcher**: toggle between COCO (generic cat detection) and
-  classifier mode (individual cat identification) when a trained model exists
-
-**Review tab:**
-- **Image viewer** to iterate through captured images
-- **Label buttons** to assign/reassign cat labels (or mark as unlabeled)
-- **Delete button** to move bad captures to trash
-- **Navigation**: next/prev/skip with keyboard shortcuts
-
-Command-line options:
-
-```bash
-python pi_dashboard.py --no-camera    # Review-only mode (no camera needed)
-python pi_dashboard.py --port 8080    # Custom port
-python pi_dashboard.py --config alt.yaml  # Alternate config file
-```
-
-### Tips for Good Training Data
-
-- Aim for **300-500 images per cat** minimum
-- Vary **lighting**: day, evening, lamp-lit
-- The Arducam's IR mode produces grayscale images at night; include these
-  if you want night detection
-- Try to keep class counts **roughly balanced** across cats
-
-### Reviewing and Labeling Data
-
-The Review tab in the dashboard shows images one at a time and lets you assign labels,
-delete bad captures, or skip to the next image. Unlabeled images (from auto-capture or
-detection capture) are shown first.
-
-Detection capture saves a bbox sidecar JSON alongside each image, recording where cats
-were detected in the frame. These sidecars are used later by `train/crop_images.py` to
-extract classifier training crops.
-
-### Transferring Data to the Training Machine
-
-Use the training dashboard's **Pull** step (see Phase 2), which runs
-`train/import_captures.py` to import captures from the Pi into a versioned
-directory on the training machine.
-
-## Phase 2: Training the Classifier
-
-### Setup
-
-```bash
-cd ~/cat-detector
-bash scripts/setup_training.sh
 source venv_train/bin/activate
+V=versions/v1
+bash scripts/pull_dataset.sh
+python train/import_captures.py --output-dir $V/raw_images
+python train/crop_images.py --input-dir $V/raw_images --output-dir $V/cropped_images --padding 0.2
+python train/prepare_classifier_dataset.py --source-dir $V/cropped_images --output-dir $V/classifier_dataset
+python train/cross_validate.py --source-dir $V/cropped_images --output-dir $V/cv_results   # optional
+python train/train_classifier.py --dataset-dir $V/classifier_dataset --output-dir $V
+bash scripts/transfer_model.sh $V/cat_classifier.pt
 ```
 
-Verify CUDA is available. The setup script will report your GPU.
+`train_classifier.py --skip-phase N` skips a phase (1 to 3). Skipping phase 3 also
+skips the INT8 export.
 
-### Training Dashboard (recommended)
+## How training works
 
-```bash
-python training_dashboard.py
-```
+The classifier is torchvision's quantizable MobileNetV2 with ImageNet weights. The
+backbone is kept and a new linear head, sized to the number of cats, is trained on
+top. Training requires at least two cats and runs in four phases.
 
-Open `http://localhost:5004` in your browser. The dashboard guides you through the
-full training pipeline:
+1. Head warmup (FP32, default 20 epochs). Only the new head trains; the backbone is
+   frozen. Learning rate 1e-3 with a linear warmup over `warmup_epochs` (default 5)
+   followed by cosine decay.
+2. Partial fine-tune (FP32, default 40 epochs). The last three feature stages of the
+   backbone (`features[16:]`, two inverted-residual blocks and the final 1x1
+   convolution) are unfrozen at 1e-5 while the head continues at 1e-4. Batch-norm
+   statistics stay frozen. Mixup (`mixup_alpha`, default 0.2) is applied in this
+   phase only. Stochastic weight averaging runs over the final 25% of the phase, and
+   the averaged model replaces the checkpoint if its validation accuracy is at least
+   as good. If accuracy is low, this is the phase to lengthen.
+3. Quantization-aware training (default 10 epochs, CPU). The model is fused and
+   trained with simulated INT8 quantization (qnnpack backend) at a fixed 1e-6
+   learning rate and without augmentation, so it adapts to 8-bit rounding.
+   Observers are frozen for the last 20% of the phase.
+4. INT8 export. The model is converted, traced and frozen into a TorchScript file.
 
-1. **Pull**: Import captures from `data/raw/` into a versioned directory
-2. **Label**: Review and assign cat labels to unlabeled images
-3. **Crop**: Extract 224x224 crops from raw images using bbox sidecars
-4. **Prepare**: Build train/val/test splits with session-aware deduplication
-5. **Train**: Run 4-phase MobileNetV2 training with live progress
-6. **Deploy**: Copy the trained model to the deployment location
+All phases use AdamW with `weight_decay` 0.005, batch size 32, label smoothing 0.1,
+gradient clipping at norm 1.0, and early stopping after `patience` (default 15)
+epochs without an improvement in validation accuracy. Class imbalance is handled
+with class-weighted cross-entropy (`balance_classes`) rather than oversampling. The
+best checkpoint of each phase is selected by validation accuracy.
 
-The dashboard also provides:
-- **Version management**: create, rename, duplicate, or delete training versions
-- **Metrics tab**: training curves (loss, accuracy) and per-fold cross-validation results
-- **Settings tab**: edit classifier training hyperparameters
-- **Dataset stats**: image counts per cat, per split
+Augmentation uses Albumentations: a random resized crop (scale 0.8 to 1.0) is always
+applied, and horizontal flip, brightness/contrast, shift-scale-rotate, Gaussian blur,
+coarse dropout and Gaussian noise are on by default. Hue/saturation and CLAHE are
+available and enabled in the shipped template. Validation applies normalization only.
 
-### Manual CLI Training
+After export, the INT8 model scores every validation image and the
+`energy_ood_percentile` quantile (default 0.99) of those energy values becomes the
+rejection threshold. It is embedded in the model file with the class list, so the Pi
+needs no extra configuration for unknown-cat rejection.
 
-If you prefer the command line, run the steps individually:
+Outputs are `models/cat_classifier.pt` (overwritten by every run), a copy at
+`versions/<v>/cat_classifier.pt`, `versions/<v>/training/results.csv` with per-epoch
+loss, accuracy and per-class validation accuracy, and the best checkpoint of each
+phase. The script ends by evaluating the exported INT8 model on the validation set
+and printing overall and per-class accuracy.
 
-```bash
-# 1. Import captures into version directory
-python train/import_captures.py
+## Inference details
 
-# 2. Extract 224x224 crops from raw images using bbox sidecars
-python train/crop_images.py
+`deploy/detect.py` wraps hailo-apps' `GStreamerDetectionApp`. The dashboard starts it
+with `cd hailo-apps && source setup_env.sh && python deploy/detect.py --enable-preview
+--enable-stdin-commands`. To run it manually, use the same two environment steps.
+Any extra arguments (for example `--input /dev/video2`) are passed through to
+hailo-apps. Settings come from `configs/project.yaml` with `configs/runtime.yaml`
+merged on top.
 
-# 3. Build train/val/test splits (session-aware deduplication)
-python train/prepare_classifier_dataset.py
+Gate: overlap is the intersection area divided by the bowl region's area, compared
+with `classifier.roi_overlap_threshold` (default 1%). A detection that leaves the
+region keeps its stability count for `classifier.miss_tolerance` frames (default 15);
+after that the count resets and a departure signal closes the current visit.
 
-# 4. (Optional) Run k-fold cross-validation to evaluate generalization
-python train/cross_validate.py
+Classifier worker: started before GStreamer initializes and pinned to
+`classifier.cpu_core`. It loads the TorchScript model with the qnnpack engine, reads
+the class list and energy threshold from the model file (a
+`classifier.energy_ood_threshold` setting overrides the embedded value), and applies
+ImageNet normalization. Crops arrive on a bounded queue and are dropped when the
+CPU falls behind. The worker's state is written to `/tmp/cat_classifier_status.json`,
+which the dashboard polls twice a second.
 
-# 5. Train the classifier (4-phase MobileNetV2)
-python train/train_classifier.py
-```
+Vote window: a prediction is confirmed when one class holds more than half of
+`vote_window_size` votes (6 of 10 by default) and the average confidence of those
+votes is at least `confidence_threshold`. Rejected crops do not vote. "Unknown" is
+reported after half a window of consecutive rejections.
 
-### How Training Works
+Event log: `classifier_log.db`, table `classifier_events`, with `cat_name`,
+`start_time`, `end_time` (UTC), `duration_seconds`, `confidence_avg` and
+`frame_count`. A row is opened at the first confirmation and closed when the cat
+departs or the pipeline shuts down.
 
-The classifier is built on MobileNetV2, a lightweight image recognition model
-pre-trained on ImageNet (millions of general images). It has two main parts:
+Detection-triggered capture: when enabled, a detection is saved once it is stable
+inside the bowl region, at most once per `min_interval_seconds` per label. Labels
+listed in `unlabeled_classes` (`cat` for the stock model) are saved under the
+classifier's confirmed name when there is one, otherwise under `unlabeled/`. Each
+image gets a `.json` sidecar with the timestamp, image size and the in-region
+detections (`label`, `confidence`, and `bbox_norm` as `[xmin, ymin, w, h]` in the
+range 0 to 1), plus a line in `data/raw/capture_log.csv`. Files are named
+`<label>_<UTC timestamp>.jpg`.
 
-- **Backbone**: The bulk of the network. It extracts visual features from the input
-  image (edges, textures, shapes, patterns). Since it was pre-trained on ImageNet,
-  it already knows how to "see" - we mostly keep these weights and only fine-tune
-  the last few layers.
-- **Classification head**: A small layer at the end that takes the backbone's features
-  and outputs a probability for each cat. This is replaced with a new layer sized to
-  your number of cats and trained from scratch.
+Feeding tracker (`feeding.*`): an earlier session tracker driven only by detector
+labels. It logs a session only when the detector itself outputs one of your cats'
+names, which requires a custom HEF trained on them. With the stock COCO model,
+per-cat visit logging comes from the classifier event log described above, which is
+what the dashboard displays.
 
-Training runs in four phases:
+## Configuration reference
 
-1. **Phase 1 - Head warmup (FP32):** Only train the classification head while the
-   backbone is frozen. This teaches the new head to map visual features to your
-   specific cats without disrupting the backbone's learned representations.
-   (default: 20 epochs, lr=0.001). This phase converges quickly since only a small
-   layer is training. 10-20 epochs is usually enough; more won't help much.
-2. **Phase 2 - Partial fine-tune (FP32):** Unfreeze the last 3 backbone blocks and
-   train them alongside the head. This adapts the deeper feature extraction to
-   cat-specific details (fur patterns, face shapes) while keeping earlier layers
-   (basic edges, textures) intact. Uses a smaller learning rate for the backbone
-   than the head to avoid overwriting useful pre-trained features. (default: 40
-   epochs). **This is the most impactful phase to increase** - if accuracy is low,
-   try 60-100 epochs here first. Early stopping (patience: 15) will cut it short
-   if the model stops improving.
-3. **Phase 3 - Quantization-aware training (QAT):** The Pi's CPU runs faster with
-   INT8 math (8-bit integers) than FP32 (32-bit floats), but converting directly
-   loses accuracy. QAT simulates the rounding errors of INT8 during training so
-   the model learns to be robust to them. (default: 10 epochs). If you notice a
-   significant accuracy drop between your FP32 validation results and the final
-   INT8 model, increase this to 15-25 epochs.
-4. **Phase 4 - INT8 export:** Export the final model as a TorchScript file with INT8
-   weights, ready for fast inference on the Pi's CPU. This is not a training phase,
-   just a conversion step.
+All settings live in `configs/project.yaml` (gitignored; copy
+`configs/project.yaml.example`). The Pi dashboard writes the settings it changes to
+`configs/runtime.yaml`, which overrides `project.yaml` on the Pi and is not synced.
+The table lists the template's value; where the code uses a different fallback when
+a key is omitted, it is noted.
 
-**Output:** `models/cat_classifier.pt`, a self-contained TorchScript model with the
-class name list embedded, ready for deployment.
-
-**Data augmentation:** During training, images are randomly transformed (flipped,
-brightened, rotated, blurred, etc.) so the model sees more variation and generalizes
-better to real-world conditions.
-
-Training stops early if validation loss plateaus (patience: 15 epochs).
-
-## Phase 3: Deployment
-
-### Deploying the Classifier
-
-The training dashboard's **Deploy** step handles copying the trained model to the Pi.
-You can also deploy manually with `./scripts/transfer_model.sh`.
-
-### Running Inference
-
-**Via the dashboard** (recommended): The dashboard runs `detect.py` as a managed
-subprocess. Stage 1 (Hailo YOLOv8) always runs for cat detection. When the classifier
-is enabled, Stage 2 identifies which cat is in the bowl ROI.
-
-**Standalone** (requires the hailo-apps venv):
-
-```bash
-source ~/hailo-apps/venv_hailo_apps/bin/activate
-cd ~/cat-detector
-python deploy/detect.py
-```
-
-All settings are read from `configs/project.yaml` (copy from `project.yaml.example` to
-get started). The config controls camera device, classifier settings, detection capture,
-and feeding session tracking. You can override Hailo-specific arguments:
-
-```bash
-python deploy/detect.py --input /dev/video2
-```
-
-### Two-Stage Pipeline
-
-1. **Stage 1 (Hailo):** GStreamer captures frames, YOLOv8n detects objects, filters
-   for "cat" class detections
-2. **Classifier gate:** Checks if a cat detection overlaps the configured bowl ROI and
-   has been stable for `stability_frames` consecutive frames
-3. **Stage 2 (CPU):** Crops the detection to 224x224, sends to the MobileNetV2
-   classifier running in a separate process (pinned to a single CPU core)
-4. **Vote window:** Accumulates predictions over `vote_window_size` frames; confirms
-   identity when one class has majority votes AND average confidence exceeds
-   `confidence_threshold`
-5. **Logging:** Confirmed identifications are logged to SQLite (`classifier_log.db`)
-   with timing, confidence, and frame count
-
-### Detection-Triggered Capture
-
-When `detection_capture.enabled` is `true` in `project.yaml`, inference automatically
-saves frames when cats are detected. COCO class names listed in `unlabeled_classes`
-(e.g., `["cat"]`) are saved to `data/raw/unlabeled/` with bbox sidecar JSONs for later
-labeling and cropping. Named cats are saved to their own directories.
-
-### Feeding Session Tracking
-
-When `feeding.enabled` is `true`, the system tracks when cats are at the bowl and logs
-sessions to a SQLite database on the Pi. The classifier provides per-cat identification,
-so feeding logs include which specific cat was eating.
-
-## Configuration Reference
-
-All settings are in `configs/project.yaml`. This file is gitignored; copy from
-`configs/project.yaml.example` to create your local config.
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `cats` | (your cat names) | List of cat names (class labels for the classifier) |
+| Key | Template value | Description |
+|-----|----------------|-------------|
+| `cats` | `[Cat1, Cat2, Cat3]` | Your cats' names. Required. Used as folder names, labels and dashboard buttons. Training needs at least two. |
 | **Camera** | | |
-| `camera.device` | /dev/video0 | Camera device path or index |
-| `camera.width` / `height` | 1920 x 1080 | Camera capture resolution |
-| `camera.fps` | 30 | Camera frame rate |
-| `camera.format` | MJPG | V4L2 pixel format |
+| `camera.device` | `/dev/video0` | Passed to hailo-apps as `--input`. |
+| `camera.width` / `height` | 1920 / 1080 | The camera's frame size. Used to convert normalized boxes to pixels for the bowl-region test, so it must match the real frame size. |
 | **Collection** | | |
-| `collection.output_dir` | data/raw | Where captured images are stored |
-| `collection.min_images_per_cat` | 300 | Minimum images per cat for training |
-| `collection.capture_interval_ms` | 500 | Min ms between burst captures |
-| `collection.auto_capture_interval_sec` | 3 | Seconds between auto-captures |
-| `collection.jpeg_quality` | 95 | JPEG save quality |
+| `collection.output_dir` | `data/raw` | Root of captured images on the Pi, used for review and counts. Required. |
+| `collection.min_images_per_cat` | 300 | Per-cat target shown by the dashboard's progress bars. |
+| `collection.auto_capture_interval_sec` | 3 | Seconds between frames in auto-capture mode. |
 | **Web UI** | | |
-| `web_ui.host` | 0.0.0.0 | Dashboard bind address |
-| `web_ui.port` | 5003 | Dashboard port |
-| `web_ui.preview_width` / `height` | 960 x 540 | MJPEG preview resolution |
+| `web_ui.host` / `port` | `0.0.0.0` / 5003 | Pi dashboard bind address and port. Required. |
+| `web_ui.preview_width` / `height` | 960 / 540 | Preview frame size. |
 | **Deployment** | | |
-| `deployment.hailo_apps_dir` | ./hailo-apps | Path to hailo-apps installation |
-| `deployment.hef_path` | "" | Custom HEF model path (empty = COCO default) |
-| `deployment.labels_json` | "" | Custom labels JSON (empty = COCO default) |
-| `deployment.detection_threshold` | 0.5 | Minimum confidence score |
-| `deployment.hw_arch` | hailo10h | Hailo hardware target |
-| `deployment.track_all` | true | Track all detected classes |
-| `deployment.filter_classes` | [] | Empty = all; list = filter to specific classes |
-| `deployment.preview_path` | /tmp/cat_detection_preview.jpg | Preview frame path |
-| `deployment.preview_fps` | 15 | Preview frame rate |
+| `deployment.hailo_apps_dir` | `./hailo-apps` | hailo-apps checkout, relative to the project root. |
+| `deployment.hef_path` | `""` | Custom HEF model. Empty uses hailo-apps' default detector for the board. |
+| `deployment.labels_json` | `""` | Label file for a custom HEF (hailo-apps format; see `deploy/coco_labels.json`). |
+| `deployment.track_all` | true | Track every class, not only class 0. |
+| `deployment.tracking_objects` | not in template; code default `[cat]` | Detector labels to keep. Everything else is dropped before the gate. |
+| `deployment.preview_path` | `/tmp/cat_detection_preview.jpg` | Preview frame location. The dashboard reads this exact path, so leave it. |
+| `deployment.preview_fps` | 15 (code fallback 10) | Preview write rate. |
+| `deployment.preview_jpeg_quality` | not in template; code default 70 | Preview JPEG quality. |
 | **Classifier (Stage 2)** | | |
-| `classifier.enabled` | false | Enable Stage 2 identity classification |
-| `classifier.model_path` | models/cat_classifier.pt | TorchScript classifier model |
-| `classifier.bowl_roi` | [760, 390, 1160, 790] | Bowl region of interest [x_min, y_min, x_max, y_max] |
-| `classifier.stability_frames` | 5 | Consecutive detection frames before classifying |
-| `classifier.classify_interval_seconds` | 1.0 | Throttle classification rate |
-| `classifier.confidence_threshold` | 0.85 | Vote confirmation confidence threshold |
-| `classifier.vote_window_size` | 10 | Rolling window size for majority voting |
-| `classifier.db_path` | data/classifier_log.db | SQLite feeding event log path |
-| `classifier.crop_padding` | 0.2 | Padding around bbox crop (fraction of bbox size) |
-| `classifier.roi_overlap_threshold` | 0.01 | Min overlap with bowl ROI to trigger classification |
-| `classifier.cpu_core` | 3 | Pin classifier process to this CPU core |
-| **Detection Capture** | | |
-| `detection_capture.enabled` | false | Auto-capture frames on detection |
-| `detection_capture.output_dir` | data/raw | Where detected frames are saved |
-| `detection_capture.unlabeled_classes` | ["cat"] | COCO classes saved as "unlabeled" |
-| `detection_capture.filter_labels` | [] | Filter to specific labels |
-| `detection_capture.min_interval_seconds` | 15 | Min seconds between captures per cat |
-| `detection_capture.max_captures_per_session` | 0 | 0 = unlimited |
-| `detection_capture.jpeg_quality` | 95 | JPEG save quality |
-| `detection_capture.csv_logging` | true | Append to capture_log.csv |
-| **Feeding Tracker** | | |
-| `feeding.enabled` | false | Enable feeding session tracking |
-| `feeding.db_path` | data/feeding_log.db | SQLite database path |
-| `feeding.cooldown_seconds` | 30 | Seconds of no detection before ending session |
-| `feeding.min_detection_frames` | 3 | Consecutive frames to confirm eating |
-| `feeding.log_interval_seconds` | 60 | Console status print interval |
-| **Label Review** | | |
-| `label_review.host` | 0.0.0.0 | Label review bind address |
-| `label_review.port` | 5001 | Label review port |
-| `label_review.trash_dir` | data/trash | Where deleted images are moved |
-| **Classifier Training** | | |
-| `classifier_training.phase1_epochs` | 20 | Head warmup epochs |
-| `classifier_training.phase2_epochs` | 40 | Fine-tune epochs |
-| `classifier_training.phase3_epochs` | 10 | QAT epochs |
-| `classifier_training.phase1_lr` | 0.001 | Phase 1 learning rate |
-| `classifier_training.phase2_backbone_lr` | 1e-5 | Phase 2 backbone learning rate |
-| `classifier_training.phase2_head_lr` | 1e-4 | Phase 2 head learning rate |
-| `classifier_training.weight_decay` | 0.005 | Weight decay |
-| `classifier_training.batch_size` | 32 | Training batch size |
-| `classifier_training.patience` | 15 | Early stopping patience |
-| `classifier_training.optimizer` | AdamW | Optimizer |
-| `classifier_training.session_gap_minutes` | 5 | Session grouping gap for splits |
-| `classifier_training.mixup_alpha` | 0.2 | Mixup augmentation alpha |
-| `classifier_training.balance_classes` | true | Oversample minority classes |
-| `classifier_training.cv_folds` | 5 | Cross-validation folds |
+| `classifier.enabled` | false | Run the identity classifier. |
+| `classifier.model_path` | `models/cat_classifier.pt` | TorchScript model. |
+| `classifier.bowl_roi` | `[760, 390, 1160, 790]` (code fallback: full frame) | Bowl region `[x_min, y_min, x_max, y_max]` in frame pixels. Set it by dragging in the dashboard. |
+| `classifier.roi_overlap_threshold` | 0.01 | Fraction of the bowl region a box must cover to count. |
+| `classifier.stability_frames` | 5 | Consecutive in-region frames before classifying (also gates detection capture). |
+| `classifier.miss_tolerance` | not in template; code default 15 | Missed frames tolerated before a cat counts as departed. |
+| `classifier.classify_interval_seconds` | 1.0 | Minimum time between crops sent to the classifier. |
+| `classifier.crop_padding` | 0.0 (code fallback 0.2) | Padding around the box as a fraction of its size, for live crops and the Crop step. |
+| `classifier.vote_window_size` | 10 | Votes in the rolling window. |
+| `classifier.confidence_threshold` | 0.5 (code fallback 0.85) | Minimum average confidence to confirm. |
+| `classifier.energy_ood_enabled` | not in template; code default true | Reject crops above the energy threshold. |
+| `classifier.energy_ood_threshold` | not in template; default from the model | Override the embedded threshold. |
+| `classifier.db_path` | `data/classifier_log.db` | Identified-visit log. |
+| `classifier.cpu_core` | 3 | Core the classifier process is pinned to. |
+| **Detection capture** | | |
+| `detection_capture.enabled` | false | Save stable in-region detections automatically. |
+| `detection_capture.output_dir` | `data/raw` | Where captures go (also used for manual captures). |
+| `detection_capture.unlabeled_classes` | `[cat]` (code fallback `[]`) | Detector labels saved as `unlabeled/`, or under the classifier's confirmed name. |
+| `detection_capture.save_labeled_only` | false | Skip captures that would land in `unlabeled/`. |
+| `detection_capture.min_interval_seconds` | 15 | Minimum seconds between saves per label. |
+| `detection_capture.max_captures_per_session` | 0 | Cap per label per run; 0 is unlimited. |
+| `detection_capture.jpeg_quality` | 95 | JPEG quality. |
+| `detection_capture.csv_logging` | true | Append to `capture_log.csv`. |
+| **Feeding tracker** (see the note above) | | |
+| `feeding.enabled` | false | Detector-label session tracking. |
+| `feeding.db_path` | `data/feeding_log.db` | Session database. |
+| `feeding.cooldown_seconds` | 30 | Seconds without detection before a session ends. |
+| `feeding.min_detection_frames` | 3 | Frames before a session starts. |
+| `feeding.log_interval_seconds` | 60 | Console status interval. |
+| **Review** | | |
+| `label_review.trash_dir` | `data/trash` | Where deleted captures are moved. |
+| **Classifier training** | | |
+| `classifier_training.phase1_epochs` | 20 | Head warmup epochs. |
+| `classifier_training.phase2_epochs` | 40 | Fine-tune epochs. |
+| `classifier_training.phase3_epochs` | 20 (code fallback 10) | QAT epochs. |
+| `classifier_training.phase1_lr` | 0.001 | Phase 1 learning rate. |
+| `classifier_training.phase2_backbone_lr` | 1e-5 | Phase 2 backbone learning rate. |
+| `classifier_training.phase2_head_lr` | 1e-4 | Phase 2 head learning rate. |
+| `classifier_training.warmup_epochs` | 5 | Linear warmup epochs in phase 1. |
+| `classifier_training.weight_decay` | 0.005 | AdamW weight decay. |
+| `classifier_training.batch_size` | 32 | Batch size. |
+| `classifier_training.label_smoothing` | 0.1 | Cross-entropy label smoothing. |
+| `classifier_training.gradient_clip_norm` | 1.0 | Gradient-norm clipping. |
+| `classifier_training.mixup_alpha` | 0.2 | Mixup strength (phase 2). |
+| `classifier_training.balance_classes` | true | Class-weighted loss for imbalanced data. |
+| `classifier_training.patience` | 15 | Early-stopping patience, per phase. |
+| `classifier_training.session_gap_minutes` | 5 | Gap that starts a new session for the train/val split and CV folds. |
+| `classifier_training.cv_folds` | 5 | Folds for the dashboard's Cross-validate button. |
+| `classifier_training.energy_ood_percentile` | not in template; code default 0.99 | Validation-energy quantile used as the unknown-cat threshold. |
+| `classifier_training.augmentation.*` | see template | Switches and limits for each augmentation: `horizontal_flip`, `brightness_contrast`, `brightness_limit`, `contrast_limit`, `shift_scale_rotate`, `rotate_limit`, `gaussian_blur`, `gaussian_noise`, `coarse_dropout`, `hue_saturation`, `clahe`. |
 
-## Project Structure
+Keys in the template that nothing reads: `camera.fps`, `camera.format`,
+`collection.images_per_session`, `collection.capture_interval_ms`,
+`collection.jpeg_quality`, `deployment.detection_threshold`, `deployment.hw_arch`,
+`deployment.filter_classes`, `detection_capture.filter_labels`, `label_review.host`,
+`label_review.port` and `classifier_training.optimizer` (AdamW is always used).
+
+## Project structure
 
 ```
-cat_detection/
-├── pi_dashboard.py                     # Web dashboard (capture + review + inference)
-├── training_dashboard.py               # Training pipeline UI
+Purrceptron/
+├── pi_dashboard.py                 # Pi web dashboard: capture, review, pipeline control (port 5003)
+├── training_dashboard.py           # Training dashboard: versions, pipeline steps, annotate, metrics (port 5004)
 ├── templates/
-│   ├── dashboard.html                  # Dashboard UI template
-│   └── training_dashboard.html         # Training dashboard UI template
+│   ├── dashboard.html              # Pi dashboard UI
+│   └── training_dashboard.html     # Training dashboard UI
 ├── configs/
-│   └── project.yaml.example            # Configuration template (copy to project.yaml)
-├── collect/                            # Data collection modules
-│   ├── capture.py                      # Camera thread, save worker
-│   ├── label_review.py                 # Image review and labeling
-│   └── export.py                       # Dataset archive export
-├── train/                              # Classifier training (GPU machine)
-│   ├── import_captures.py              # Import captures into version directory
-│   ├── crop_images.py                  # Extract 224x224 crops from bbox sidecars
-│   ├── prepare_classifier_dataset.py   # Session-aware train/val/test split
-│   ├── train_classifier.py            # 4-phase MobileNetV2 training
-│   └── cross_validate.py              # K-fold cross-validation
-├── deploy/                             # Inference (Raspberry Pi + Hailo)
-│   ├── detect.py                       # Stage 1: GStreamer + Hailo detection pipeline
-│   ├── cat_classifier.py              # Stage 2: MobileNetV2 identity classifier
-│   ├── coco_labels.json               # COCO 80-class labels for Stage 1
-│   ├── detection_capturer.py          # Auto-capture on detection
-│   └── feeding_tracker.py             # Feeding session tracking
-├── scripts/                            # Setup and utility scripts
-│   ├── _common.sh                      # Shared shell helpers (venv activation, .env)
-│   ├── setup_pi.sh                     # Pi environment setup
-│   ├── setup_training.sh              # Training machine setup
-│   ├── sync_to_pi.sh                  # Sync code to Pi via SSH
-│   ├── transfer_model.sh             # Transfer model to Pi
-│   └── pull_dataset.sh               # Pull training data from Pi
-├── utils/                              # Shared utilities
-│   ├── __init__.py
-│   ├── config.py                       # YAML config loading, path resolution
-│   └── display.py                      # Colored console output
-├── requirements-pi.txt                 # Pi dependencies (Flask, OpenCV, PyTorch, PyYAML)
-├── requirements-training.txt           # Training machine dependencies (PyTorch, CUDA)
-└── requirements-scripts.txt            # Script-only dependencies (PyYAML)
+│   └── project.yaml.example        # Configuration template (copy to project.yaml)
+├── deploy/                         # Runs on the Pi
+│   ├── detect.py                   # hailo-apps GStreamer pipeline, gate, capture, stdin commands
+│   ├── cat_classifier.py           # Classifier worker process: INT8 MobileNetV2, energy check, voting, event log
+│   ├── detection_capturer.py       # Frame extraction and asynchronous capture with sidecars
+│   ├── feeding_tracker.py          # Detector-label session tracker
+│   └── coco_labels.json            # COCO label list in hailo-apps format, for custom HEFs
+├── collect/                        # Pi dashboard helpers
+│   ├── label_review.py             # Review queue, thumbnails, relabel and delete
+│   ├── export.py                   # Standalone dataset archive export (CLI)
+│   └── capture.py                  # Legacy standalone capture app, not used by the dashboard
+├── train/                          # Runs on the training machine
+│   ├── import_captures.py          # Copy data/raw/ into a version
+│   ├── crop_images.py              # Crop detections using bbox sidecars
+│   ├── prepare_classifier_dataset.py  # Session-aware train/val split
+│   ├── train_classifier.py         # Four-phase MobileNetV2 training and INT8 export
+│   └── cross_validate.py           # Session-aware stratified k-fold
+├── scripts/
+│   ├── setup_pi.sh                 # Pi setup: hailo-apps, Python deps, data dirs
+│   ├── setup_training.sh           # Training venv and GPU check
+│   ├── sync_to_pi.sh               # rsync the project to the Pi (.syncignore applies)
+│   ├── pull_dataset.sh             # rsync data/raw/ from the Pi
+│   ├── transfer_model.sh           # scp a model to the Pi
+│   └── _common.sh                  # Shared helpers (.env loading)
+├── utils/
+│   ├── config.py                   # Config loading, runtime.yaml merge, path resolution, cat colors
+│   └── display.py                  # Colored console output
+├── requirements-pi.txt
+├── requirements-training.txt
+└── requirements-scripts.txt
 ```
+
+Runtime directories (gitignored): `data/` (captures, trash, logs on the Pi),
+`versions/` (training rounds), `models/` (deployed model), `logs/`, `hailo-apps/`,
+`venv_train/`.
 
 ## Troubleshooting
 
-**Camera not detected:**
-- Check available devices: `ls /dev/video*`
-- Set the device in `configs/project.yaml` under `camera.device`
-- Verify USB connection: `lsusb`
+"Hailo libraries not available": the detector has to run from the hailo-apps
+environment (`cd hailo-apps && source setup_env.sh`). The dashboard does this
+itself, so the error usually means `setup_pi.sh` has not been run or
+`deployment.hailo_apps_dir` points to the wrong place.
 
-**Low FPS in capture UI:**
-- Ensure USB 3.0 connection (not 2.0)
-- Reduce resolution in `configs/project.yaml`
+Camera not found: run `ls /dev/video*` and set `camera.device` in
+`configs/project.yaml`, or pass `--input /dev/videoN` to `detect.py`. `lsusb` should
+list the camera.
 
-**Classifier not running:**
-- Ensure `classifier.enabled` is `true` in `configs/project.yaml`
-- Check that `models/cat_classifier.pt` exists on the Pi
-- Verify PyTorch is installed: `python -c "import torch; print(torch.__version__)"`
+Preview is slow: the preview rate is limited by `deployment.preview_fps` and by the
+load on the Pi. It is independent of the detector's frame rate. Reducing
+`web_ui.preview_width` and `height` helps.
 
-**Wrong cat identification:**
-- Increase `classifier.vote_window_size` for more stable predictions
-- Check training data balance and collect more images for underrepresented cats
-- Review per-cat accuracy in the training dashboard metrics tab
-- Re-run cross-validation (`python train/cross_validate.py`) to check generalization
+Classifier shows "No model found" or never activates: the model must be at
+`models/cat_classifier.pt` on the Pi (the Deploy step copies it there), and
+"Enable classifier" must be on, which restarts the pipeline. The classifier only
+runs for detections inside the bowl region, so check the region with "Show ROI" and
+lower `roi_overlap_threshold` if detections rarely qualify.
 
-**Classifier responding slowly:**
-- Check `classifier.cpu_core` is set to an available core
-- Increase `classifier.classify_interval_seconds` to reduce CPU load
+Identity flips, or takes too long to confirm: raise `vote_window_size` for steadier
+results, or lower `confidence_threshold` to confirm sooner. Confirmation needs a
+majority of the whole window, so 10 votes at one crop per second takes at least
+6 seconds.
 
-**HEF version mismatch on Pi:**
-- Ensure the Hailo DFC version matches the hailort version installed on the Pi
-- Check with: `hailortcli fw-control identify` on the Pi
+Everything shows as Unknown: the energy threshold was calibrated on your validation
+images, and lighting very different from the training data raises energy scores.
+Add images from those conditions and retrain, raise
+`classifier.energy_ood_threshold`, or set `energy_ood_enabled: false`.
 
-**Web UI not accessible from browser:**
-- Ensure the Pi's firewall allows port 5003
-- The dashboard listens on all interfaces (0.0.0.0) by default
-- Try accessing via the Pi's IP address directly
+Wrong cat identified: check per-class accuracy on the Metrics tab and run
+Cross-validate. Collect more images of the weak cat in varied lighting and retrain,
+lengthening phase 2 first.
 
-**"Hailo libraries not available" error:**
-- Activate the hailo-apps venv: `source ~/hailo-apps/venv_hailo_apps/bin/activate`
-- The deploy script requires the Hailo SDK which is only available on the Pi
+Crop step skips images: those images have no bounding-box sidecar. Add boxes on
+the Annotate tab, or pull again after enabling detection capture on the Pi.
 
-## Improving Accuracy
+Dashboard not reachable: both dashboards bind to all interfaces. Check the Pi's
+firewall for port 5003, and use the IP address if `.local` names do not resolve.
 
-- **More data**: especially for underrepresented cats; aim for balanced counts
-- **Varied conditions**: different lighting, angles, distances, and poses
-- **Night images**: include IR/grayscale captures if you need nighttime detection
-- **Cross-validation**: run `python train/cross_validate.py` to check per-fold accuracy
-  and identify cats that the model struggles with
-- **QAT tuning**: if INT8 accuracy drops significantly, increase `phase3_epochs`
-- **Training dashboard**: use the metrics tab to compare training runs and identify
-  weak classes
-- **Iterate**: use detection capture to collect more labeled data automatically,
-  review in the dashboard, then retrain with the expanded dataset
+## Known limitations
+
+- Neither dashboard has authentication. Run them on a trusted network only.
+- Relabeling or deleting a capture on the Pi's Review tab moves only the JPEG. The
+  bounding-box sidecar stays behind, so Crop skips that image. The training
+  dashboard's Label tab moves both files.
+- Images still in `data/raw/unlabeled/` on the Pi are imported into
+  `raw_images/unlabeled/` again on every Pull, even if they were labeled in a
+  previous version.
+- The feeding tracker only works with a custom HEF that outputs your cats' names.
+- Prepare produces train and validation splits only. There is no held-out test set.
+- Every training run overwrites `models/cat_classifier.pt` as well as the version's
+  copy.
+- The cross-validation results panel on the Metrics tab does not render yet. Read
+  `versions/<v>/cv_results/cv_summary.json` or the step log instead.
 
 ## Contributing
 
