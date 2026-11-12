@@ -404,6 +404,8 @@ def draw_bounding_boxes(frame: np.ndarray, detections: list[dict]) -> np.ndarray
 # ═══════════════════════════════════════════════════════════════════════════
 
 if HAILO_AVAILABLE:
+    # The callback structure follows Hailo's hailo-apps detection example
+    # (MIT License; see THIRD_PARTY_NOTICES.md).
     class CatDetectionCallback(app_callback_class):
         """Tracks detection counts and optionally filters by class name."""
 
