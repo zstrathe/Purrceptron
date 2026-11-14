@@ -42,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from utils import PROJECT_ROOT, add_common_args, get_config_with_args, load_config, resolve_path, get_cat_colors_hex
 from utils.display import print_info, print_success, print_error, print_warning, print_header
 from utils.thumbnails import ThumbnailCache
+from remote_training.worker import create_worker_blueprint, load_worker_token
 
 import yaml
 
@@ -97,6 +98,9 @@ class TrainingStepManager:
         self._version_size_cache: dict[str, float] = {}
         self._ann_stats_cache: dict | None = None
         self._ann_stats_cache_time: float = 0
+        # Set by main() when the Pi worker API is mounted: returns a
+        # description of a running Pi job, or None.
+        self.external_busy = lambda: None
 
         self._steps: dict[str, TrainingStep] = {
             name: TrainingStep(name=name, label=STEP_LABELS[name])
@@ -358,6 +362,9 @@ class TrainingStepManager:
         with self._lock:
             if self._current_step is not None:
                 return {"status": "error", "message": f"Step '{self._current_step}' is already running"}
+            busy = self.external_busy()
+            if busy:
+                return {"status": "error", "message": f"PC is busy: {busy}"}
 
             step = self._steps[step_name]
             cmd = self._build_command(step_name)
@@ -408,6 +415,9 @@ class TrainingStepManager:
         with self._lock:
             if self._current_step is not None:
                 return {"status": "error", "message": f"Step '{self._current_step}' is already running"}
+            busy = self.external_busy()
+            if busy:
+                return {"status": "error", "message": f"PC is busy: {busy}"}
 
             # Reset all steps
             for step in self._steps.values():
@@ -1450,6 +1460,21 @@ def main() -> None:
         config_mgr=config_mgr,
         cats=cats,
     )
+
+    # Worker API: lets the Pi send training jobs here (local_pc backend)
+    worker_bp, worker_jobs = create_worker_blueprint(
+        PROJECT_ROOT, step_mgr._train_python,
+        busy_check=lambda: (f"dashboard step '{step_mgr._current_step}'"
+                            if step_mgr._current_step else None),
+    )
+    flask_app.register_blueprint(worker_bp)
+    step_mgr.external_busy = lambda: (f"Pi training job {worker_jobs.active_job()}"
+                                      if worker_jobs.active_job() else None)
+    if load_worker_token(PROJECT_ROOT):
+        print_info(f"Pi worker API enabled: http://<this PC>:{args.port}/api/worker")
+    else:
+        print_info("Pi worker API disabled (set WORKER_TOKEN in .env to enable)")
+
     threading.Thread(target=step_mgr._precompute_version_sizes, daemon=True).start()
     flask_app.run(host=args.host, port=args.port, threaded=True, use_reloader=False)
 

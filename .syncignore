@@ -22,8 +22,8 @@ models/
 runs/
 versions/
 
-# Training (not needed on Pi)
-train/
+# Training (not needed on Pi). train/ IS synced: the Pi's Training tab
+# crops, splits, and bundles train/ into each remote training job.
 training_dashboard.py
 templates/training_dashboard.html
 requirements-training.txt
@@ -42,6 +42,7 @@ scripts/pull_dataset.sh
 
 # Pi-only runtime state (written by dashboard, not synced)
 configs/runtime.yaml
+configs/secrets.yaml
 
 # Log files
 *.log

@@ -97,3 +97,17 @@ classifier_training:
     coarse_dropout: true
     hue_saturation: true
     clahe: true
+# Training from the Pi dashboard (Training tab). The tab saves changes to
+# configs/runtime.yaml and tokens to configs/secrets.yaml (both gitignored).
+training_backend:
+  backend: local_pc          # local_pc | hf_jobs
+  min_images_per_cat: 30     # labeled images with bounding boxes needed per cat
+  local_pc:                  # training_dashboard.py on your PC (needs WORKER_TOKEN in its .env)
+    host: ''
+    port: 5004
+  hf_jobs:                   # Hugging Face Jobs (prepaid credits)
+    namespace: ''
+    flavor: t4-small
+    timeout: 2h
+    image: ''                # blank: pytorch/pytorch image matching the Pi's torch
+    bucket: ''               # blank: <namespace>/cat-training

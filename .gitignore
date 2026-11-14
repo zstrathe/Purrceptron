@@ -18,6 +18,8 @@ versions/
 
 # Per-deployment config (use .example as template)
 configs/project.yaml
+configs/runtime.yaml
+configs/secrets.yaml
 deploy/labels.json
 
 # Environment

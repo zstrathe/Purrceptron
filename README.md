@@ -49,6 +49,7 @@ looks for cats only.
 - [Quick start](#quick-start)
 - [Pi dashboard](#pi-dashboard)
 - [Training dashboard](#training-dashboard)
+- [Training from the Pi](#training-from-the-pi)
 - [How training works](#how-training-works)
 - [Inference details](#inference-details)
 - [Configuration reference](#configuration-reference)
@@ -273,6 +274,13 @@ and each cat. Thumbnails are generated once and cached under `data/raw/.thumbnai
 Keyboard shortcuts: `1` to `9` label as that cat, `d` delete, `n` or `→` skip, `p` or
 `←` previous, `Esc` closes the log viewer.
 
+### Training tab
+
+Starts a training round from the Pi: picks where training runs (your PC or
+Hugging Face Jobs), checks there are enough labeled images, packages them, sends
+the job, shows its progress and log, and deploys or rolls back the returned model.
+See [Training from the Pi](#training-from-the-pi).
+
 ### Sidebar
 
 Shown on the Capture tab: image counts per cat against
@@ -353,6 +361,112 @@ bash scripts/transfer_model.sh $V/cat_classifier.pt
 
 `train_classifier.py --skip-phase N` skips a phase (1 to 3). Skipping phase 3 also
 skips the INT8 export.
+
+## Training from the Pi
+
+The Pi dashboard's Training tab runs a whole training round without touching the
+PC's dashboard: the Pi packages its labeled images, sends them to a training
+backend, gets the model back, checks it, and deploys it when you click Deploy.
+The PC training dashboard still works as before; use whichever you prefer.
+
+```mermaid
+flowchart LR
+    A["Pi: crop + split<br/>labeled images"] --> B["bundle.tar.gz<br/>crops + train code + manifest"]
+    B --> C["Backend runs<br/>train/run_job.py"]
+    C --> D["results.tar.gz<br/>model + metrics"]
+    D --> E["Pi: load-test model<br/>with its own torch"]
+    E --> F["Deploy / Roll back"]
+```
+
+1. **Package (on the Pi).** `train/crop_images.py` and
+   `train/prepare_classifier_dataset.py` run on `data/raw/<cat>/` at low priority,
+   kept off the classifier's CPU core. Only images with a bounding-box sidecar
+   count. The 224x224 crops, a copy of `train/` and `utils/`, and a manifest (cats,
+   `classifier_training` settings, the Pi's torch version) are packed into one
+   tarball, typically a few MB to a few tens of MB.
+2. **Train (on the backend).** Every backend runs the same `train/run_job.py`
+   from the bundle, which runs the bundled `train_classifier.py`. The bundled copy
+   writes only inside the job's folder, so a job never overwrites the PC's own
+   `models/cat_classifier.pt`.
+3. **Check (on the Pi).** The returned model must load with the Pi's torch, embed
+   the configured cat names and an energy threshold, and produce one output per
+   cat. A model that fails is never offered for deployment.
+4. **Deploy.** The tab compares the new model's validation accuracy, overall and
+   per cat, with the deployed one, then installs it on request. The current model
+   is kept as `models/cat_classifier.prev.pt`; Roll back swaps the two (pressing it
+   again swaps back). Detection restarts with the new model within seconds.
+
+Job state is saved to `data/training_jobs/<job_id>/state.json`, so restarting the
+Pi dashboard while a job trains resumes watching it. Logs go to
+`logs/training_jobs/`. One job runs at a time.
+
+### Backends
+
+| Backend | Cost | Where your images go | Setup |
+|---|---|---|---|
+| Local PC | Free | Your network only | `WORKER_TOKEN` in the PC's `.env`; PC reachable from the Pi |
+| Hugging Face Jobs | T4 about $0.40/h, billed per minute from prepaid credits; a typical round is cents | A private HF bucket, deleted after the model is downloaded | HF account with credits; a write token |
+
+Pick the backend, fill in its settings, and press **Test connection** on the
+Training tab, then **Save**. Tokens are stored in `configs/secrets.yaml`
+(gitignored, owner-only permissions) and are never sent back to the browser;
+other settings go to `configs/runtime.yaml`.
+
+**Local PC.** The training dashboard doubles as a job worker:
+
+1. Add a token to the PC's `.env` (any long random string) and restart
+   `training_dashboard.py`:
+   ```bash
+   echo "WORKER_TOKEN=$(openssl rand -hex 24)" >> .env
+   ```
+   The dashboard prints `Pi worker API enabled` at startup. Without a token the
+   worker API is off.
+2. Make port 5004 reachable from the Pi. Under WSL2 the easiest way is mirrored
+   networking: put `networkingMode=mirrored` under `[wsl2]` in
+   `%UserProfile%\.wslconfig`, run `wsl --shutdown`, and allow the port in an
+   administrator PowerShell:
+   ```powershell
+   New-NetFirewallHyperVRule -Name WSLTrainingWorker -DisplayName "WSL training worker" -Direction Inbound -VMCreatorId '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -Protocol TCP -LocalPorts 5004
+   ```
+   With the default NAT networking, forward the port instead (the WSL address
+   changes after a reboot, so the rule has to be updated):
+   ```powershell
+   netsh interface portproxy add v4tov4 listenport=5004 listenaddress=0.0.0.0 connectport=5004 connectaddress=<WSL IP from: wsl hostname -I>
+   New-NetFirewallRule -DisplayName "Training worker" -Direction Inbound -Protocol TCP -LocalPort 5004 -Action Allow
+   ```
+3. On the Pi's Training tab, enter the PC's LAN address, port 5004 and the token.
+   Test connection reports the PC's GPU and torch version, and warns when the
+   torch version differs from the Pi's.
+
+Each Pi job becomes a version named `pi-<job_id>` on the PC, so its training
+curves appear on the training dashboard's Metrics tab. While a Pi job runs, the
+PC dashboard's pipeline steps are refused, and the other way around.
+
+**Hugging Face Jobs.**
+
+1. Create an account at huggingface.co, add prepaid credits under Settings >
+   Billing, and create an access token with write permission.
+2. On the Training tab choose Hugging Face Jobs and paste the token. Leave
+   Namespace blank to bill your own account, or enter an organization.
+3. Hardware `t4-small` is plenty for MobileNetV2. Docker image blank picks the
+   `pytorch/pytorch` CUDA runtime image with the Pi's torch version, so the INT8
+   model loads on the Pi; set it explicitly if Test connection reports that no
+   matching image exists.
+
+The job uploads the bundle to a private bucket (`<namespace>/cat-training` by
+default), mounts the job's folder in the container, installs the few extra
+packages training needs, and writes the results back to the bucket. The Pi
+downloads them and deletes the job's files from the bucket. The tab links to the
+job's page on huggingface.co while it runs.
+
+### Adding a backend
+
+A backend is one module in `remote_training/backends/` that subclasses
+`TrainingBackend` (`base.py`): declare its settings with `config_schema()` (the
+Training tab builds its form from this), and implement `test_connection`,
+`submit` (upload the bundle and start `code/train/run_job.py`), `poll`, `cancel`,
+`fetch` (download the `results.tar.gz` that `run_job.py` wrote) and optionally
+`cleanup`. Register it in `BACKENDS` in `remote_training/backends/__init__.py`.
 
 ## How training works
 
@@ -556,6 +670,15 @@ a key is omitted, it is noted.
 | `classifier_training.cv_folds` | 5 | Folds for the dashboard's Cross-validate button. |
 | `classifier_training.energy_ood_percentile` | not in template; code default 0.99 | Validation-energy quantile used as the unknown-cat threshold. |
 | `classifier_training.augmentation.*` | see template | Switches and limits for each augmentation: `horizontal_flip`, `brightness_contrast`, `brightness_limit`, `contrast_limit`, `shift_scale_rotate`, `rotate_limit`, `gaussian_blur`, `gaussian_noise`, `coarse_dropout`, `hue_saturation`, `clahe`. |
+| **Training from the Pi** | | Set from the Pi dashboard's Training tab, which writes `runtime.yaml`. Tokens are kept in `configs/secrets.yaml`. |
+| `training_backend.backend` | `local_pc` | Where jobs run: `local_pc` or `hf_jobs`. |
+| `training_backend.min_images_per_cat` | 30 | Labeled images with bounding boxes each cat needs before a job can start. |
+| `training_backend.local_pc.host` / `port` | `''` / 5004 | Address of the PC running `training_dashboard.py`. |
+| `training_backend.hf_jobs.namespace` | `''` | HF user or organization that runs and pays for jobs; blank uses the token's user. |
+| `training_backend.hf_jobs.flavor` | `t4-small` | HF Jobs hardware. |
+| `training_backend.hf_jobs.timeout` | `2h` | Job time limit. |
+| `training_backend.hf_jobs.image` | `''` | Docker image; blank picks `pytorch/pytorch` with the Pi's torch version. |
+| `training_backend.hf_jobs.bucket` | `''` | Private bucket for moving files; blank uses `<namespace>/cat-training`. |
 
 Keys in the template that nothing reads: `camera.fps`, `camera.format`,
 `collection.images_per_session`, `collection.capture_interval_ms`,
@@ -585,7 +708,14 @@ Purrceptron/
 │   ├── label_review.py             # Review queue, thumbnails, relabel and delete
 │   ├── export.py                   # Standalone dataset archive export (CLI)
 │   └── capture.py                  # Legacy standalone capture app, not used by the dashboard
+├── remote_training/                # Training jobs sent from the Pi (Training tab)
+│   ├── manager.py                  # Job lifecycle on the Pi: package, submit, poll, fetch, validate, deploy
+│   ├── bundle.py                   # Crop, split and pack labeled images into a job bundle
+│   ├── validate_model.py           # Load-test a returned model with the Pi's torch
+│   ├── worker.py                   # Job API on the training dashboard for the local_pc backend
+│   └── backends/                   # base.py interface, local_pc.py, hf_jobs.py
 ├── train/                          # Runs on the training machine
+│   ├── run_job.py                  # Entry point every training backend runs from a job bundle
 │   ├── import_captures.py          # Copy data/raw/ into a version
 │   ├── crop_images.py              # Crop detections using bbox sidecars
 │   ├── prepare_classifier_dataset.py  # Session-aware train/val split
@@ -600,6 +730,7 @@ Purrceptron/
 │   └── _common.sh                  # Shared helpers (.env loading)
 ├── utils/
 │   ├── config.py                   # Config loading, runtime.yaml merge, path resolution, cat colors
+│   ├── secrets.py                  # configs/secrets.yaml store for backend tokens
 │   ├── display.py                  # Colored console output
 │   └── thumbnails.py               # Cached thumbnails for the dashboards' image browsers
 ├── requirements-pi.txt

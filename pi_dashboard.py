@@ -41,6 +41,9 @@ from utils import PROJECT_ROOT, add_common_args, load_config, resolve_path, get_
 from utils.display import print_info, print_success, print_error, print_warning, print_header
 
 from collect.label_review import LabelReviewApp
+from remote_training.backends import BackendError
+from remote_training.manager import TrainingJobManager
+from utils.secrets import SecretsStore
 
 import yaml
 
@@ -502,6 +505,24 @@ class ConfigManager:
             with open(self.runtime_path, "w") as f:
                 yaml.dump(runtime, f, default_flow_style=False, sort_keys=False)
 
+    def update_training_backend(self, backend: str, settings: dict,
+                                min_images_per_cat: int | None = None) -> None:
+        """Save the selected training backend and its (non-secret) settings
+        to runtime.yaml. Secrets go to SecretsStore instead."""
+        # Start from the merged view: runtime.yaml replaces whole sections'
+        # keys, so the backend block must be written complete.
+        current = (self.read().get("training_backend") or {}).get(backend) or {}
+        with self._lock:
+            runtime = self._read_runtime()
+            tb = runtime.setdefault("training_backend", {})
+            tb["backend"] = backend
+            if min_images_per_cat is not None:
+                tb["min_images_per_cat"] = int(min_images_per_cat)
+            tb[backend] = {**current, **settings}
+            self.runtime_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.runtime_path, "w") as f:
+                yaml.dump(runtime, f, default_flow_style=False, sort_keys=False)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Flask application factory
@@ -514,6 +535,8 @@ def create_app(
     auto_state: AutoCaptureState,
     cats: list[str],
     min_images: int,
+    training_mgr: TrainingJobManager,
+    secrets: SecretsStore,
 ) -> Flask:
     template_dir = Path(__file__).resolve().parent / "templates"
     flask_app = Flask(__name__, template_folder=str(template_dir))
@@ -825,6 +848,86 @@ def create_app(
             return "Forbidden", 403
         return send_file(str(log_path), mimetype="text/plain")
 
+    # ── Training (remote backends) ─────────────────────────────────
+    @flask_app.route("/api/training/config", methods=["GET"])
+    def api_training_config_get():
+        return jsonify(training_mgr.describe())
+
+    @flask_app.route("/api/training/config", methods=["POST"])
+    def api_training_config_post():
+        data = request.get_json() or {}
+        backend = data.get("backend", "")
+        try:
+            settings, new_secrets = training_mgr.parse_form(backend, data.get("values") or {})
+            min_images_val = data.get("min_images_per_cat")
+            min_images_val = int(min_images_val) if min_images_val not in (None, "") else None
+        except (BackendError, ValueError) as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 400
+        config_mgr.update_training_backend(backend, settings, min_images_val)
+        if new_secrets:
+            secrets.update_section(backend, new_secrets)
+        return jsonify({"status": "ok", **training_mgr.describe()})
+
+    @flask_app.route("/api/training/test", methods=["POST"])
+    def api_training_test():
+        """Test the settings currently in the form (saved or not)."""
+        data = request.get_json() or {}
+        backend = data.get("backend", "")
+        try:
+            settings, form_secrets = training_mgr.parse_form(backend, data.get("values") or {})
+            result = training_mgr.make_backend(backend, settings, form_secrets).test_connection()
+        except BackendError as exc:
+            return jsonify({"ok": False, "message": str(exc)})
+        except Exception as exc:
+            return jsonify({"ok": False, "message": f"{type(exc).__name__}: {exc}"})
+        return jsonify(result.to_dict())
+
+    @flask_app.route("/api/training/images")
+    def api_training_images():
+        return jsonify({
+            "counts": training_mgr.image_counts(),
+            "min_images_per_cat": training_mgr.settings()["min_images_per_cat"],
+        })
+
+    @flask_app.route("/api/training/status")
+    def api_training_status():
+        return jsonify(training_mgr.status())
+
+    @flask_app.route("/api/training/jobs")
+    def api_training_jobs():
+        return jsonify({"jobs": training_mgr.list_jobs()})
+
+    @flask_app.route("/api/training/start", methods=["POST"])
+    def api_training_start():
+        res = training_mgr.start()
+        return jsonify(res), (200 if res["status"] == "ok" else 409)
+
+    @flask_app.route("/api/training/cancel", methods=["POST"])
+    def api_training_cancel():
+        return jsonify(training_mgr.cancel())
+
+    @flask_app.route("/api/training/deploy", methods=["POST"])
+    def api_training_deploy():
+        job_id = (request.get_json() or {}).get("job_id", "")
+        res = training_mgr.deploy(job_id)
+        return jsonify(res), (200 if res["status"] == "ok" else 409)
+
+    @flask_app.route("/api/training/rollback", methods=["POST"])
+    def api_training_rollback():
+        res = training_mgr.rollback()
+        return jsonify(res), (200 if res["status"] == "ok" else 409)
+
+    @flask_app.route("/api/training/log/<job_id>")
+    def api_training_log(job_id):
+        log_path = training_mgr.log_dir / f"{job_id}.log"
+        try:
+            log_path.resolve().relative_to(training_mgr.log_dir.resolve())
+        except ValueError:
+            return "Forbidden", 403
+        if not log_path.is_file():
+            return "Not found", 404
+        return send_file(str(log_path), mimetype="text/plain")
+
     return flask_app
 
 
@@ -892,6 +995,24 @@ def main() -> None:
     pipeline_mgr = DetectionPipelineManager(PROJECT_ROOT, config_path, hailo_apps_dir)
     pipeline_mgr.set_config(config)
 
+    # Remote training jobs (local PC / cloud backends); resumes a running job
+    secrets = SecretsStore(yaml_path.parent / "secrets.yaml")
+
+    def _on_model_installed() -> str | None:
+        # The pipeline's model watcher restarts detection when the model file
+        # changes, but it only runs if the classifier was enabled at startup.
+        # Without it, restart here so the new model is loaded.
+        watcher = pipeline_mgr._model_watcher_thread
+        if watcher and watcher.is_alive():
+            return None
+        if not pipeline_mgr.is_running():
+            return "Model installed. Detection is not running; it loads on the next start."
+        threading.Thread(target=pipeline_mgr.restart, daemon=True).start()
+        return "Restarting detection with the new model."
+
+    training_mgr = TrainingJobManager(PROJECT_ROOT, yaml_path, config_mgr.read, secrets,
+                                      on_model_installed=_on_model_installed)
+
     # Auto-capture state + timer
     auto_interval = collection_cfg.get("auto_capture_interval_sec", 3.0)
     auto_state = AutoCaptureState(cats, interval=auto_interval)
@@ -940,6 +1061,8 @@ def main() -> None:
         auto_state=auto_state,
         cats=cats,
         min_images=min_images,
+        training_mgr=training_mgr,
+        secrets=secrets,
     )
     flask_app.run(host=host, port=port, threaded=True, use_reloader=False)
 

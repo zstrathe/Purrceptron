@@ -667,6 +667,21 @@ def main() -> None:
         for cat, acc in zip(class_names, per_cls_final):
             flag = "" if acc >= 0.85 else "  ← below 85% threshold"
             print(f"  {cat}: {acc:.1%}{flag}")
+
+        # Machine-readable summary for dashboards and remote training jobs
+        final_metrics = {
+            "val_acc": round(float(va_final), 4),
+            "per_class_acc": {cat: round(float(acc), 4)
+                              for cat, acc in zip(class_names, per_cls_final)},
+            "classes": class_names,
+            "energy_threshold": energy_threshold_data,
+            "train_images": len(train_loader.dataset),
+            "val_images": len(val_loader.dataset),
+            "torch_version": torch.__version__,
+            "device": torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu",
+        }
+        with open(output_dir / "final_metrics.json", "w") as f:
+            json.dump(final_metrics, f, indent=2)
     else:
         print("Phase 3 (QAT) and Phase 4 (export) skipped.")
 
