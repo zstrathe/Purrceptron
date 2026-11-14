@@ -3,30 +3,35 @@
 # Noncommercial use only; see LICENSE.md. Not licensed for AI/ML training or
 # text and data mining (rights reserved under Art. 4(3) Directive (EU) 2019/790).
 
-"""Run one remote training job from an extracted job bundle.
+"""Run one remote job from an extracted job bundle.
 
 Every training backend (local PC worker, Hugging Face Jobs, ...) runs this
-same script, so a backend only has to move files and start a process.
+same script, so a backend only has to move files and start a process. The
+manifest's ``task`` says what to run:
+
+    train     train_classifier.py on dataset/   -> model, metrics, results.csv
+    crossval  cross_validate.py on cropped/     -> cv_summary.json
+    detect    auto_detect.py on images/         -> detections.json
 
 Bundle layout (built on the Pi by remote_training/bundle.py):
 
-    <work>/manifest.json        cats, classifier_training settings, Pi torch version
-    <work>/dataset/train/<cat>/ 224x224 crops
-    <work>/dataset/val/<cat>/
+    <work>/manifest.json        task, cats, classifier_training settings, Pi torch version
+    <work>/dataset/{train,val}/<cat>/   224x224 crops (train)
+    <work>/cropped/<cat>/       224x224 crops, not split (crossval)
+    <work>/images/<folder>/     full images without a bounding box (detect)
     <work>/code/train/          copy of the Pi's train/ package (this file included)
     <work>/code/utils/          copy of the Pi's utils/ package
 
 The script writes <work>/code/configs/project.yaml from the manifest so the
-bundled code finds its own project root, then runs train_classifier.py with
-the bundled code. That keeps training from touching the host checkout (for
-example the PC's own models/cat_classifier.pt).
+bundled code finds its own project root, then runs the bundled code. That
+keeps a job from touching the host checkout.
 
 Output (in --output-dir, and packed into --output-tar when given):
 
-    cat_classifier.pt     INT8 TorchScript with classes and energy threshold
-    final_metrics.json    val accuracy, per-class accuracy, threshold
-    training/results.csv  per-epoch metrics
-    status.json           exit code, duration, host torch version
+    train:    cat_classifier.pt, final_metrics.json, training/results.csv
+    crossval: cv_summary.json
+    detect:   detections.json
+    always:   status.json (exit code, duration, host torch version)
 
 Usage:
     python <work>/code/train/run_job.py --work <work> \\
@@ -46,10 +51,14 @@ from pathlib import Path
 
 import yaml
 
-# Files from the output dir that are worth sending back. Checkpoints in
-# training/*.pt are large and only needed for resuming, so they stay behind.
-_RESULT_FILES = ("cat_classifier.pt", "final_metrics.json", "status.json",
-                 "training/results.csv")
+# Per task: the file that proves success, and the files worth sending back.
+# Checkpoints (training/*.pt, CV fold models) are large and stay behind.
+_TASKS = {
+    "train": ("cat_classifier.pt",
+              ("cat_classifier.pt", "final_metrics.json", "training/results.csv")),
+    "crossval": ("cv_summary.json", ("cv_summary.json",)),
+    "detect": ("detections.json", ("detections.json",)),
+}
 
 
 def _write_config(work: Path, manifest: dict) -> Path:
@@ -102,37 +111,52 @@ def main() -> int:
         print("[run_job] WARNING: torch version differs from the Pi's; "
               "the Pi will check that the model loads before deploying it.", flush=True)
 
+    task = manifest.get("task", "train")
+    if task not in _TASKS:
+        print(f"[run_job] unknown task {task!r}", flush=True)
+        return 2
+    proof, result_files = _TASKS[task]
+
     cfg_path = _write_config(work, manifest)
-    cmd = [
-        sys.executable, "-u", str(work / "code" / "train" / "train_classifier.py"),
-        "--config", str(cfg_path),
-        "--dataset-dir", str(work / "dataset"),
-        "--output-dir", str(output_dir),
-    ]
-    print("[run_job] stage=training", flush=True)
+    scripts = work / "code" / "train"
+    if task == "train":
+        cmd = [sys.executable, "-u", str(scripts / "train_classifier.py"),
+               "--config", str(cfg_path), "--dataset-dir", str(work / "dataset"),
+               "--output-dir", str(output_dir)]
+    elif task == "crossval":
+        cmd = [sys.executable, "-u", str(scripts / "cross_validate.py"),
+               "--config", str(cfg_path), "--source-dir", str(work / "cropped"),
+               "--output-dir", str(output_dir),
+               "--n-folds", str(manifest.get("cv_folds", 5))]
+    else:
+        cmd = [sys.executable, "-u", str(scripts / "auto_detect.py"),
+               "--images-dir", str(work / "images"),
+               "--output", str(output_dir / "detections.json")]
+    print(f"[run_job] stage=training task={task}", flush=True)
     start = time.time()
     rc = subprocess.call(cmd, cwd=str(work / "code"))
     duration = round(time.time() - start, 1)
 
-    model_ok = (output_dir / "cat_classifier.pt").is_file()
+    proof_ok = (output_dir / proof).is_file()
     status = {
         "job_id": manifest.get("job_id"),
+        "task": task,
         "exit_code": rc,
-        "ok": rc == 0 and model_ok,
+        "ok": rc == 0 and proof_ok,
         "duration_seconds": duration,
         "host": platform.node(),
         **host,
     }
     (output_dir / "status.json").write_text(json.dumps(status, indent=2))
-    print(f"[run_job] training finished: exit {rc}, model "
-          f"{'written' if model_ok else 'MISSING'}, {duration:.0f}s", flush=True)
+    print(f"[run_job] {task} finished: exit {rc}, {proof} "
+          f"{'written' if proof_ok else 'MISSING'}, {duration:.0f}s", flush=True)
 
     if args.output_tar:
         # Build locally, then copy: the destination may be a mounted cloud
         # bucket where renames are not supported.
         local_tar = work / "results.tar.gz"
         with tarfile.open(local_tar, "w:gz") as tar:
-            for rel in _RESULT_FILES:
+            for rel in (*result_files, "status.json"):
                 p = output_dir / rel
                 if p.is_file():
                     tar.add(p, arcname=rel)

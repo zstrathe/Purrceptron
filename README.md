@@ -5,17 +5,19 @@ Hailo-10H accelerator. The stock COCO detector on the NPU finds the cat, an INT8
 MobileNetV2 on the CPU identifies which cat it is, and each visit is logged with its
 start time, end time and duration. An IR camera keeps it working at night.
 
-The project has two parts that run on different machines:
+Everything is driven from one web dashboard on the Pi:
 
 - `pi_dashboard.py` runs on the Pi. It collects training images from the camera,
-  provides a labeling interface, runs detection and identification continuously, and
-  displays the visit log. It launches `deploy/detect.py` and the classifier worker.
-- `training_dashboard.py` runs on a Linux or WSL2 PC, ideally with a CUDA-capable GPU. It pulls
-  images from the Pi, provides labeling and annotation tools, trains the classifier,
-  and copies the finished model back to the Pi.
+  provides labeling and bounding-box tools, runs detection and identification
+  continuously, and displays the visit log. It launches `deploy/detect.py` and the
+  classifier worker.
+- Training needs a GPU, so the dashboard sends training jobs to a backend: your own
+  Linux or WSL2 PC running the headless `train_worker.py`, or Hugging Face Jobs (a
+  pay-per-minute cloud GPU). The trained model comes back to the Pi, which checks it
+  and installs it when you click Deploy.
 
-The two sides communicate over SSH: `rsync` to push code and pull images, `scp` to
-send the model.
+`scripts/sync_to_pi.sh` pushes the code from your development machine to the Pi over
+SSH.
 
 Design points:
 
@@ -34,8 +36,8 @@ Design points:
 The same approach applies to other animals in the COCO classes (dogs, birds,
 horses): set `deployment.tracking_objects` to the detector label and list the
 individuals under `cats:`. Animals outside those classes, such as rabbits, would
-need a different detector, and the training dashboard's auto-detect currently
-looks for cats only.
+need a different detector, and the Annotate tab's auto-detect currently looks for
+cats only.
 
 > **License notice:** source-available for noncommercial use only. No redistribution,
 > no commercial use, and no use as AI/ML training data. Models you train with this
@@ -48,7 +50,6 @@ looks for cats only.
 - [Software requirements](#software-requirements)
 - [Quick start](#quick-start)
 - [Pi dashboard](#pi-dashboard)
-- [Training dashboard](#training-dashboard)
 - [Training from the Pi](#training-from-the-pi)
 - [How training works](#how-training-works)
 - [Inference details](#inference-details)
@@ -86,13 +87,13 @@ flowchart TB
         UNK --> REFINE
         REFINE["Optional: keep capturing<br/>to refine the next model"] --> CAP
     end
-    subgraph PC["Training machine (CUDA recommended)"]
-        PULL["Pull images + bounding boxes<br/>into a new dataset version"] --> LABEL["Label cats, add or fix bounding boxes<br/>(auto-detect fills in missing ones)"]
-        LABEL --> PREP["Crop each bounding box, resize to 224x224,<br/>split train/val by capture session<br/>so near-duplicate frames stay on one side"]
-        PREP --> TRAIN["Fine-tune MobileNetV2 on the labeled crops:<br/>head warmup, partial fine-tune, quantization-aware training.<br/>Export INT8 TorchScript + class list +<br/>energy threshold (99th percentile of validation energies)"]
+    CAP --> LABEL["Pi dashboard: label cats (Review tab),<br/>add or fix bounding boxes (Annotate tab;<br/>auto-detect fills in missing ones)"]
+    LABEL --> PREP["Pi: crop each bounding box, resize to 224x224,<br/>split train/val by capture session<br/>so near-duplicate frames stay on one side"]
+    subgraph PC["Training backend: your PC or Hugging Face Jobs (CUDA)"]
+        TRAIN["Fine-tune MobileNetV2 on the labeled crops:<br/>head warmup, partial fine-tune, quantization-aware training.<br/>Export INT8 TorchScript + class list +<br/>energy threshold (99th percentile of validation energies)"]
     end
-    CAP -- "images + bounding boxes copied to the<br/>training machine (rsync) for the next round" --> PULL
-    TRAIN -- "model + threshold copied<br/>back to the Pi (scp)" --> CLS
+    PREP -- "crops sent as a job" --> TRAIN
+    TRAIN -- "model + threshold sent back; the Pi checks<br/>it loads, then installs it on Deploy" --> CLS
 ```
 
 1. hailo-apps runs a GStreamer pipeline with YOLOv8m on the Hailo-10H, plus a
@@ -168,11 +169,14 @@ flowchart TB
 
 **Training machine**
 
-- Python 3.10 or newer (developed on 3.12), `rsync`, `ssh` and `scp`.
+Only needed for the Local PC backend (Hugging Face Jobs needs no machine of your
+own), and to push code to the Pi:
+
+- Python 3.10 or newer (developed on 3.12), `rsync` and `ssh`.
 - `scripts/setup_training.sh` creates `venv_train` and installs
   `requirements-training.txt` (PyTorch, torchvision, Albumentations, scikit-learn,
-  OpenCV, Flask, PyYAML). The training dashboard runs every step with
-  `venv_train/bin/python`, so that environment must exist.
+  OpenCV, Flask, PyYAML). Start the worker with `venv_train/bin/python
+  train_worker.py`; it runs every job with that Python.
 
 ## Quick start
 
@@ -205,18 +209,19 @@ python pi_dashboard.py                  # open http://<pi-ip>:5003
 
 # In the browser: turn on "Auto-save" under Detection Capture, or use the
 # Auto button to capture a chosen cat every few seconds. Aim for 300+ images
-# per cat. Label anything in "unlabeled" on the Review tab or later in the
-# training dashboard.
+# per cat. Label anything in "unlabeled" on the Review tab, and give images
+# without a bounding box one on the Annotate tab.
 
-# ── Back on the training machine ────────────────────────────────────────
-source venv_train/bin/activate
-python training_dashboard.py            # open http://localhost:5004
-# Run the steps in order: Pull > Label > Crop > Prepare > Train > Deploy.
-# Deploy copies the model to the Pi over scp.
+# ── Back on the training machine (for the Local PC backend) ─────────────
+echo "WORKER_TOKEN=$(openssl rand -hex 24)" >> .env
+venv_train/bin/python train_worker.py   # listens on port 5004 for the Pi's jobs
+# The Pi must be able to reach this port; under WSL2 see "Training from the Pi".
 
-# ── On the Pi ───────────────────────────────────────────────────────────
-# Turn on "Enable classifier" in the dashboard. The pipeline restarts with
-# the new model and the identity bar shows who is at the bowl.
+# ── In the Pi dashboard ─────────────────────────────────────────────────
+# Training tab: choose Local PC, enter the PC's address, port 5004 and the
+# token, press Test connection, then Save. Press Start training, wait for
+# Ready, compare the accuracy, and press Deploy. Then turn on "Enable
+# classifier" on the Capture tab: the identity bar shows who is at the bowl.
 ```
 
 `sync_to_pi.sh` pushes `configs/project.yaml` too, so edit it on the training machine.
@@ -274,12 +279,39 @@ and each cat. Thumbnails are generated once and cached under `data/raw/.thumbnai
 Keyboard shortcuts: `1` to `9` label as that cat, `d` delete, `n` or `→` skip, `p` or
 `←` previous, `Esc` closes the log viewer.
 
+### Annotate tab
+
+Lists every image in the cat folders and `unlabeled/`, grouped by folder, with each
+saved bounding box drawn on its thumbnail and a "Missing" badge on those without
+one. A status filter (All, Missing, Has one) and per-cat chips narrow the list; it
+opens on Missing. Only images with a bounding box can be cropped for training, so
+this is where images that arrived without one (phone photos, captures the detector
+missed) get one: drag on the image to draw it, or press Auto-detect.
+
+Auto-detect runs a COCO-pretrained torchvision Faster R-CNN (ResNet50 FPN v2), which
+is too heavy for the Pi, on the training backend:
+
+- With the Local PC backend, Auto-detect asks `train_worker.py` for the current
+  image's bounding box and shows it within a second (the first request loads the
+  model, about 20 seconds).
+- "Auto-detect all missing" sends every image without a bounding box as one job, on
+  either backend. On Hugging Face Jobs that takes a few minutes, mostly container
+  start-up. The results are saved as auto-detected; an image you annotate while the
+  job runs is left alone.
+
+Bounding boxes are saved as soon as they are drawn, in the same sidecar format the
+Pi's detection capture writes. Editing a Pi-generated bounding box keeps a backup,
+and Clear restores it. Keyboard shortcuts: `a` auto-detect, `d` clear, `n`/`p` or
+the arrow keys step through the filtered list.
+
 ### Training tab
 
-Starts a training round from the Pi: picks where training runs (your PC or
-Hugging Face Jobs), checks there are enough labeled images, packages them, sends
-the job, shows its progress and log, and deploys or rolls back the returned model.
-See [Training from the Pi](#training-from-the-pi).
+Runs training from the Pi: picks where jobs run (your PC or Hugging Face Jobs),
+checks there are enough labeled images, packages them, sends the job, shows its
+progress and log, and deploys or rolls back the returned model. It also edits the
+training settings, runs cross-validation, and charts each job's loss and accuracy
+curves, optionally against an earlier job. See
+[Training from the Pi](#training-from-the-pi).
 
 ### Sidebar
 
@@ -289,85 +321,11 @@ detections, and, when the classifier is enabled, the day's identified visits fro
 `classifier_log.db` with total tracked time per cat. Arrow buttons step through
 earlier days.
 
-## Training dashboard
-
-`training_dashboard.py` runs on the training machine and serves on port 5004 (`--host`,
-`--port` and `--config` are the only options). Work is organized into versions. Each
-version is a directory under `versions/` holding that round's images, crops, dataset,
-training output and model. Versions can be created, renamed, duplicated and deleted
-from the Pipeline tab.
-
-### Pipeline tab
-
-The six steps can be run individually or with Run All, which skips the interactive
-Label step. Each step's output is streamed to the page and saved under
-`logs/training/`.
-
-| Step | What it does |
-|------|--------------|
-| **Pull** | `rsync` the Pi's `data/raw/` to the local `data/raw/` (using `.env`; the local copy mirrors the Pi, deletions included), then copy images and sidecars into `versions/<v>/raw_images/`. |
-| **Label** | Opens the Label tab: every `unlabeled/` image, oldest first, with the Pi's detector bounding box overlaid. Assign each to a cat and the image and its sidecar move to that cat's folder. Skip moves it to `unlabeled/skipped/`; Undo reverses the last 20 actions. Keys `1` to `9` assign, `s` skips. |
-| **Crop** | `train/crop_images.py`: cut each cat out using the highest-confidence bounding box in its sidecar, padded by `classifier.crop_padding`, and resize to 224x224. Images without a sidecar are skipped and reported. |
-| **Prepare** | `train/prepare_classifier_dataset.py`: split crops into `train/` and `val/`. Images are grouped into sessions by timestamp (`session_gap_minutes`) and 20% of each cat's sessions go to validation, so consecutive frames from one session cannot end up on both sides of the split. |
-| **Train** | `train/train_classifier.py`: the four-phase training described below. |
-| **Deploy** | `scripts/transfer_model.sh`: `scp` the model to `models/cat_classifier.pt` on the Pi, with retries. The Pi dashboard restarts the pipeline with the new model if the classifier is enabled. |
-
-A separate Cross-validate button runs `train/cross_validate.py` on the crops:
-session-aware stratified k-fold (`cv_folds`, default 5) with a simplified recipe (no
-SWA, warmup or export). It gives an estimate of generalization before a full
-training run.
-
-Collapsible panels on the same tab edit the training hyperparameters, the crop
-padding ("Save & Re-crop") and the augmentation switches. They are written back to
-`configs/project.yaml`. Keyboard: `1` to `7` run the steps in order (7 is
-Cross-validate), `r` runs all, `s` stops.
-
-### Annotate tab
-
-Lists every image in the version, grouped by folder, with each saved bounding box drawn on
-its thumbnail and a "Missing" badge on those without one. A status filter (All,
-Missing, Annotated) and per-cat chips narrow the list; it opens on Missing. This is
-where images that arrived without a bounding box (phone photos, older captures) get one:
-draw a bounding box by dragging, or click Auto-detect to get one from a COCO-pretrained
-torchvision Faster R-CNN (ResNet50 FPN v2), using the GPU when one is available.
-"Auto-detect all missing" processes every image without a bounding box. Bounding boxes are saved as
-soon as they are drawn, in the same sidecar format the Pi writes, so the Crop step
-treats them the same way. Editing a Pi-generated bounding box keeps a backup, and Clear
-restores it. Keyboard shortcuts: `a` auto-detect, `d` clear, `n`/`p` or the arrow
-keys step through the filtered list.
-
-### Metrics tab
-
-Loss, accuracy and per-class validation accuracy charts for each training phase, the
-best epoch, dataset counts, and a "Compare with" dropdown that overlays another
-version's curves and shows the difference in best validation accuracy.
-
-### Manual CLI
-
-The same scripts can be run directly. Paths have to be given explicitly because the
-scripts do not know about versions:
-
-```bash
-source venv_train/bin/activate
-V=versions/v1
-bash scripts/pull_dataset.sh
-python train/import_captures.py --output-dir $V/raw_images
-python train/crop_images.py --input-dir $V/raw_images --output-dir $V/cropped_images --padding 0.2
-python train/prepare_classifier_dataset.py --source-dir $V/cropped_images --output-dir $V/classifier_dataset
-python train/cross_validate.py --source-dir $V/cropped_images --output-dir $V/cv_results   # optional
-python train/train_classifier.py --dataset-dir $V/classifier_dataset --output-dir $V
-bash scripts/transfer_model.sh $V/cat_classifier.pt
-```
-
-`train_classifier.py --skip-phase N` skips a phase (1 to 3). Skipping phase 3 also
-skips the INT8 export.
-
 ## Training from the Pi
 
-The Pi dashboard's Training tab runs a whole training round without touching the
-PC's dashboard: the Pi packages its labeled images, sends them to a training
-backend, gets the model back, checks it, and deploys it when you click Deploy.
-The PC training dashboard still works as before; use whichever you prefer.
+The Pi dashboard's Training tab runs a whole training round: the Pi packages its
+labeled images, sends them to a training backend, gets the model back, checks it,
+and deploys it when you click Deploy.
 
 ```mermaid
 flowchart LR
@@ -396,8 +354,24 @@ flowchart LR
    is kept as `models/cat_classifier.prev.pt`; Roll back swaps the two (pressing it
    again swaps back). Detection restarts with the new model within seconds.
 
+The same path runs two other kinds of job: **cross-validation** (the Training tab's
+"Run cross-validation"; it sends the crops unsplit, trains one model per fold with
+`train/cross_validate.py`, and shows the per-fold table) and **auto-detect** (the
+Annotate tab's "Auto-detect all missing"; it sends the images that have no
+bounding box and writes the results into their sidecars).
+
+**Settings.** The Training Settings panel edits the `classifier_training` values
+(epochs, learning rates, augmentation, class balance, unknown-cat percentile) and
+`classifier.crop_padding`. They are saved to the Pi's `runtime.yaml` and travel to
+the backend in each job.
+
+**Curves.** Every training job brings back its `results.csv`. Pick a job under
+Training Curves to see loss, accuracy and per-cat validation accuracy for all
+phases or one phase, and "Compare with" an earlier job to overlay its validation
+curves.
+
 Job state is saved to `data/training_jobs/<job_id>/state.json`, so restarting the
-Pi dashboard while a job trains resumes watching it. Logs go to
+Pi dashboard while a job runs resumes watching it. Logs go to
 `logs/training_jobs/`. One job runs at a time.
 
 ### Backends
@@ -412,15 +386,17 @@ Training tab, then **Save**. Tokens are stored in `configs/secrets.yaml`
 (gitignored, owner-only permissions) and are never sent back to the browser;
 other settings go to `configs/runtime.yaml`.
 
-**Local PC.** The training dashboard doubles as a job worker:
+**Local PC.** `train_worker.py` runs on the PC and does the jobs the Pi sends. It
+has no web page of its own.
 
-1. Add a token to the PC's `.env` (any long random string) and restart
-   `training_dashboard.py`:
+1. Add a token to the PC's `.env` (any long random string) and start the worker
+   from the training venv:
    ```bash
    echo "WORKER_TOKEN=$(openssl rand -hex 24)" >> .env
+   venv_train/bin/python train_worker.py        # --port to change 5004
    ```
-   The dashboard prints `Pi worker API enabled` at startup. Without a token the
-   worker API is off.
+   It prints the GPU and torch version it found and refuses to start without a
+   token. Ctrl+C stops it and any job it is running.
 2. Make port 5004 reachable from the Pi. Under WSL2 the easiest way is mirrored
    networking: put `networkingMode=mirrored` under `[wsl2]` in
    `%UserProfile%\.wslconfig`, run `wsl --shutdown`, and allow the port in an
@@ -438,9 +414,8 @@ other settings go to `configs/runtime.yaml`.
    Test connection reports the PC's GPU and torch version, and warns when the
    torch version differs from the Pi's.
 
-Each Pi job becomes a version named `pi-<job_id>` on the PC, so its training
-curves appear on the training dashboard's Metrics tab. While a Pi job runs, the
-PC dashboard's pipeline steps are refused, and the other way around.
+Job files stay on the PC in `data/worker_jobs/<job_id>/` (the extracted bundle,
+everything the job wrote, and `worker.log`); delete old ones when you like.
 
 **Hugging Face Jobs.**
 
@@ -467,6 +442,42 @@ Training tab builds its form from this), and implement `test_connection`,
 `submit` (upload the bundle and start `code/train/run_job.py`), `poll`, `cancel`,
 `fetch` (download the `results.tar.gz` that `run_job.py` wrote) and optionally
 `cleanup`. Register it in `BACKENDS` in `remote_training/backends/__init__.py`.
+
+### Moving over from the PC training dashboard
+
+Earlier versions had a second dashboard on the PC that labeled and annotated images
+inside `versions/<v>/raw_images/`. That work never went back to the Pi. To copy it
+over once, run on the PC:
+
+```bash
+python scripts/push_labels_to_pi.py --version versions/<v>           # dry run: shows what would change
+python scripts/push_labels_to_pi.py --version versions/<v> --apply
+```
+
+It moves images the PC labeled out of the Pi's `unlabeled/`, sends bounding boxes
+drawn or edited on the PC, and reports images the Pi holds under a different cat
+(skipped unless `--prefer-pc`). Images you deleted on the Pi stay deleted; images the
+Pi never had are copied only with `--include-missing`. Running it again sends
+nothing new.
+
+### Command line
+
+The training scripts also run directly on the PC, without the Pi dashboard:
+
+```bash
+source venv_train/bin/activate
+V=versions/v1
+bash scripts/pull_dataset.sh                       # rsync the Pi's data/raw/
+python train/import_captures.py --output-dir $V/raw_images
+python train/crop_images.py --input-dir $V/raw_images --output-dir $V/cropped_images --padding 0.2
+python train/prepare_classifier_dataset.py --source-dir $V/cropped_images --output-dir $V/classifier_dataset
+python train/cross_validate.py --source-dir $V/cropped_images --output-dir $V/cv_results   # optional
+python train/train_classifier.py --dataset-dir $V/classifier_dataset --output-dir $V
+bash scripts/transfer_model.sh $V/cat_classifier.pt # scp the model to the Pi
+```
+
+`train_classifier.py --skip-phase N` skips a phase (1 to 3). Skipping phase 3 also
+skips the INT8 export.
 
 ## How training works
 
@@ -506,10 +517,11 @@ After export, the INT8 model scores every validation image and the
 rejection threshold. It is embedded in the model file with the class list, so the Pi
 needs no extra configuration for unknown-cat rejection.
 
-Outputs are `models/cat_classifier.pt` (overwritten by every run), a copy at
-`versions/<v>/cat_classifier.pt`, `versions/<v>/training/results.csv` with per-epoch
-loss, accuracy and per-class validation accuracy, and the best checkpoint of each
-phase. The script ends by evaluating the exported INT8 model on the validation set
+Outputs go to the `--output-dir`: `cat_classifier.pt`, `training/results.csv` with
+per-epoch loss, accuracy and per-class validation accuracy, `final_metrics.json`, and
+the best checkpoint of each phase. Run from the command line, it also overwrites the
+local `models/cat_classifier.pt`; a job from the Pi writes only inside the job's
+folder. The script ends by evaluating the exported INT8 model on the validation set
 and printing overall and per-class accuracy.
 
 ## Inference details
@@ -667,13 +679,13 @@ a key is omitted, it is noted.
 | `classifier_training.balance_classes` | true | Class-weighted loss for imbalanced data. |
 | `classifier_training.patience` | 15 | Early-stopping patience, per phase. |
 | `classifier_training.session_gap_minutes` | 5 | Gap that starts a new session for the train/val split and CV folds. |
-| `classifier_training.cv_folds` | 5 | Folds for the dashboard's Cross-validate button. |
+| `classifier_training.cv_folds` | 5 | Default folds for the Training tab's cross-validation. |
 | `classifier_training.energy_ood_percentile` | not in template; code default 0.99 | Validation-energy quantile used as the unknown-cat threshold. |
 | `classifier_training.augmentation.*` | see template | Switches and limits for each augmentation: `horizontal_flip`, `brightness_contrast`, `brightness_limit`, `contrast_limit`, `shift_scale_rotate`, `rotate_limit`, `gaussian_blur`, `gaussian_noise`, `coarse_dropout`, `hue_saturation`, `clahe`. |
-| **Training from the Pi** | | Set from the Pi dashboard's Training tab, which writes `runtime.yaml`. Tokens are kept in `configs/secrets.yaml`. |
+| **Training from the Pi** | | Set from the Pi dashboard's Training tab, which writes `runtime.yaml` (the `classifier_training` values above too). Tokens are kept in `configs/secrets.yaml`. |
 | `training_backend.backend` | `local_pc` | Where jobs run: `local_pc` or `hf_jobs`. |
 | `training_backend.min_images_per_cat` | 30 | Labeled images with bounding boxes each cat needs before a job can start. |
-| `training_backend.local_pc.host` / `port` | `''` / 5004 | Address of the PC running `training_dashboard.py`. |
+| `training_backend.local_pc.host` / `port` | `''` / 5004 | Address of the PC running `train_worker.py`. |
 | `training_backend.hf_jobs.namespace` | `''` | HF user or organization that runs and pays for jobs; blank uses the token's user. |
 | `training_backend.hf_jobs.flavor` | `t4-small` | HF Jobs hardware. |
 | `training_backend.hf_jobs.timeout` | `2h` | Job time limit. |
@@ -690,12 +702,13 @@ Keys in the template that nothing reads: `camera.fps`, `camera.format`,
 
 ```
 Purrceptron/
-├── pi_dashboard.py                 # Pi web dashboard: capture, review, pipeline control (port 5003)
-├── training_dashboard.py           # Training dashboard: versions, pipeline steps, annotate, metrics (port 5004)
+├── pi_dashboard.py                 # Pi web dashboard: capture, review, annotate, training (port 5003)
+├── train_worker.py                 # Headless worker on the PC for the Local PC backend (port 5004)
 ├── templates/
-│   ├── dashboard.html              # Pi dashboard UI
-│   └── training_dashboard.html     # Training dashboard UI
-├── static/css/theme.css            # Shared dashboard theme (colors, layout, image browser)
+│   └── dashboard.html              # Pi dashboard UI
+├── static/
+│   ├── css/theme.css               # Dashboard theme (colors, layout, image browser)
+│   └── js/chart.umd.min.js         # Chart.js, served locally for the training charts
 ├── configs/
 │   └── project.yaml.example        # Configuration template (copy to project.yaml)
 ├── deploy/                         # Runs on the Pi
@@ -709,14 +722,17 @@ Purrceptron/
 │   ├── export.py                   # Standalone dataset archive export (CLI)
 │   └── capture.py                  # Legacy standalone capture app, not used by the dashboard
 ├── remote_training/                # Training jobs sent from the Pi (Training tab)
-│   ├── manager.py                  # Job lifecycle on the Pi: package, submit, poll, fetch, validate, deploy
-│   ├── bundle.py                   # Crop, split and pack labeled images into a job bundle
+│   ├── manager.py                  # Job lifecycle on the Pi: package, submit, poll, fetch, finish, deploy
+│   ├── bundle.py                   # Pack a job: crops (train, cross-validation) or images (auto-detect)
+│   ├── settings.py                 # Training settings the Training tab edits
+│   ├── metrics.py                  # results.csv to chart data
 │   ├── validate_model.py           # Load-test a returned model with the Pi's torch
-│   ├── worker.py                   # Job API on the training dashboard for the local_pc backend
+│   ├── worker.py                   # Job API served by train_worker.py for the local_pc backend
 │   └── backends/                   # base.py interface, local_pc.py, hf_jobs.py
 ├── train/                          # Runs on the training machine
-│   ├── run_job.py                  # Entry point every training backend runs from a job bundle
-│   ├── import_captures.py          # Copy data/raw/ into a version
+│   ├── run_job.py                  # Entry point every backend runs from a job bundle
+│   ├── auto_detect.py              # Cat bounding boxes for images without one (Faster R-CNN)
+│   ├── import_captures.py          # Copy data/raw/ into a version (command-line path)
 │   ├── crop_images.py              # Crop detections using bbox sidecars
 │   ├── prepare_classifier_dataset.py  # Session-aware train/val split
 │   ├── train_classifier.py         # Four-phase MobileNetV2 training and INT8 export
@@ -725,22 +741,24 @@ Purrceptron/
 │   ├── setup_pi.sh                 # Pi setup: hailo-apps, Python deps, data dirs
 │   ├── setup_training.sh           # Training venv and GPU check
 │   ├── sync_to_pi.sh               # rsync the project to the Pi (.syncignore applies)
-│   ├── pull_dataset.sh             # rsync data/raw/ from the Pi
-│   ├── transfer_model.sh           # scp a model to the Pi
+│   ├── pull_dataset.sh             # rsync data/raw/ from the Pi (command-line path)
+│   ├── transfer_model.sh           # scp a model to the Pi (command-line path)
+│   ├── push_labels_to_pi.py        # One-time: copy labels from an old PC version to the Pi
 │   └── _common.sh                  # Shared helpers (.env loading)
 ├── utils/
 │   ├── config.py                   # Config loading, runtime.yaml merge, path resolution, cat colors
 │   ├── secrets.py                  # configs/secrets.yaml store for backend tokens
+│   ├── sidecars.py                 # Bounding-box sidecar read/write, edit backup and restore
 │   ├── display.py                  # Colored console output
-│   └── thumbnails.py               # Cached thumbnails for the dashboards' image browsers
+│   └── thumbnails.py               # Cached thumbnails for the dashboard's image browsers
 ├── requirements-pi.txt
 ├── requirements-training.txt
 └── requirements-scripts.txt
 ```
 
-Runtime directories (gitignored): `data/` (captures, trash, logs on the Pi),
-`versions/` (training rounds), `models/` (deployed model), `logs/`, `hailo-apps/`,
-`venv_train/`.
+Runtime directories (gitignored): `data/` (captures, trash and job state on the Pi;
+`data/worker_jobs/` on the PC), `versions/` (command-line training rounds), `models/`
+(deployed model and validated candidates), `logs/`, `hailo-apps/`, `venv_train/`.
 
 ## Troubleshooting
 
@@ -773,31 +791,25 @@ images, and lighting very different from the training data raises energy scores.
 Add images from those conditions and retrain, raise
 `classifier.energy_ood_threshold`, or set `energy_ood_enabled: false`.
 
-Wrong cat identified: check per-class accuracy on the Metrics tab and run
-Cross-validate. Collect more images of the weak cat in varied lighting and retrain,
+Wrong cat identified: check per-cat accuracy in the Training tab's Result card and
+curves, and run cross-validation. Collect more images of the weak cat in varied lighting and retrain,
 lengthening phase 2 first.
 
-Crop step skips images: those images have no bounding-box sidecar. Add bounding boxes on
-the Annotate tab, or pull again after enabling detection capture on the Pi.
+Images "without bounding box" on the Training tab: they cannot be cropped. Give them
+one on the Annotate tab (Auto-detect all missing does them in one job).
 
-Dashboard not reachable: both dashboards bind to all interfaces. Check the Pi's
+Dashboard not reachable: the dashboard binds to all interfaces. Check the Pi's
 firewall for port 5003, and use the IP address if `.local` names do not resolve.
 
 ## Known limitations
 
-- Neither dashboard has authentication. Run them on a trusted network only.
-- Relabeling or deleting a capture on the Pi's Review tab moves only the JPEG. The
-  bounding-box sidecar stays behind, so Crop skips that image. The training
-  dashboard's Label tab moves both files.
-- Images still in `data/raw/unlabeled/` on the Pi are imported into
-  `raw_images/unlabeled/` again on every Pull, even if they were labeled in a
-  previous version.
+- The dashboard has no authentication: anyone on the network can start jobs or
+  deploy a model. Run it on a trusted network only. Tokens are never sent back to
+  the browser.
 - The feeding tracker only works with a custom HEF that outputs the configured cat names.
 - Prepare produces train and validation splits only. There is no held-out test set.
-- Every training run overwrites `models/cat_classifier.pt` as well as the version's
-  copy.
-- The cross-validation results panel on the Metrics tab does not render yet. Read
-  `versions/<v>/cv_results/cv_summary.json` or the step log instead.
+- Run from the command line, `train_classifier.py` overwrites the local
+  `models/cat_classifier.pt` as well as the version's copy.
 - The classifier has only been tested on cats that are easy to tell apart. With two
   look-alike cats the vote window would stall rather than misidentify, so visits
   would go unlogged. What would help, and in what order, is written up in

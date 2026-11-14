@@ -3,10 +3,16 @@
 # Noncommercial use only; see LICENSE.md. Not licensed for AI/ML training or
 # text and data mining (rights reserved under Art. 4(3) Directive (EU) 2019/790).
 
-"""Training job lifecycle on the Pi.
+"""Remote job lifecycle on the Pi.
 
-package (crop + split + tar) -> submit to backend -> poll -> fetch results
--> validate with the Pi's torch -> ready -> user deploys (or rolls back).
+package -> submit to backend -> poll -> fetch results -> finish -> ready.
+
+Three kinds of job share that lifecycle:
+
+    train     finish = validate the model with the Pi's torch; the user then
+              deploys it (or rolls back)
+    crossval  finish = keep the k-fold summary
+    detect    finish = write the auto-detected bounding boxes into sidecars
 
 One job runs at a time. Each job's state is saved to
 data/training_jobs/<job_id>/state.json after every change, so restarting the
@@ -29,14 +35,23 @@ from typing import Callable
 from remote_training.backends import BACKENDS, BackendError, get_backend_class
 from remote_training.backends import base as B
 from remote_training.bundle import (
-    PackagingError, build_bundle, count_trainable_images, pi_torch_version, safe_extract,
+    TASKS, PackagingError, build_bundle, count_trainable_images, images_missing_bbox,
+    pi_torch_version, safe_extract,
 )
+from remote_training.metrics import read_training_metrics
 from utils.config import resolve_path
 from utils.secrets import SecretsStore
+from utils.sidecars import from_center, has_bbox, set_bbox
 
-STAGES = ["packaging", "uploading", "queued", "training", "downloading", "validating", "ready"]
+_COMMON = ["packaging", "uploading", "queued", "training", "downloading"]
+STAGES = {
+    "train": _COMMON + ["validating", "ready"],
+    "crossval": _COMMON + ["ready"],
+    "detect": _COMMON + ["applying", "ready"],
+}
+KIND_LABELS = {"train": "Training", "crossval": "Cross-validation", "detect": "Auto-detect"}
 TERMINAL = {"ready", "failed", "cancelled"}
-_REMOTE_STAGES = {"uploading", "queued", "training", "downloading", "validating"}
+_REMOTE_STAGES = {"uploading", "queued", "training", "downloading", "validating", "applying"}
 
 DEFAULT_MIN_IMAGES = 30
 _MAX_POLL_FAILURES = 40     # consecutive poll errors (network blips) before giving up
@@ -220,16 +235,27 @@ class TrainingJobManager:
     # ═════════════════════════════════════════════════════════════
     # Start / cancel
     # ═════════════════════════════════════════════════════════════
-    def image_counts(self) -> dict:
+    def raw_dir(self) -> Path:
         cfg = self._read_config()
-        raw_dir = resolve_path(cfg.get("collection", {}).get("output_dir", "data/raw"),
-                               self.project_root)
-        return count_trainable_images(raw_dir, cfg["cats"])
+        return resolve_path(cfg.get("collection", {}).get("output_dir", "data/raw"),
+                            self.project_root)
 
-    def start(self) -> dict:
+    def image_counts(self) -> dict:
+        return count_trainable_images(self.raw_dir(), self._read_config()["cats"])
+
+    def missing_bbox_count(self) -> int:
+        return len(images_missing_bbox(self.raw_dir(), self._read_config()["cats"]))
+
+    def start(self, kind: str = "train", cv_folds: int | None = None) -> dict:
+        if kind not in TASKS:
+            return {"status": "error", "message": f"Unknown job kind {kind!r}"}
+        if cv_folds is not None and not 2 <= cv_folds <= 10:
+            return {"status": "error", "message": "Folds must be between 2 and 10"}
         with self._lock:
             if self.is_active():
-                return {"status": "error", "message": "A training job is already running"}
+                return {"status": "error",
+                        "message": f"A {KIND_LABELS[self._job.get('kind', 'train')].lower()} "
+                                   "job is already running"}
             s = self.settings()
             try:
                 backend = self.make_backend()
@@ -242,7 +268,7 @@ class TrainingJobManager:
             counts = self.image_counts()
             short = [f"{c} ({v['with_bbox']})" for c, v in counts.items()
                      if v["with_bbox"] < s["min_images_per_cat"]]
-            if short:
+            if short and kind != "detect":
                 return {"status": "error",
                         "message": f"Need at least {s['min_images_per_cat']} images with "
                                    f"bounding boxes per cat. Too few: {', '.join(short)}"}
@@ -250,6 +276,8 @@ class TrainingJobManager:
             job_id = datetime.now().strftime("%Y%m%d-%H%M%S")
             self._job = {
                 "job_id": job_id,
+                "kind": kind,
+                "cv_folds": cv_folds,
                 "backend": backend.name,
                 "backend_label": backend.label,
                 "stage": "packaging",
@@ -267,7 +295,7 @@ class TrainingJobManager:
             self._cancel.clear()
             self._open_log(job_id)
             self._save()
-            self._logline(f"Job {job_id} on {backend.label}")
+            self._logline(f"{KIND_LABELS[kind]} job {job_id} on {backend.label}")
             self._start_thread(resume=False)
             return {"status": "ok", "job_id": job_id}
 
@@ -298,9 +326,14 @@ class TrainingJobManager:
                     project_root=self.project_root, config_path=self.config_path,
                     config=self._read_config(), python_exe=self.python_exe,
                     log=self._logline, should_stop=self._cancel.is_set,
+                    task=job.get("kind", "train"), cv_folds=job.get("cv_folds"),
                 )
                 with self._lock:
-                    job["split_counts"] = manifest["split_counts"]
+                    for key in ("split_counts", "crop_counts", "cv_folds"):
+                        if key in manifest:
+                            job[key] = manifest[key]
+                    if "images" in manifest:
+                        job["detect_images"] = manifest["images"]
                     job["bundle_mb"] = manifest.get("bundle_mb")
                 if self._cancel.is_set():
                     raise PackagingError("Cancelled")
@@ -327,8 +360,16 @@ class TrainingJobManager:
             except BackendError as exc:
                 self._logline(f"Warning: {exc}")
 
-            self._set_stage("validating")
-            self._validate(results_dir)
+            kind = job.get("kind", "train")
+            self._read_remote_status(results_dir)
+            if kind == "train":
+                self._set_stage("validating")
+                self._validate(results_dir)
+            elif kind == "crossval":
+                self._finish_crossval(results_dir)
+            else:
+                self._set_stage("applying")
+                self._apply_detections(results_dir)
         except PackagingError as exc:
             if self._cancel.is_set():
                 self._set_stage("cancelled")
@@ -360,6 +401,13 @@ class TrainingJobManager:
                 st = backend.poll(job["handle"])
                 failures = 0
             except Exception as exc:
+                if self._cancel.is_set():
+                    # Cancel asked for and the backend can't be reached: stop
+                    # waiting instead of retrying for minutes.
+                    self._logline(f"{backend.label} unreachable ({exc}); the remote job "
+                                  "may still be running there.")
+                    self._set_stage("cancelled")
+                    return False
                 failures += 1
                 self._logline(f"Status check failed ({failures}/{_MAX_POLL_FAILURES}): {exc}")
                 if failures >= _MAX_POLL_FAILURES:
@@ -385,7 +433,7 @@ class TrainingJobManager:
                         pass
                 return False
             if st.stage == B.FAILED:
-                raise BackendError(f"Training failed on {backend.label}: "
+                raise BackendError(f"The job failed on {backend.label}: "
                                    f"{st.message or 'see log'}")
             if st.stage != job["stage"] and st.stage in ("queued", "training"):
                 self._set_stage(st.stage)
@@ -411,15 +459,102 @@ class TrainingJobManager:
             job["validation"] = res
             if metrics_path.is_file():
                 job["metrics"] = json.loads(metrics_path.read_text())
-            status_path = results_dir / "status.json"
-            if status_path.is_file():
-                job["remote_status"] = json.loads(status_path.read_text())
         if not res.get("ok"):
             raise BackendError("Model failed validation on the Pi: " + "; ".join(res["errors"]))
         self.candidates_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(model, self.candidates_dir / f"{job['job_id']}.pt")
         acc = (job.get("metrics") or {}).get("val_acc")
         self._set_stage("ready", f"val accuracy {acc:.1%}" if acc is not None else "")
+
+    def _read_remote_status(self, results_dir: Path) -> None:
+        status_path = results_dir / "status.json"
+        if status_path.is_file():
+            with self._lock:
+                self._job["remote_status"] = json.loads(status_path.read_text())
+
+    def _finish_crossval(self, results_dir: Path) -> None:
+        path = results_dir / "cv_summary.json"
+        if not path.is_file():
+            raise BackendError("The job finished but returned no cross-validation summary")
+        cv = json.loads(path.read_text())
+        with self._lock:
+            self._job["cv"] = cv
+        self._set_stage("ready", f"mean accuracy {cv.get('mean_acc', 0):.1%} "
+                                 f"± {cv.get('std_acc', 0):.1%} over {cv.get('n_folds')} folds")
+
+    def _apply_detections(self, results_dir: Path) -> None:
+        """Write auto-detected bounding boxes into sidecars. Images that got
+        a bounding box while the job ran (drawn by hand, say) are left alone.
+        An image labeled in Review meanwhile was renamed to <cat>_<timestamp>,
+        so it is found again by its timestamp."""
+        path = results_dir / "detections.json"
+        if not path.is_file():
+            raise BackendError("The job finished but returned no detections")
+        detections: dict = json.loads(path.read_text())
+        raw_dir = self.raw_dir()
+        cats = self._read_config()["cats"]
+        by_stamp: dict[str, Path] | None = None
+
+        def locate(rel: str) -> Path | None:
+            nonlocal by_stamp
+            p = raw_dir / rel
+            if p.is_file():
+                return p
+            if by_stamp is None:
+                by_stamp = {}
+                for folder in (*cats, "unlabeled"):
+                    d = raw_dir / folder
+                    if d.is_dir():
+                        for img in d.glob("*.jpg"):
+                            by_stamp.setdefault(img.stem.split("_", 1)[-1], img)
+            return by_stamp.get(Path(rel).stem.split("_", 1)[-1])
+
+        result = {"applied": 0, "no_cat": 0, "already_had_bbox": 0, "gone": 0}
+        for rel, box in detections.items():
+            if not box:
+                result["no_cat"] += 1
+                continue
+            img = locate(rel)
+            if img is None:
+                result["gone"] += 1
+            elif has_bbox(img):
+                result["already_had_bbox"] += 1
+            else:
+                bbox = from_center(box["cx"], box["cy"], box["w"], box["h"])
+                if bbox is None:
+                    result["no_cat"] += 1
+                    continue
+                set_bbox(img, bbox, source="auto-detect",
+                         confidence=box.get("confidence", 0.0))
+                result["applied"] += 1
+        with self._lock:
+            self._job["detect_result"] = result
+        self._logline(f"Bounding boxes written: {result['applied']}; no cat found: "
+                      f"{result['no_cat']}; already had one: {result['already_had_bbox']}; "
+                      f"image gone: {result['gone']}")
+        self._set_stage("ready", f"{result['applied']} bounding boxes added, "
+                                 f"{result['no_cat']} images with no cat found")
+
+    # ═════════════════════════════════════════════════════════════
+    # Instant auto-detect (backends that support it, e.g. Local PC)
+    # ═════════════════════════════════════════════════════════════
+    def instant_detect_available(self) -> bool:
+        try:
+            return get_backend_class(self.settings()["backend"]).supports_instant_detect
+        except BackendError:
+            return False
+
+    def instant_detect(self, image_path: Path) -> dict | None:
+        """Best cat bounding box {cx, cy, w, h, confidence} or None. Raises
+        BackendError when the backend can't do it or is unreachable."""
+        backend = self.make_backend()
+        if not backend.supports_instant_detect:
+            raise BackendError(f"{backend.label} runs auto-detect as a batch job only. "
+                               "Use 'Auto-detect all missing'.")
+        missing = backend.missing_settings()
+        if missing:
+            raise BackendError(f"{backend.label} is not set up: missing {', '.join(missing)}")
+        return backend.detect_image(image_path)
 
     # ═════════════════════════════════════════════════════════════
     # Deploy / rollback
@@ -523,13 +658,38 @@ class TrainingJobManager:
             log = list(self._log)[-log_lines:]
         if job:
             job.pop("handle", None)
+            job.pop("detect_images", None)
+        kind = (job or {}).get("kind", "train")
         return {
             "active": self.is_active(),
             "job": job,
             "log": log,
-            "stages": STAGES,
+            "stages": STAGES[kind],
             "deployed": self.deployed_info(),
         }
+
+    def job_metrics(self, job_id: str) -> dict:
+        """Per-epoch training curves of a finished training job."""
+        if not self._valid_job_id(job_id):
+            return {"available": False}
+        return read_training_metrics(self._job_dir(job_id) / "results" / "training")
+
+    def job_state(self, job_id: str) -> dict | None:
+        """Saved state of any job, without internal fields."""
+        if not self._valid_job_id(job_id):
+            return None
+        path = self._job_dir(job_id) / "state.json"
+        try:
+            job = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        job.pop("handle", None)
+        job.pop("detect_images", None)
+        return job
+
+    @staticmethod
+    def _valid_job_id(job_id: str) -> bool:
+        return bool(job_id) and job_id.replace("-", "").isdigit() and len(job_id) <= 32
 
     def list_jobs(self, limit: int = 20) -> list[dict]:
         out = []
@@ -541,10 +701,14 @@ class TrainingJobManager:
             except (OSError, json.JSONDecodeError):
                 continue
             out.append({
-                "job_id": j["job_id"], "backend": j.get("backend_label"),
+                "job_id": j["job_id"], "kind": j.get("kind", "train"),
+                "backend": j.get("backend_label"),
                 "stage": j.get("stage"), "message": j.get("message"),
                 "created": j.get("created"), "deployed_at": j.get("deployed_at"),
                 "val_acc": (j.get("metrics") or {}).get("val_acc"),
+                "cv_mean": (j.get("cv") or {}).get("mean_acc"),
+                "has_curves": (self._job_dir(j["job_id"]) / "results" / "training"
+                               / "results.csv").is_file(),
                 "candidate": (self.candidates_dir / f"{j['job_id']}.pt").is_file(),
             })
         return out

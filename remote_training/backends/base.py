@@ -74,6 +74,9 @@ class TrainingBackend(ABC):
     label: str = ""
     description: str = ""
     poll_interval: float = 5.0    # seconds between poll() calls
+    # True if detect_image() gives a bounding box within seconds (the Annotate
+    # tab's per-image Auto-detect button). Otherwise only batch detect jobs.
+    supports_instant_detect: bool = False
 
     def __init__(self, settings: dict, secrets: dict, context: dict | None = None):
         """settings: non-secret values; secrets: secret values; context:
@@ -132,6 +135,11 @@ class TrainingBackend(ABC):
     @abstractmethod
     def fetch(self, handle: dict, dest_tar: Path) -> None:
         """Download the results tarball written by run_job.py to dest_tar."""
+
+    def detect_image(self, image_path: Path) -> dict | None:
+        """Best cat bounding box {cx, cy, w, h, confidence} for one image, or
+        None. Only for backends with supports_instant_detect."""
+        raise BackendError(f"{self.label} has no instant auto-detect")
 
     def cleanup(self, handle: dict) -> None:
         """Delete remote copies of the job's data. Optional."""

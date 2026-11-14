@@ -22,10 +22,9 @@ models/
 runs/
 versions/
 
-# Training (not needed on Pi). train/ IS synced: the Pi's Training tab
-# crops, splits, and bundles train/ into each remote training job.
-training_dashboard.py
-templates/training_dashboard.html
+# Training machine only. train/ IS synced: the Pi's Training tab crops,
+# splits, and bundles train/ into each remote job.
+train_worker.py
 requirements-training.txt
 
 # Large model weights (Pi uses .hef files)
@@ -39,6 +38,7 @@ scripts/setup_training.sh
 scripts/transfer_model.sh
 scripts/sync_to_pi.sh
 scripts/pull_dataset.sh
+scripts/push_labels_to_pi.py
 
 # Pi-only runtime state (written by dashboard, not synced)
 configs/runtime.yaml

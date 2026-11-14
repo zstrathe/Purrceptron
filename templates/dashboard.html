@@ -10,20 +10,27 @@
 <title>Cat Collection Dashboard</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231a1e2e'/%3E%3Crect x='8' y='8' width='16' height='16' rx='2' fill='none' stroke='%237ba87a' stroke-width='3'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/theme.css') }}">
+<script src="{{ url_for('static', filename='js/chart.umd.min.js') }}"></script>
 <style>
   /* ── Layout ── */
   .main {
     flex: 1; min-height: 0; display: flex; gap: 16px;
     width: 100%; max-width: min(var(--app-max), 1440px); margin: 0 auto; padding: 16px 20px;
   }
-  body[data-tab="review"] .main { max-width: var(--app-max); }
+  body[data-tab="review"] .main, body[data-tab="annotate"] .main { max-width: var(--app-max); }
   .content-col { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding-right: 4px; }
-  body[data-tab="review"] .content-col { overflow: hidden; padding-right: 0; }
+  body[data-tab="review"] .content-col, body[data-tab="annotate"] .content-col { overflow: hidden; padding-right: 0; }
   .sidebar { width: 300px; flex-shrink: 0; overflow-y: auto; }
-  body[data-tab="review"] .sidebar { display: none; }
+  body[data-tab="review"] .sidebar, body[data-tab="annotate"] .sidebar { display: none; }
   .tab-content { display: none; }
   .tab-content.active { display: block; }
-  #tab-review.active { height: 100%; }
+  #tab-review.active, #tab-annotate.active { height: 100%; }
+
+  /* ── Annotate tab ── */
+  .stage canvas { position: absolute; top: 0; left: 0; }
+  #ann-canvas { cursor: crosshair; }
+  .ann-job { font-size: 12.5px; color: var(--muted); }
+  .ann-job.err { color: var(--danger); }
 
   .top-counts { margin-left: auto; display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--muted); }
   .top-counts .tc { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
@@ -242,13 +249,37 @@
   .tr-jobs td { font-size: 12.5px; }
   .tr-jobs th, .tr-jobs td { text-align: left; }
   .tr-jobs td:last-child { text-align: right; }
+  .tr-settings { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 4px 24px; }
+  .tr-settings fieldset { border: 0; padding: 0; margin: 0 0 8px; min-width: 0; }
+  .tr-settings legend { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--faint); padding: 0; margin-bottom: 8px; }
+  .tr-settings .inference-row { margin-bottom: 6px; }
+  .tr-settings .inference-row > label:first-child { min-width: 150px; flex: 1; }
+  .tr-settings input[type="number"] { width: 96px; }
+  details.tr-fold > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; }
+  details.tr-fold > summary::-webkit-details-marker { display: none; }
+  details.tr-fold > summary h3 { margin: 0 !important; }
+  details.tr-fold > summary::after { content: "Show"; margin-left: auto; font-size: 12px; color: var(--muted); }
+  details.tr-fold[open] > summary::after { content: "Hide"; }
+  details.tr-fold[open] > summary { margin-bottom: 12px; }
+  .tr-chart-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 12px; font-size: 13px; }
+  .tr-chart-bar label { color: var(--muted); }
+  .tr-charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+  .tr-chart { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; min-width: 0; }
+  .tr-chart h4 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 6px; }
+  .tr-chart-wrap { position: relative; height: 220px; }
+  .tr-cv-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px;
+    padding-top: 12px; border-top: 1px solid var(--border); }
+  .tr-cv-row label { font-size: 13px; color: var(--muted); }
+  .tr-cv-row input { width: 64px; }
 
   @media (max-width: 1100px) {
     body { overflow: auto; height: auto; }
     .main { flex-direction: column; flex: unset; min-height: unset; padding: 12px 16px; }
-    .content-col, body[data-tab="review"] .content-col { overflow: visible; }
+    .content-col, body[data-tab="review"] .content-col,
+    body[data-tab="annotate"] .content-col { overflow: visible; }
     .sidebar { width: 100%; overflow-y: visible; }
-    #tab-review.active { height: auto; }
+    #tab-review.active, #tab-annotate.active { height: auto; }
     .top-bar-inner { flex-wrap: wrap; gap: 10px 16px; }
     .top-counts { margin-left: 0; }
   }
@@ -263,6 +294,7 @@
     <nav class="tab-bar" aria-label="Dashboard tabs">
       <button class="tab-btn active" data-tab="capture" onclick="switchTab('capture')">Capture</button>
       <button class="tab-btn" data-tab="review" onclick="switchTab('review')">Review</button>
+      <button class="tab-btn" data-tab="annotate" onclick="switchTab('annotate')">Annotate<span class="badge attn" id="badge-annotate"></span></button>
       <button class="tab-btn" data-tab="training" onclick="switchTab('training')">Training</button>
     </nav>
     <div class="top-counts" id="top-counts"></div>
@@ -431,11 +463,30 @@
           <div id="tr-image-counts"></div>
           <div class="hint" id="tr-image-hint" style="margin-bottom:10px"></div>
           <div class="actionrow">
-            <button class="btn btn-sm btn-primary" id="tr-start-btn" onclick="startTraining()">Start training</button>
+            <button class="btn btn-sm btn-primary" id="tr-start-btn" onclick="startJob('train')">Start training</button>
             <button class="btn btn-sm btn-danger" id="tr-cancel-btn" onclick="cancelTraining()" hidden>Cancel</button>
             <a id="tr-job-link" href="#" target="_blank" rel="noopener" hidden>Open job page</a>
           </div>
+          <div class="tr-cv-row">
+            <label for="tr-cv-folds" title="Trains one model per fold on different session splits to measure how stable accuracy is. Produces no deployable model.">Cross-validate with</label>
+            <input type="number" id="tr-cv-folds" min="2" max="10" step="1" value="5">
+            <label for="tr-cv-folds">folds</label>
+            <button class="btn btn-sm" id="tr-cv-btn" onclick="startJob('crossval')">Run cross-validation</button>
+          </div>
           <div class="tr-result" id="tr-run-result"></div>
+        </div>
+
+        <!-- Training settings -->
+        <div class="card tr-wide">
+          <details class="tr-fold" id="tr-settings-fold">
+            <summary><h3>Training Settings</h3></summary>
+            <div class="tr-settings" id="tr-settings"></div>
+            <div class="actionrow" style="margin-top:8px">
+              <button class="btn btn-sm btn-primary" onclick="saveTrainingSettings()">Save settings</button>
+              <span class="hint">Used by the next job. Saved on the Pi (runtime.yaml).</span>
+            </div>
+            <div class="tr-result" id="tr-settings-result"></div>
+          </details>
         </div>
 
         <!-- Progress + log -->
@@ -457,11 +508,85 @@
           <div class="tr-result" id="tr-deploy-result"></div>
         </div>
 
+        <!-- Training curves -->
+        <div class="card tr-wide" id="tr-curves-card" hidden>
+          <h3>Training Curves</h3>
+          <div class="tr-chart-bar">
+            <label for="tr-curves-job">Job</label>
+            <select id="tr-curves-job" onchange="loadCurves()"></select>
+            <label for="tr-curves-cmp">Compare with</label>
+            <select id="tr-curves-cmp" onchange="loadCurves()"></select>
+            <div class="seg seg-sm" id="tr-curves-phase" role="group" aria-label="Training phase"></div>
+            <span class="hint" id="tr-curves-best"></span>
+          </div>
+          <div class="tr-charts">
+            <div class="tr-chart"><h4>Loss</h4><div class="tr-chart-wrap"><canvas id="tr-chart-loss"></canvas></div></div>
+            <div class="tr-chart"><h4>Accuracy</h4><div class="tr-chart-wrap"><canvas id="tr-chart-acc"></canvas></div></div>
+            <div class="tr-chart"><h4>Validation accuracy per cat</h4><div class="tr-chart-wrap"><canvas id="tr-chart-cls"></canvas></div></div>
+          </div>
+        </div>
+
         <!-- History -->
         <div class="card tr-wide">
           <h3>Job History</h3>
           <table class="tr-metrics tr-jobs" id="tr-jobs"></table>
+          <div id="tr-job-detail"></div>
         </div>
+      </div>
+    </div>
+
+    <!-- ════ ANNOTATE TAB ════ -->
+    <div class="tab-content" id="tab-annotate">
+      <div class="workspace" id="ann-workspace">
+        <div class="pane-main">
+          <div class="toolbar">
+            <div class="progress-block">
+              <div class="progress-text" id="ann-progress">0/0 with bounding box</div>
+              <div class="meter"><span id="ann-meter" style="width:0"></span></div>
+            </div>
+            <div class="fileinfo">
+              <span class="dot" id="ann-dot"></span>
+              <span class="mono" id="ann-img-info"></span>
+              <span class="tag" id="ann-src"></span>
+            </div>
+            <div class="tb-actions">
+              <button class="btn btn-sm" id="ann-detect-btn" onclick="annAutoDetectCurrent()">Auto-detect <kbd>a</kbd></button>
+              <button class="btn btn-sm btn-ghost" onclick="annClearBbox()">Clear <kbd>d</kbd></button>
+            </div>
+          </div>
+          <div class="stage" id="ann-canvas-wrap">
+            <img id="ann-img" alt="">
+            <canvas id="ann-canvas" aria-label="Drag on the image to draw a bounding box"></canvas>
+            <div class="stage-note" id="ann-note" hidden>No bounding box yet. Drag to draw one, or press a to auto-detect.</div>
+          </div>
+          <div class="actionrow">
+            <button class="btn btn-sm" onclick="annPrev()">&larr; Prev <kbd>p</kbd></button>
+            <button class="btn btn-sm" onclick="annNext()">Next <kbd>n</kbd> &rarr;</button>
+            <span class="spacer"></span>
+            <span class="ann-job" id="ann-msg"></span>
+            <button class="btn btn-primary btn-sm" id="ann-auto-all" onclick="annAutoDetectAll()">Auto-detect all missing</button>
+          </div>
+        </div>
+        <div class="splitter" tabindex="0" role="separator" aria-orientation="vertical" aria-label="Resize image browser"></div>
+        <aside class="browser" aria-label="Image browser">
+          <div class="browser-head">
+            <div class="browser-head-row">
+              <div class="seg seg-sm" id="ann-status-seg" role="group" aria-label="Filter by bounding-box status">
+                <button data-s="all">All<span class="n" id="ann-cnt-all"></span></button>
+                <button data-s="missing">Missing<span class="n" id="ann-cnt-missing"></span></button>
+                <button data-s="done">Has one<span class="n" id="ann-cnt-done"></span></button>
+              </div>
+              <label class="size-ctl" for="ann-thumb-size">Size <input type="range" id="ann-thumb-size" min="96" max="260" value="132"></label>
+            </div>
+            <div class="chips" id="ann-cat-chips"></div>
+          </div>
+          <div class="browser-scroll" id="ann-thumbs"></div>
+          <div class="browser-foot">
+            <span><kbd>n</kbd> <kbd>p</kbd> step through filtered images</span>
+            <span><kbd>a</kbd> auto-detect</span>
+            <span><kbd>d</kbd> clear</span>
+          </div>
+        </aside>
       </div>
     </div>
 
@@ -631,6 +756,7 @@ function switchTab(tab) {
   }
 
   if (tab === 'training') loadTrainingTab();
+  if (tab === 'annotate') loadAnnotateTab();
 
   // Load thumbnails + rescan when entering review
   if (tab === 'review') {
@@ -1716,6 +1842,14 @@ document.addEventListener('keydown', (e) => {
       case 'p': case 'ArrowLeft': reviewPrev(); break;
     }
   }
+  if (activeTab === 'annotate') {
+    switch (e.key) {
+      case 'a': annAutoDetectCurrent(); break;
+      case 'd': annClearBbox(); break;
+      case 'n': case 'ArrowRight': annNext(); e.preventDefault(); break;
+      case 'p': case 'ArrowLeft': annPrev(); e.preventDefault(); break;
+    }
+  }
 });
 
 // Draggable divider between the review image and the thumbnail browser.
@@ -1797,9 +1931,12 @@ function trPost(url, body) {
                       body: JSON.stringify(body || {})});
 }
 
+const JOB_KINDS = {train: 'Training', crossval: 'Cross-validation', detect: 'Auto-detect'};
+
 async function loadTrainingTab() {
   await loadTrainingConfig();
   loadTrainingImages();
+  loadTrainingSettings();
   pollTraining();
   if (!trainPollTimer) {
     trainPollTimer = setInterval(() => { if (activeTab === 'training') pollTraining(); }, 2000);
@@ -1897,23 +2034,38 @@ async function loadTrainingImages() {
     : `Labeled images with bounding boxes (minimum ${min} per cat).`;
 }
 
-async function startTraining() {
-  const b = trainCfg && trainCfg.backends.find(x => x.name === trainCfg.backend);
+async function startJob(kind, extra) {
+  if (!trainCfg) trainCfg = await trJson('/api/training/config');
+  const b = trainCfg.backends.find(x => x.name === trainCfg.backend);
   const label = b ? b.label : 'the configured backend';
-  let msg = `Start a training job on ${label}?\n\nThe Pi crops and packages your labeled images first; detection keeps running.`;
-  if (trainCfg && trainCfg.backend === 'hf_jobs') {
-    msg += '\n\nCropped cat images will be uploaded to a private Hugging Face bucket (deleted after the model comes back), and GPU time is billed to your HF credits.';
+  const body = {kind, ...(extra || {})};
+  let msg;
+  if (kind === 'crossval') {
+    body.cv_folds = trEl('tr-cv-folds').value;
+    msg = `Run ${body.cv_folds}-fold cross-validation on ${label}?\n\nIt trains one model per fold to measure how stable accuracy is, so it takes about ${body.cv_folds} times as long as training. It produces no model to deploy.`;
+  } else if (kind === 'detect') {
+    msg = `Auto-detect bounding boxes for ${extra && extra.count} images on ${label}?\n\nThe images are sent to the backend; bounding boxes come back and are saved as auto-detected. Images you annotate meanwhile are left alone.`;
+  } else {
+    msg = `Start a training job on ${label}?\n\nThe Pi crops and packages your labeled images first; detection keeps running.`;
   }
-  if (!confirm(msg)) return;
-  trShow('tr-run-result', 'info', 'Starting...');
-  const res = await trPost('/api/training/start');
-  trShow('tr-run-result', res.status === 'ok' ? '' : 'err', res.status === 'ok' ? '' : res.message);
+  if (trainCfg.backend === 'hf_jobs') {
+    msg += kind === 'detect'
+      ? '\n\nThe full images are uploaded to a private Hugging Face bucket (deleted afterwards), and GPU time is billed to your HF credits.'
+      : '\n\nCropped cat images are uploaded to a private Hugging Face bucket (deleted afterwards), and GPU time is billed to your HF credits.';
+  }
+  if (!confirm(msg)) return null;
+  delete body.count;
+  const res = await trPost('/api/training/start', body);
   trainLastLogLen = -1;
-  pollTraining();
+  if (activeTab === 'training') {
+    trShow('tr-run-result', res.status === 'ok' ? '' : 'err', res.status === 'ok' ? '' : res.message);
+    pollTraining();
+  }
+  return res;
 }
 
 async function cancelTraining() {
-  if (!confirm('Cancel the running training job?')) return;
+  if (!confirm('Cancel the running job?')) return;
   const res = await trPost('/api/training/cancel');
   if (res.status !== 'ok') trShow('tr-run-result', 'err', res.message);
 }
@@ -1924,6 +2076,7 @@ async function pollTraining() {
   trainStatus = st;
   const job = st.job;
   trEl('tr-start-btn').disabled = st.active;
+  trEl('tr-cv-btn').disabled = st.active;
   trEl('tr-cancel-btn').hidden = !st.active;
   const link = trEl('tr-job-link');
   link.hidden = !(job && job.url && st.active);
@@ -1931,7 +2084,8 @@ async function pollTraining() {
 
   trEl('tr-progress').hidden = !job;
   if (job) {
-    trEl('tr-progress-title').textContent = `Job ${job.job_id} on ${job.backend_label}`;
+    trEl('tr-progress-title').textContent =
+      `${JOB_KINDS[job.kind || 'train']} job ${job.job_id} on ${job.backend_label}`;
     const idx = st.stages.indexOf(job.stage);
     const failed = job.stage === 'failed' || job.stage === 'cancelled';
     const lastIdx = failed ? Math.max(...Object.keys(job.stage_times || {})
@@ -1956,11 +2110,44 @@ async function pollTraining() {
   loadTrainingJobs(st);
 }
 
+function renderCvTable(cv) {
+  const cats = Object.keys(cv.per_class_mean || {});
+  let html = '<table class="tr-metrics"><tr><th>Fold</th><th>Overall</th>' +
+    cats.map(c => `<th>${trEsc(c)}</th>`).join('') + '</tr>';
+  (cv.folds || []).forEach(f => {
+    html += `<tr><td>${f.fold}</td><td>${trPct(f.best_val_acc)}</td>` +
+      cats.map(c => `<td>${trPct(f.per_class[c])}</td>`).join('') + '</tr>';
+  });
+  html += `<tr><td><b>Mean</b></td><td><b>${trPct(cv.mean_acc)}</b></td>` +
+    cats.map(c => `<td><b>${trPct(cv.per_class_mean[c])}</b></td>`).join('') + '</tr>';
+  html += `<tr><td class="hint">Std dev</td><td class="hint">±${trPct(cv.std_acc)}</td>` +
+    cats.map(c => `<td class="hint">±${trPct(cv.per_class_std[c])}</td>`).join('') + '</tr></table>';
+  return html + '<div class="hint" style="margin-bottom:10px">Each fold holds out different capture sessions. A large spread means accuracy depends a lot on which sessions land in validation.</div>';
+}
+
 function renderTrainingResult(st) {
   const job = st.job;
   const dep = st.deployed;
   const card = trEl('tr-result-card');
-  const hasCandidate = job && job.stage === 'ready' && job.metrics;
+  const kind = (job && job.kind) || 'train';
+  const ready = job && job.stage === 'ready';
+  if (ready && kind !== 'train') {
+    card.hidden = false;
+    trEl('tr-deploy-btn').hidden = true;
+    trEl('tr-rollback-btn').hidden = !dep.has_previous;
+    if (kind === 'crossval' && job.cv) {
+      trEl('tr-compare').innerHTML = `<div class="hint" style="margin-bottom:8px">Cross-validation, job ${trEsc(job.job_id)}</div>` + renderCvTable(job.cv);
+    } else if (kind === 'detect' && job.detect_result) {
+      const r = job.detect_result;
+      trEl('tr-compare').innerHTML = `<div style="margin-bottom:10px">Auto-detect, job ${trEsc(job.job_id)}: ` +
+        `<b>${r.applied}</b> bounding boxes added, ${r.no_cat} images with no cat found` +
+        (r.already_had_bbox ? `, ${r.already_had_bbox} skipped because they got a bounding box meanwhile` : '') +
+        (r.gone ? `, ${r.gone} images deleted meanwhile` : '') +
+        '. Check them on the Annotate tab.</div>';
+    }
+    return;
+  }
+  const hasCandidate = ready && job.metrics;
   card.hidden = !(hasCandidate || dep.has_previous);
   if (card.hidden) return;
 
@@ -2017,17 +2204,667 @@ async function loadTrainingJobs(st) {
   trainLastJobsKey = key;
   const data = await trJson('/api/training/jobs');
   const deployedId = st && st.deployed.meta ? st.deployed.meta.job_id : null;
-  const rows = data.jobs.map(j => `<tr><td class="mono">${trEsc(j.job_id)}</td><td>${trEsc(j.backend)}</td>` +
+  const rows = data.jobs.map(j => `<tr><td class="mono">${trEsc(j.job_id)}</td>` +
+    `<td>${trEsc(JOB_KINDS[j.kind] || j.kind)}</td><td>${trEsc(j.backend)}</td>` +
     `<td>${trEsc(j.stage)}${j.job_id === deployedId ? ' <span class="pill" style="--c:var(--success)">deployed</span>' : ''}</td>` +
-    `<td>${trPct(j.val_acc)}</td>` +
+    `<td>${j.kind === 'crossval' ? (j.cv_mean != null ? trPct(j.cv_mean) + ' (CV mean)' : '--') : trPct(j.val_acc)}</td>` +
     `<td><a href="/api/training/log/${encodeURIComponent(j.job_id)}" target="_blank">log</a>` +
+    (j.kind === 'crossval' && j.cv_mean != null
+      ? ` · <a href="#" onclick="showCvJob('${trEsc(j.job_id)}');return false">folds</a>` : '') +
+    (j.has_curves ? ` · <a href="#" onclick="showCurves('${trEsc(j.job_id)}');return false">curves</a>` : '') +
     (j.candidate && !st.active && j.job_id !== deployedId
       ? ` · <a href="#" onclick="deployModel('${trEsc(j.job_id)}');return false">deploy</a>` : '') +
     `</td></tr>`).join('');
   trEl('tr-jobs').innerHTML = data.jobs.length
-    ? '<tr><th>Job</th><th>Backend</th><th>Status</th><th>Val acc</th><th></th></tr>' + rows
-    : '<tr><td class="hint">No training jobs yet.</td></tr>';
+    ? '<tr><th>Job</th><th>Kind</th><th>Backend</th><th>Status</th><th>Val acc</th><th></th></tr>' + rows
+    : '<tr><td class="hint">No jobs yet.</td></tr>';
+  updateCurveJobs(data.jobs);
 }
+
+// ── Training settings ──
+let trSettingsFields = null;
+function trSettingId(key) { return 'trs-' + key.replace('.', '-'); }
+
+async function loadTrainingSettings(force) {
+  if (trSettingsFields && !force) return;
+  const d = await trJson('/api/training/settings');
+  if (!d.fields) return;
+  trSettingsFields = d.fields;
+  const groups = {};
+  d.fields.forEach(f => { (groups[f.group] = groups[f.group] || []).push(f); });
+  trEl('tr-settings').innerHTML = Object.entries(groups).map(([g, fs]) =>
+    `<fieldset><legend>${trEsc(g)}</legend>` + fs.map(f => {
+      const id = trSettingId(f.key);
+      const v = d.values[f.key];
+      const input = f.type === 'bool'
+        ? `<input type="checkbox" id="${id}"${v ? ' checked' : ''}>`
+        : `<input type="number" id="${id}" value="${trEsc(v)}" min="${f.min}" max="${f.max}" step="${f.type === 'int' ? 1 : 'any'}">`;
+      return `<div class="inference-row"${f.help ? ` title="${trEsc(f.help)}"` : ''}><label for="${id}">${trEsc(f.label)}</label>${input}</div>`;
+    }).join('') + '</fieldset>').join('');
+  if (d.values.cv_folds) trEl('tr-cv-folds').value = d.values.cv_folds;
+}
+
+async function saveTrainingSettings() {
+  const values = {};
+  trSettingsFields.forEach(f => {
+    const el = trEl(trSettingId(f.key));
+    values[f.key] = f.type === 'bool' ? el.checked : el.value;
+  });
+  const res = await trPost('/api/training/settings', {values});
+  trShow('tr-settings-result', res.status === 'ok' ? 'ok' : 'err',
+         res.status === 'ok' ? 'Saved. The next job uses these settings.' : res.message);
+  if (res.status === 'ok' && res.values.cv_folds) trEl('tr-cv-folds').value = res.values.cv_folds;
+}
+
+// ── Cross-validation results from history ──
+async function showCvJob(jobId) {
+  const job = await trJson('/api/training/job/' + encodeURIComponent(jobId));
+  if (!job.cv) return;
+  trEl('tr-job-detail').innerHTML = `<div class="hint" style="margin:12px 0 8px">Cross-validation, job ${trEsc(jobId)} ` +
+    `<a href="#" onclick="trEl('tr-job-detail').innerHTML='';return false">close</a></div>` + renderCvTable(job.cv);
+}
+
+// ── Training curves ──
+const TR_CAT_COLORS = {{ cat_colors|tojson }};
+const trCharts = {};
+let trCurveJobsKey = '';
+let trCurvePhase = 'all';
+let trCurveData = null;     // {main, cmp}
+
+function updateCurveJobs(jobs) {
+  const withCurves = jobs.filter(j => j.has_curves);
+  trEl('tr-curves-card').hidden = withCurves.length === 0;
+  const key = withCurves.map(j => j.job_id).join(',');
+  if (key === trCurveJobsKey) return;
+  trCurveJobsKey = key;
+  const sel = trEl('tr-curves-job'), cmp = trEl('tr-curves-cmp');
+  const keep = sel.value, keepCmp = cmp.value;
+  const opt = j => `<option value="${trEsc(j.job_id)}">${trEsc(j.job_id)}` +
+    (j.val_acc != null ? ` (${trPct(j.val_acc)})` : '') + '</option>';
+  sel.innerHTML = withCurves.map(opt).join('');
+  cmp.innerHTML = '<option value="">(nothing)</option>' + withCurves.map(opt).join('');
+  const has = id => withCurves.some(j => j.job_id === id);
+  sel.value = has(keep) ? keep : (withCurves[0] ? withCurves[0].job_id : '');
+  cmp.value = has(keepCmp) ? keepCmp : '';
+  if (withCurves.length) loadCurves();
+}
+
+function showCurves(jobId) {
+  trEl('tr-curves-job').value = jobId;
+  loadCurves();
+  trEl('tr-curves-card').scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+
+async function loadCurves() {
+  const id = trEl('tr-curves-job').value;
+  const cmpId = trEl('tr-curves-cmp').value;
+  if (!id) return;
+  const [main, cmp] = await Promise.all([
+    trJson('/api/training/metrics/' + encodeURIComponent(id)),
+    cmpId && cmpId !== id ? trJson('/api/training/metrics/' + encodeURIComponent(cmpId)) : null,
+  ]);
+  trCurveData = {main, cmp: cmp && cmp.available ? cmp : null, id, cmpId};
+  const phases = main.available ? Object.keys(main.phases_data) : [];
+  if (trCurvePhase !== 'all' && !phases.includes(trCurvePhase)) trCurvePhase = 'all';
+  trEl('tr-curves-phase').innerHTML = [['all', 'All phases'], ...phases.map(p => [p, main.phases_data[p].label])]
+    .map(([k, label]) => `<button data-p="${trEsc(k)}" class="${k === trCurvePhase ? 'on' : ''}">${trEsc(label)}</button>`).join('');
+  trEl('tr-curves-phase').querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+    trCurvePhase = b.dataset.p;
+    trEl('tr-curves-phase').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    drawCurves();
+  }));
+  drawCurves();
+}
+
+function trSeries(m, phase) {
+  if (!m || !m.available) return null;
+  if (phase === 'all') return {x: m.epochs, ...m, best: m.best_val_acc, bestEpoch: m.best_epoch};
+  const p = m.phases_data[phase];
+  if (!p) return null;
+  return {x: p.local_epochs, ...p, best: p.best_val_acc, bestEpoch: p.best_epoch_local};
+}
+
+function trLineChart(id, labels, datasets, pct) {
+  if (trCharts[id]) trCharts[id].destroy();
+  const grid = cssVar('--border'), txt = cssVar('--muted');
+  const yTicks = {color: txt};
+  if (pct) yTicks.callback = v => Math.round(v * 100) + '%';
+  trCharts[id] = new Chart(trEl(id), {
+    type: 'line',
+    data: {labels, datasets},
+    options: {
+      animation: false, responsive: true, maintainAspectRatio: false,
+      interaction: {mode: 'index', intersect: false},
+      elements: {point: {radius: 0, hoverRadius: 3}, line: {borderWidth: 1.6, tension: 0.15}},
+      plugins: {legend: {labels: {color: txt, boxWidth: 10, font: {size: 11}}}},
+      scales: {
+        x: {ticks: {color: txt, maxTicksLimit: 8}, grid: {color: grid}, title: {display: true, text: 'epoch', color: txt}},
+        y: {ticks: yTicks, grid: {color: grid}},
+      },
+    },
+  });
+}
+
+function drawCurves() {
+  if (!trCurveData || typeof Chart === 'undefined') return;
+  const a = trSeries(trCurveData.main, trCurvePhase);
+  const b = trSeries(trCurveData.cmp, trCurvePhase);
+  if (!a) { trEl('tr-curves-best').textContent = 'No curves for this job.'; return; }
+  const n = Math.max(a.x.length, b ? b.x.length : 0);
+  const labels = Array.from({length: n}, (_, i) => i < a.x.length ? a.x[i] : (b ? b.x[i] : i + 1));
+  const info = cssVar('--info'), ok = cssVar('--success'), warn = cssVar('--warn');
+  const cmpSet = (label, data) => ({label, data, borderColor: warn, borderDash: [5, 4], borderWidth: 1.4});
+  const loss = [{label: 'train', data: a.train_loss, borderColor: info},
+                {label: 'val', data: a.val_loss, borderColor: ok}];
+  const acc = [{label: 'train', data: a.train_acc, borderColor: info},
+               {label: 'val', data: a.val_acc, borderColor: ok}];
+  if (b) {
+    loss.push(cmpSet('val, job ' + trCurveData.cmpId, b.val_loss));
+    acc.push(cmpSet('val, job ' + trCurveData.cmpId, b.val_acc));
+  }
+  trLineChart('tr-chart-loss', labels, loss, false);
+  trLineChart('tr-chart-acc', labels, acc, true);
+  const cls = Object.entries(a.per_class || {}).map(([cat, data]) =>
+    ({label: cat, data, borderColor: TR_CAT_COLORS[cat] || info}));
+  trLineChart('tr-chart-cls', labels, cls, true);
+  let txt = `Best val accuracy ${trPct(a.best)} at epoch ${a.bestEpoch}`;
+  if (b) txt += `; job ${trCurveData.cmpId}: ${trPct(b.best)}`;
+  trEl('tr-curves-best').textContent = txt;
+}
+
+// ══ Annotate tab ═══════════════════════════════════════════
+// Bounding boxes live in the sidecar .json next to each image in data/raw.
+let annImages = [];
+let annIndex = 0;
+let annBbox = null;          // {cx, cy, w, h} normalized or null
+let annBboxSource = null;    // 'auto-detect' | 'manual' for unsaved boxes
+let annBboxConf = null;      // detector confidence for auto-detected boxes
+let annBboxOrigin = null;    // {source, confidence} of the saved box, for the info tag
+let annDirty = false;        // true only when the bounding box changed and is not yet saved
+let annDrawing = false;
+let annDrawStart = null;
+let annThumbEls = [];        // index-aligned with annImages
+let annGroupEls = {};        // folder -> <section>
+let annStatus = null;        // 'all' | 'missing' | 'done'
+let annInstant = false;      // backend can auto-detect one image right away
+let annJobTimer = null;
+const annCats = new Set();   // folder filter; empty = all
+
+function annFolderLabel(folder) { return folder === 'unlabeled' ? 'Unlabeled' : folder; }
+function annUrl(kind, img) {
+  return '/api/annotate/' + kind + '/' + encodeURIComponent(img.cat) + '/' + encodeURIComponent(img.filename);
+}
+function annMsg(text, isErr) {
+  const el = trEl('ann-msg');
+  el.textContent = text || '';
+  el.className = 'ann-job' + (isErr ? ' err' : '');
+}
+
+async function loadAnnotateTab() {
+  if (!annImages.length) {
+    trEl('ann-thumbs').innerHTML = '<div class="browser-empty">Loading images...</div>';
+    trEl('ann-progress').textContent = 'Loading...';
+  }
+  try {
+    const d = await trJson('/api/annotate/images');
+    const keep = annImages[annIndex];
+    annImages = d.images || [];
+    annInstant = !!d.instant_detect;
+    trEl('ann-detect-btn').title = annInstant
+      ? 'Ask the training PC for this image\'s bounding box'
+      : 'Instant auto-detect needs the Local PC backend; use "Auto-detect all missing" instead';
+    const kept = keep ? annImages.findIndex(i => i.cat === keep.cat && i.filename === keep.filename) : -1;
+    const firstMissing = annImages.findIndex(img => !img.has_bbox);
+    annIndex = kept >= 0 ? kept : (firstMissing >= 0 ? firstMissing : 0);
+    if (annStatus === null) {
+      let saved = null;
+      try { saved = localStorage.getItem('annStatus'); } catch(e) {}
+      annStatus = saved || (firstMissing >= 0 ? 'missing' : 'all');
+    }
+    annBuildThumbs();
+    annSyncStatusSeg();
+    annApplyFilters();
+    annLoadImage();
+    if (d.job_active) annWatchJob();
+  } catch(e) { console.error(e); }
+}
+
+function annBuildThumbs() {
+  const el = trEl('ann-thumbs');
+  el.innerHTML = '';
+  annThumbEls = [];
+  annGroupEls = {};
+  if (annImages.length === 0) {
+    el.innerHTML = '<div class="browser-empty">No images in data/raw yet.</div>';
+  }
+  const grids = {};
+  [...CATS, 'unlabeled'].forEach(folder => {
+    if (!annImages.some(img => img.cat === folder)) return;
+    const g = document.createElement('section');
+    g.innerHTML =
+      '<div class="group-head"><span class="dot" style="--c:' + (TR_CAT_COLORS[folder] || 'var(--muted)') + '"></span>' +
+      '<span>' + trEsc(annFolderLabel(folder)) + '</span><span class="gh-count"></span><span class="gh-missing"></span></div>' +
+      '<div class="thumb-grid"></div>';
+    el.appendChild(g);
+    annGroupEls[folder] = g;
+    grids[folder] = document.createDocumentFragment();
+  });
+  annImages.forEach((img, idx) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'thumb';
+    b.title = img.cat + ' / ' + img.filename;
+    b.innerHTML = '<img loading="lazy" decoding="async" alt="" src="' + annUrl('thumb', img) + '">' +
+      '<span class="thumb-box"></span><span class="thumb-badge">Missing</span>';
+    b.addEventListener('click', () => annSelect(idx));
+    annThumbEls[idx] = b;
+    annSyncThumb(idx);
+    if (grids[img.cat]) grids[img.cat].appendChild(b);
+  });
+  Object.entries(grids).forEach(([folder, frag]) => {
+    annGroupEls[folder].querySelector('.thumb-grid').appendChild(frag);
+  });
+  annBuildChips();
+  annUpdateProgress();
+}
+
+function annBuildChips() {
+  const el = trEl('ann-cat-chips');
+  el.innerHTML = '';
+  const folders = Object.keys(annGroupEls);
+  for (const f of [...annCats]) if (!folders.includes(f)) annCats.delete(f);
+  el.hidden = folders.length < 2;
+  folders.forEach(folder => {
+    const ch = document.createElement('button');
+    ch.type = 'button';
+    ch.className = 'chip' + (annCats.has(folder) ? ' on' : '');
+    ch.style.setProperty('--c', TR_CAT_COLORS[folder] || 'var(--muted)');
+    ch.innerHTML = '<span class="dot"></span>' + trEsc(annFolderLabel(folder));
+    ch.addEventListener('click', () => {
+      if (annCats.has(folder)) annCats.delete(folder); else annCats.add(folder);
+      ch.classList.toggle('on', annCats.has(folder));
+      annApplyFilters();
+    });
+    el.appendChild(ch);
+  });
+}
+
+function annSyncThumb(idx) {
+  const el = annThumbEls[idx];
+  const img = annImages[idx];
+  if (!el || !img) return;
+  el.classList.toggle('missing', !img.has_bbox);
+  el.classList.toggle('active', idx === annIndex);
+  el.querySelector('.thumb-badge').hidden = img.has_bbox;
+  const box = el.querySelector('.thumb-box');
+  const b = img.has_bbox ? img.bbox : null;
+  box.hidden = !b;
+  if (b) {
+    box.style.left = ((b.cx - b.w / 2) * 100) + '%';
+    box.style.top = ((b.cy - b.h / 2) * 100) + '%';
+    box.style.width = (b.w * 100) + '%';
+    box.style.height = (b.h * 100) + '%';
+  }
+}
+
+function annPasses(img) {
+  const okStatus = annStatus === 'all' || (annStatus === 'missing' ? !img.has_bbox : img.has_bbox);
+  return okStatus && (annCats.size === 0 || annCats.has(img.cat));
+}
+
+function annApplyFilters() {
+  annImages.forEach((img, idx) => {
+    const el = annThumbEls[idx];
+    if (el) el.hidden = !annPasses(img) && idx !== annIndex;
+  });
+  Object.values(annGroupEls).forEach(g => {
+    g.hidden = !g.querySelector('.thumb:not([hidden])');
+  });
+}
+
+function annSyncStatusSeg() {
+  document.querySelectorAll('#ann-status-seg button').forEach(b => b.classList.toggle('on', b.dataset.s === annStatus));
+}
+
+function annUpdateProgress() {
+  const total = annImages.length;
+  const done = annImages.filter(i => i.has_bbox).length;
+  const missing = total - done;
+  trEl('ann-progress').innerHTML =
+    '<strong>' + done.toLocaleString() + '</strong> / ' + total.toLocaleString() + ' with bounding box';
+  trEl('ann-meter').style.width = (total ? done / total * 100 : 0) + '%';
+  trEl('ann-cnt-all').textContent = total.toLocaleString();
+  trEl('ann-cnt-missing').textContent = missing.toLocaleString();
+  trEl('ann-cnt-done').textContent = done.toLocaleString();
+  trEl('badge-annotate').textContent = missing > 0 ? missing.toLocaleString() : '';
+  const allBtn = trEl('ann-auto-all');
+  if (!annJobTimer) {
+    allBtn.textContent = missing > 0 ? 'Auto-detect ' + missing.toLocaleString() + ' missing' : 'Auto-detect all missing';
+    allBtn.disabled = missing === 0;
+  }
+  Object.entries(annGroupEls).forEach(([folder, g]) => {
+    const imgs = annImages.filter(i => i.cat === folder);
+    const miss = imgs.filter(i => !i.has_bbox).length;
+    g.querySelector('.gh-count').textContent = imgs.length.toLocaleString();
+    const m = g.querySelector('.gh-missing');
+    m.textContent = miss ? miss.toLocaleString() + ' missing' : 'All have one';
+    m.classList.toggle('ok', !miss);
+  });
+}
+
+function annUpdateSourceTag() {
+  const tag = trEl('ann-src');
+  if (!annImages.length) { tag.textContent = ''; return; }
+  if (!annBbox) {
+    tag.textContent = 'No bounding box';
+    tag.className = 'tag missing';
+    return;
+  }
+  const src = (annBboxOrigin && annBboxOrigin.source) || annBboxSource || 'manual';
+  const conf = annBboxOrigin ? annBboxOrigin.confidence : annBboxConf;
+  const names = {pi: 'Pi capture', auto: 'Auto-detect', 'auto-detect': 'Auto-detect', manual: 'Manual'};
+  tag.textContent = (names[src] || src) + (conf != null && src !== 'manual' ? ' · ' + Number(conf).toFixed(2) : '');
+  tag.className = 'tag';
+}
+
+async function annLoadImage() {
+  const imgEl = trEl('ann-img');
+  if (annImages.length === 0) {
+    trEl('ann-img-info').textContent = 'No images';
+    trEl('ann-note').hidden = true;
+    imgEl.hidden = true;
+    annBbox = null;
+    annUpdateSourceTag();
+    annResizeCanvas();
+    annDrawBbox();
+    return;
+  }
+  imgEl.hidden = false;
+  const img = annImages[annIndex];
+  trEl('ann-img-info').textContent = img.cat + ' / ' + img.filename;
+  trEl('ann-dot').style.setProperty('--c', TR_CAT_COLORS[img.cat] || 'var(--muted)');
+  imgEl.onload = async () => {
+    annResizeCanvas();
+    await annFetchBbox(img);
+    annDrawBbox();
+    annSyncThumb(annImages.indexOf(img));
+    annUpdateProgress();
+    annUpdateSourceTag();
+  };
+  imgEl.src = annUrl('image', img);
+}
+
+async function annFetchBbox(img) {
+  annDirty = false;
+  annBboxSource = null;
+  annBboxConf = null;
+  annBboxOrigin = null;
+  try {
+    const d = await trJson(annUrl('bbox', img));
+    annBbox = d.exists ? {cx: d.cx, cy: d.cy, w: d.w, h: d.h} : null;
+    if (d.exists) annBboxOrigin = {source: d.source, confidence: d.confidence};
+  } catch(e) { annBbox = null; }
+  img.has_bbox = annBbox !== null;
+  img.bbox = annBbox ? {...annBbox} : null;
+}
+
+function annResizeCanvas() {
+  const imgEl = trEl('ann-img');
+  const canvas = trEl('ann-canvas');
+  const wrap = trEl('ann-canvas-wrap');
+  if (imgEl.hidden) { canvas.width = 0; canvas.height = 0; return; }
+  const wrapRect = wrap.getBoundingClientRect();
+  const imgRect = imgEl.getBoundingClientRect();
+  canvas.width = imgRect.width;
+  canvas.height = imgRect.height;
+  canvas.style.left = (imgRect.left - wrapRect.left - wrap.clientLeft) + 'px';
+  canvas.style.top = (imgRect.top - wrapRect.top - wrap.clientTop) + 'px';
+}
+
+function annDrawBbox() {
+  const canvas = trEl('ann-canvas');
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  trEl('ann-note').hidden = !!annBbox || annImages.length === 0 || annDrawing;
+  if (!annBbox) return;
+  const {cx, cy, w, h} = annBbox;
+  const x = (cx - w / 2) * canvas.width;
+  const y = (cy - h / 2) * canvas.height;
+  const color = cssVar('--success');
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, w * canvas.width, h * canvas.height);
+  const img = annImages[annIndex];
+  if (img) {
+    ctx.font = '600 12px ' + cssVar('--font-ui');
+    const tw = ctx.measureText(img.cat).width + 12;
+    const ly = y - 20 < 0 ? y + 2 : y - 20;
+    ctx.fillStyle = color;
+    ctx.fillRect(x - 1, ly, tw, 18);
+    ctx.fillStyle = cssVar('--on-accent');
+    ctx.fillText(img.cat, x + 5, ly + 13);
+  }
+}
+
+function annDrawCrosshairs(ctx, mx, my, canvas) {
+  ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath();
+  ctx.moveTo(mx, 0); ctx.lineTo(mx, canvas.height);
+  ctx.moveTo(0, my); ctx.lineTo(canvas.width, my);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+// Draw a bounding box: mousedown on the canvas, move/up on the document so
+// drawing continues when the cursor leaves the image.
+(function() {
+  const canvas = trEl('ann-canvas');
+  const clampPos = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    return {x: Math.max(0, Math.min(canvas.width, e.clientX - rect.left)),
+            y: Math.max(0, Math.min(canvas.height, e.clientY - rect.top))};
+  };
+  canvas.addEventListener('mousemove', (e) => {
+    if (annDrawing) return;
+    const rect = canvas.getBoundingClientRect();
+    annDrawBbox();
+    annDrawCrosshairs(canvas.getContext('2d'), e.clientX - rect.left, e.clientY - rect.top, canvas);
+  });
+  canvas.addEventListener('mouseleave', () => { if (!annDrawing) annDrawBbox(); });
+  canvas.addEventListener('mousedown', (e) => {
+    if (activeTab !== 'annotate' || annImages.length === 0) return;
+    annDrawing = true;
+    trEl('ann-note').hidden = true;
+    const rect = canvas.getBoundingClientRect();
+    annDrawStart = {x: e.clientX - rect.left, y: e.clientY - rect.top};
+  });
+  document.addEventListener('mousemove', (e) => {
+    if (!annDrawing || !annDrawStart) return;
+    const {x: mx, y: my} = clampPos(e);
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.strokeStyle = cssVar('--info');
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 3]);
+    ctx.strokeRect(annDrawStart.x, annDrawStart.y, mx - annDrawStart.x, my - annDrawStart.y);
+    ctx.setLineDash([]);
+    annDrawCrosshairs(ctx, mx, my, canvas);
+  });
+  document.addEventListener('mouseup', (e) => {
+    if (!annDrawing || !annDrawStart) return;
+    annDrawing = false;
+    const {x: mx, y: my} = clampPos(e);
+    const x1 = Math.max(0, Math.min(annDrawStart.x, mx)), y1 = Math.max(0, Math.min(annDrawStart.y, my));
+    const x2 = Math.min(canvas.width, Math.max(annDrawStart.x, mx)), y2 = Math.min(canvas.height, Math.max(annDrawStart.y, my));
+    if (x2 - x1 < 5 || y2 - y1 < 5) { annDrawBbox(); return; }  // ignore stray clicks
+    annBbox = {
+      cx: ((x1 + x2) / 2) / canvas.width, cy: ((y1 + y2) / 2) / canvas.height,
+      w: (x2 - x1) / canvas.width, h: (y2 - y1) / canvas.height,
+    };
+    annBboxSource = 'manual';
+    annBboxConf = null;
+    annDirty = true;
+    annDrawBbox();
+    annSave();
+  });
+  window.addEventListener('resize', () => { if (activeTab === 'annotate') { annResizeCanvas(); annDrawBbox(); } });
+})();
+
+// Saves only a bounding box the user drew or auto-detected; moving past an
+// image never rewrites its existing (e.g. Pi-captured) bounding box.
+async function annSave() {
+  if (!annBbox || !annDirty || annImages.length === 0) return;
+  const img = annImages[annIndex];
+  const idx = annIndex;
+  const bbox = {...annBbox};
+  const body = {...bbox, source: annBboxSource || 'manual'};
+  if (annBboxSource === 'auto-detect' && annBboxConf !== null) body.confidence = annBboxConf;
+  annDirty = false;
+  const d = await trPost(annUrl('bbox', img), body);
+  if (d.status !== 'ok') { annMsg('Save failed: ' + (d.message || 'error'), true); return; }
+  img.has_bbox = true;
+  img.bbox = bbox;
+  if (idx === annIndex) {
+    annBboxOrigin = {source: body.source, confidence: body.confidence ?? null};
+    annUpdateSourceTag();
+  }
+  annSyncThumb(idx);
+  annUpdateProgress();
+}
+
+// Clear = undo: restores the Pi's original bounding box if one existed,
+// deletes hand-made ones, and never deletes an untouched Pi bounding box.
+async function annClearBbox() {
+  if (annImages.length === 0) return;
+  const img = annImages[annIndex];
+  const d = await trJson(annUrl('bbox', img), {method: 'DELETE'});
+  if (d.result === 'kept_pi') {
+    annMsg('This bounding box came from the Pi capture and was kept. Draw a new one to replace it.');
+  }
+  await annFetchBbox(img);
+  annDrawBbox();
+  annSyncThumb(annIndex);
+  annUpdateProgress();
+  annUpdateSourceTag();
+}
+
+function annSelect(idx) {
+  if (idx < 0 || idx >= annImages.length) return;
+  annSave();
+  const prev = annIndex;
+  annIndex = idx;
+  annSyncThumb(prev);
+  annSyncThumb(idx);
+  annApplyFilters();
+  const el = annThumbEls[idx];
+  if (el) el.scrollIntoView({block: 'nearest'});
+  annLoadImage();
+}
+
+function annStep(dir) {
+  if (annImages.length === 0) return;
+  for (let i = annIndex + dir; i >= 0 && i < annImages.length; i += dir) {
+    if (annPasses(annImages[i])) { annSelect(i); return; }
+  }
+  annMsg(dir > 0 ? 'No more images match the current filter' : 'Already at the first matching image');
+}
+function annNext() { annStep(1); }
+function annPrev() { annStep(-1); }
+
+async function annAutoDetectCurrent() {
+  if (annImages.length === 0) return;
+  if (!annInstant) {
+    annMsg('Instant auto-detect needs the Local PC backend. "Auto-detect all missing" works with any backend.', true);
+    return;
+  }
+  const img = annImages[annIndex];
+  const btn = trEl('ann-detect-btn');
+  btn.disabled = true;
+  annMsg('Detecting...');
+  try {
+    const d = await trPost('/api/annotate/auto-detect', {cat: img.cat, filename: img.filename});
+    if (img !== annImages[annIndex]) { annMsg(''); return; }  // moved on meanwhile
+    if (d.detected) {
+      annBbox = {cx: d.cx, cy: d.cy, w: d.w, h: d.h};
+      annBboxSource = 'auto-detect';
+      annBboxConf = d.confidence;
+      annBboxOrigin = null;
+      annDirty = true;
+      annDrawBbox();
+      annUpdateSourceTag();
+      annSave();
+      annMsg('');
+    } else if (d.status === 'error') {
+      annMsg('Auto-detect failed: ' + d.message, true);
+    } else {
+      annMsg('No cat found in this image');
+    }
+  } finally { btn.disabled = false; }
+}
+
+async function annAutoDetectAll() {
+  const missing = annImages.filter(i => !i.has_bbox).length;
+  if (missing === 0) { annMsg('Every image has a bounding box'); return; }
+  const res = await startJob('detect', {count: missing});
+  if (!res) return;
+  if (res.status !== 'ok') { annMsg(res.message, true); return; }
+  annWatchJob();
+}
+
+// Follow a running job from the Annotate tab; reload images when an
+// auto-detect job finishes.
+function annWatchJob() {
+  if (annJobTimer) return;
+  const btn = trEl('ann-auto-all');
+  btn.disabled = true;
+  const tick = async () => {
+    const st = await trJson('/api/training/status');
+    const job = st.job;
+    if (!job) { annStopWatch(); return; }
+    const kind = JOB_KINDS[job.kind || 'train'];
+    if (st.active) {
+      annMsg(`${kind} job ${job.job_id}: ${job.stage}${job.message ? ' (' + job.message + ')' : ''}`);
+      btn.textContent = job.kind === 'detect' ? 'Auto-detect running...' : 'A job is running';
+      return;
+    }
+    annStopWatch();
+    if (job.kind === 'detect') {
+      if (job.stage === 'ready') annMsg(job.message);
+      else annMsg(`Auto-detect ${job.stage}${job.message ? ': ' + job.message : ''}`, job.stage === 'failed');
+      loadAnnotateTab();
+    } else {
+      annMsg('');
+      annUpdateProgress();
+    }
+  };
+  annJobTimer = setInterval(tick, 3000);
+  tick();
+}
+function annStopWatch() {
+  clearInterval(annJobTimer);
+  annJobTimer = null;
+  annUpdateProgress();
+}
+
+document.querySelectorAll('#ann-status-seg button').forEach(b => b.addEventListener('click', () => {
+  annStatus = b.dataset.s;
+  try { localStorage.setItem('annStatus', annStatus); } catch(e) {}
+  annSyncStatusSeg();
+  annApplyFilters();
+}));
+(function() {
+  const slider = trEl('ann-thumb-size');
+  const apply = v => trEl('ann-thumbs').style.setProperty('--thumb-size', v + 'px');
+  try { const saved = localStorage.getItem('annThumbSize'); if (saved) slider.value = saved; } catch(e) {}
+  apply(slider.value);
+  slider.addEventListener('input', () => {
+    apply(slider.value);
+    try { localStorage.setItem('annThumbSize', slider.value); } catch(e) {}
+  });
+})();
+
 
 </script>
 </body>

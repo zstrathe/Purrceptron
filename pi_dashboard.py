@@ -35,14 +35,16 @@ from flask import Flask, Response, jsonify, render_template, request, send_file
 # ---------------------------------------------------------------------------
 # Project imports
 # ---------------------------------------------------------------------------
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from utils import PROJECT_ROOT, add_common_args, load_config, resolve_path, get_cat_colors_hex
 from utils.display import print_info, print_success, print_error, print_warning, print_header
 
 from collect.label_review import LabelReviewApp
+from remote_training import settings as training_settings
 from remote_training.backends import BackendError
 from remote_training.manager import TrainingJobManager
+from utils import sidecars
 from utils.secrets import SecretsStore
 
 import yaml
@@ -523,6 +525,21 @@ class ConfigManager:
             with open(self.runtime_path, "w") as f:
                 yaml.dump(runtime, f, default_flow_style=False, sort_keys=False)
 
+    def update_training_settings(self, values: dict) -> None:
+        """Save classifier training settings (already validated by
+        remote_training.settings.parse) to runtime.yaml. classifier_training
+        is written complete, because runtime.yaml replaces a section's
+        top-level keys (the augmentation dict as a whole)."""
+        tc, crop_padding = training_settings.apply(self.read(), values)
+        with self._lock:
+            runtime = self._read_runtime()
+            runtime["classifier_training"] = tc
+            if crop_padding is not None:
+                runtime.setdefault("classifier", {})["crop_padding"] = crop_padding
+            self.runtime_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.runtime_path, "w") as f:
+                yaml.dump(runtime, f, default_flow_style=False, sort_keys=False)
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Flask application factory
@@ -899,8 +916,140 @@ def create_app(
 
     @flask_app.route("/api/training/start", methods=["POST"])
     def api_training_start():
-        res = training_mgr.start()
+        data = request.get_json(silent=True) or {}
+        folds = data.get("cv_folds")
+        try:
+            folds = int(folds) if folds not in (None, "") else None
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "Folds must be a number"}), 400
+        res = training_mgr.start(kind=data.get("kind", "train"), cv_folds=folds)
         return jsonify(res), (200 if res["status"] == "ok" else 409)
+
+    @flask_app.route("/api/training/settings", methods=["GET"])
+    def api_training_settings_get():
+        return jsonify({"fields": training_settings.SETTINGS,
+                        "values": training_settings.current_values(config_mgr.read())})
+
+    @flask_app.route("/api/training/settings", methods=["POST"])
+    def api_training_settings_post():
+        try:
+            values = training_settings.parse((request.get_json() or {}).get("values") or {})
+        except ValueError as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 400
+        config_mgr.update_training_settings(values)
+        return jsonify({"status": "ok",
+                        "values": training_settings.current_values(config_mgr.read())})
+
+    @flask_app.route("/api/training/metrics/<job_id>")
+    def api_training_metrics(job_id):
+        return jsonify(training_mgr.job_metrics(job_id))
+
+    @flask_app.route("/api/training/job/<job_id>")
+    def api_training_job(job_id):
+        job = training_mgr.job_state(job_id)
+        if job is None:
+            return jsonify({"status": "error", "message": "Unknown job"}), 404
+        return jsonify(job)
+
+    # ── Annotate (bounding boxes in data/raw sidecars) ─────────────
+    raw_dir = training_mgr.raw_dir()
+    ann_folders = [*cats, "unlabeled"]
+
+    def _ann_path(folder: str, filename: str) -> Path | None:
+        if folder not in ann_folders:
+            return None
+        if not filename or Path(filename).name != filename \
+                or not filename.lower().endswith((".jpg", ".jpeg")):
+            return None
+        return raw_dir / folder / filename
+
+    def _bbox_json(meta: dict | None) -> dict | None:
+        best = sidecars.best_detection(meta)
+        if best is None:
+            return None
+        return {**sidecars.to_center(best["bbox_norm"]),
+                "confidence": best.get("confidence"),
+                "source": best.get("source", "pi")}
+
+    @flask_app.route("/api/annotate/images")
+    def api_annotate_images():
+        images = []
+        for folder in ann_folders:
+            d = raw_dir / folder
+            if not d.is_dir():
+                continue
+            for img in sorted(d.glob("*.jpg")):
+                bbox = _bbox_json(sidecars.read_sidecar(img))
+                images.append({"cat": folder, "filename": img.name,
+                               "has_bbox": bbox is not None, "bbox": bbox})
+        backend = training_mgr.settings()["backend"]
+        return jsonify({
+            "images": images,
+            "instant_detect": training_mgr.instant_detect_available(),
+            "backend": backend,
+            "job_active": training_mgr.is_active(),
+        })
+
+    @flask_app.route("/api/annotate/thumb/<folder>/<filename>")
+    def api_annotate_thumb(folder, filename):
+        if _ann_path(folder, filename) is None:
+            return "Not found", 404
+        thumb = reviewer.get_or_create_thumbnail(f"{folder}/{filename}")
+        if thumb is None:
+            return "Not found", 404
+        return send_file(str(thumb), mimetype="image/jpeg", max_age=86400)
+
+    @flask_app.route("/api/annotate/image/<folder>/<filename>")
+    def api_annotate_image(folder, filename):
+        img = _ann_path(folder, filename)
+        if img is None or not img.is_file():
+            return "Not found", 404
+        return send_file(str(img), mimetype="image/jpeg")
+
+    @flask_app.route("/api/annotate/bbox/<folder>/<filename>", methods=["GET"])
+    def api_annotate_bbox_get(folder, filename):
+        img = _ann_path(folder, filename)
+        bbox = _bbox_json(sidecars.read_sidecar(img)) if img else None
+        return jsonify({"exists": bbox is not None, **(bbox or {})})
+
+    @flask_app.route("/api/annotate/bbox/<folder>/<filename>", methods=["POST"])
+    def api_annotate_bbox_save(folder, filename):
+        img = _ann_path(folder, filename)
+        if img is None or not img.is_file():
+            return jsonify({"status": "error", "message": "Image not found"}), 404
+        data = request.get_json() or {}
+        try:
+            cx, cy, w, h = (float(data[k]) for k in ("cx", "cy", "w", "h"))
+        except (KeyError, TypeError, ValueError):
+            return jsonify({"status": "error", "message": "cx, cy, w, h required"}), 400
+        bbox = sidecars.from_center(cx, cy, w, h)
+        if bbox is None:
+            return jsonify({"status": "error", "message": "Empty bounding box"}), 400
+        auto = data.get("source") == "auto-detect"
+        sidecars.set_bbox(img, bbox, source="auto-detect" if auto else "manual",
+                          confidence=float(data.get("confidence", 1.0)) if auto else 1.0)
+        return jsonify({"status": "ok"})
+
+    @flask_app.route("/api/annotate/bbox/<folder>/<filename>", methods=["DELETE"])
+    def api_annotate_bbox_delete(folder, filename):
+        img = _ann_path(folder, filename)
+        if img is None:
+            return jsonify({"status": "error", "message": "Invalid image"}), 400
+        return jsonify({"status": "ok", "result": sidecars.clear_bbox(img)})
+
+    @flask_app.route("/api/annotate/auto-detect", methods=["POST"])
+    def api_annotate_auto_detect():
+        data = request.get_json() or {}
+        img = _ann_path(data.get("cat", ""), data.get("filename", ""))
+        if img is None or not img.is_file():
+            return jsonify({"status": "error", "message": "Image not found"}), 404
+        try:
+            bbox = training_mgr.instant_detect(img)
+        except BackendError as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 409
+        if bbox:
+            return jsonify({"status": "ok", "detected": True, **bbox})
+        return jsonify({"status": "ok", "detected": False})
 
     @flask_app.route("/api/training/cancel", methods=["POST"])
     def api_training_cancel():

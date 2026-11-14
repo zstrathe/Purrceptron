@@ -64,6 +64,6 @@ run_with_retry "rsync pull" rsync -avz --delete --exclude .thumbnails \
 echo ""
 echo "[OK] Dataset synced to $LOCAL_RAW_DIR"
 echo ""
-echo "Next step: open the training dashboard or run:"
+echo "Next step (manual command-line training; the Pi dashboard does this for you):"
 echo "  source venv_train/bin/activate"
 echo "  python train/import_captures.py"

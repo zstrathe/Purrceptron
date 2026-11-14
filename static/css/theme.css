@@ -3,8 +3,7 @@
    Noncommercial use only; see LICENSE.md. Not licensed for AI/ML training or
    text and data mining (rights reserved under Art. 4(3) Directive (EU) 2019/790). */
 
-/* Shared theme for the Pi dashboard (dashboard.html) and the training
-   dashboard (training_dashboard.html). Palette: "Refined current". */
+/* Theme for the Pi dashboard (dashboard.html). Palette: "Refined current". */
 
 :root {
   --font-ui: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;

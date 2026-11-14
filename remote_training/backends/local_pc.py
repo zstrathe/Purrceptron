@@ -3,8 +3,8 @@
 # Noncommercial use only; see LICENSE.md. Not licensed for AI/ML training or
 # text and data mining (rights reserved under Art. 4(3) Directive (EU) 2019/790).
 
-"""Train on your own PC: the Pi pushes the job to the training dashboard's
-worker API (remote_training/worker.py) over HTTP on the LAN."""
+"""Train on your own PC: the Pi pushes the job to the PC's worker
+(train_worker.py, API in remote_training/worker.py) over HTTP on the LAN."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -26,17 +26,18 @@ _STAGE_MAP = {
 class LocalPCBackend(TrainingBackend):
     name = "local_pc"
     label = "Local PC"
-    description = ("Send the job to the PC running training_dashboard.py. "
+    description = ("Send the job to the PC running train_worker.py. "
                    "Free, uses your own GPU, and images stay on your network.")
     poll_interval = 3.0
+    supports_instant_detect = True
 
     @classmethod
     def config_schema(cls) -> list[Field]:
         return [
             Field("host", "PC address", required=True, placeholder="192.168.1.20",
-                  help="LAN IP or hostname of the PC running training_dashboard.py."),
+                  help="LAN IP or hostname of the PC running train_worker.py."),
             Field("port", "Port", type="number", default=5004,
-                  help="training_dashboard.py port (its --port, default 5004)."),
+                  help="train_worker.py port (its --port, default 5004)."),
             Field("token", "Worker token", type="password", secret=True, required=True,
                   help="Must match WORKER_TOKEN in the PC's .env."),
         ]
@@ -63,8 +64,8 @@ class LocalPCBackend(TrainingBackend):
             raise BackendError("The PC rejected the worker token. "
                                "Check WORKER_TOKEN in the PC's .env.")
         if resp.status_code == 404 and path == "/health":
-            raise BackendError("No worker API at that address. Is training_dashboard.py "
-                               "running there, and is it the updated version?")
+            raise BackendError("No worker API at that address. Is train_worker.py "
+                               "running there?")
         if not resp.ok:
             try:
                 msg = resp.json().get("message", resp.text)
@@ -116,3 +117,10 @@ class LocalPCBackend(TrainingBackend):
         with open(dest_tar, "wb") as f:
             for chunk in resp.iter_content(1 << 16):
                 f.write(chunk)
+
+    def detect_image(self, image_path: Path) -> dict | None:
+        with open(image_path, "rb") as f:
+            # The first call loads the detector on the PC, which takes a while.
+            info = self._request("POST", "/detect", data=f,
+                                 headers={"Content-Type": "image/jpeg"}, timeout=120).json()
+        return info.get("bbox")

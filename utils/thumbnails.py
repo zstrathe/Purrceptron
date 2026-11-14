@@ -3,7 +3,7 @@
 # Noncommercial use only; see LICENSE.md. Not licensed for AI/ML training or
 # text and data mining (rights reserved under Art. 4(3) Directive (EU) 2019/790).
 
-"""Disk-backed JPEG thumbnail cache shared by the Pi and training dashboards.
+"""Disk-backed JPEG thumbnail cache for the Pi dashboard's image browsers.
 
 Thumbnails mirror the source tree under ``cache_root/<max_side>/`` so that a
 size change never serves stale thumbnails of the old size.

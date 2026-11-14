@@ -102,7 +102,7 @@ classifier_training:
 training_backend:
   backend: local_pc          # local_pc | hf_jobs
   min_images_per_cat: 30     # labeled images with bounding boxes needed per cat
-  local_pc:                  # training_dashboard.py on your PC (needs WORKER_TOKEN in its .env)
+  local_pc:                  # train_worker.py on your PC (needs WORKER_TOKEN in its .env)
     host: ''
     port: 5004
   hf_jobs:                   # Hugging Face Jobs (prepaid credits)

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json as json_module
 import os
-import shutil
 import sys
 import threading
 from datetime import datetime
@@ -25,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from utils.display import print_info
+from utils.sidecars import move_with_sidecar
 from utils.thumbnails import ThumbnailCache
 
 
@@ -241,9 +241,7 @@ class LabelReviewApp:
         # Update review state for old → new path
         self._review_state.remove_entry(path)
 
-        orig_mtime = path.stat().st_mtime
-        shutil.move(str(path), str(dest_path))
-        os.utime(str(dest_path), (orig_mtime, orig_mtime))
+        move_with_sidecar(path, dest_path)
 
         self._review_state.mark_reviewed(dest_path)
 
@@ -289,7 +287,7 @@ class LabelReviewApp:
         self._review_state.remove_entry(path)
         self._thumbnails.remove(path)
 
-        shutil.move(str(path), str(dest))
+        move_with_sidecar(path, dest)
         self.deleted_count += 1
         self.images.pop(self.index)
         if self.index >= len(self.images):
@@ -354,9 +352,7 @@ class LabelReviewApp:
             counter += 1
 
         self._review_state.remove_entry(path)
-        orig_mtime = path.stat().st_mtime
-        shutil.move(str(path), str(dest_path))
-        os.utime(str(dest_path), (orig_mtime, orig_mtime))
+        move_with_sidecar(path, dest_path)
         self._review_state.mark_reviewed(dest_path)
         self._thumbnails.remove(path)
         self.labeled_count += 1
@@ -394,7 +390,7 @@ class LabelReviewApp:
 
         self._review_state.remove_entry(path)
         self._thumbnails.remove(path)
-        shutil.move(str(path), str(dest))
+        move_with_sidecar(path, dest)
         self.deleted_count += 1
 
         try:
