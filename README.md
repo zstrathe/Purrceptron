@@ -66,12 +66,12 @@ names, so the next round of training needs less manual labeling.
 ```mermaid
 flowchart TB
     subgraph PI["Raspberry Pi 5 + Hailo-10H"]
-        DET["Stage 1: detect any cat<br/>stock YOLOv8m on the NPU<br/>bounding box + tracking ID"] --> GATE{"At the food bowl?"}
+        DET["Stage 1<br/>Every camera frame runs through a stock<br/>COCO-trained YOLOv8m on the Hailo NPU;<br/>only the 'cat' class is kept. Output per cat:<br/>a bounding box + a tracking ID that persists across frames"] --> GATE{"At the food bowl?"}
         GATE -- "yes: bounding box overlapped the bowl<br/>region of interest (ROI) for 5 frames" --> MODEL{"Classifier deployed<br/>and enabled?"}
         MODEL -- "not yet: save the image<br/>with its bounding box, unlabeled" --> CAP["Training image saved<br/>(when detection capture is on):<br/>frame + bounding-box JSON,<br/>labeled with the confirmed cat's name,<br/>otherwise left unlabeled"]
-        MODEL -- yes --> CLS["Stage 2: identify which cat<br/>crop to 224x224, MobileNetV2 fine-tuned<br/>on your cats: best-guess name<br/>+ an energy score calculated<br/>from the model's raw outputs"]
+        MODEL -- yes --> CLS["Stage 2<br/>Run the trained model (INT8 MobileNetV2, Pi CPU)<br/>on the bounding-box crop resized to 224x224.<br/>Output: a probability for each cat name, and an<br/>energy score (-logsumexp of the raw outputs: low when<br/>one output dominates, high when the model is unsure)"]
         CLS --> KNOWN{"Is the calculated energy<br/>score low enough to be<br/>a known cat?"}
-        KNOWN -- "no: score above the threshold,<br/>skipped, not counted as a vote" --> UNK["Reported as Unknown<br/>(after 5 rejections in a row),<br/>image saved unlabeled"]
+        KNOWN -- "no: score above the threshold set at training<br/>(99% of validation images fall below it),<br/>skipped, not counted as a vote" --> UNK["Reported as Unknown<br/>(after 5 rejections in a row),<br/>image saved unlabeled"]
         KNOWN -- yes --> TALLY["Add the guess to the last 10 votes.<br/>Confirmed when one cat has 6+ votes<br/>and their average confidence<br/>is above the threshold"]
         TALLY --> VOTE{"Identity confirmed?"}
         VOTE -- "not yet" --> WAIT["Not confirmed yet:<br/>image saved unlabeled,<br/>classify the next crop"]
@@ -97,15 +97,20 @@ flowchart TB
 3. The crop is resized to 224x224 and classified by MobileNetV2 in a separate
    process on one CPU core, at most once per `classify_interval_seconds`.
 4. The classifier can only choose among the cats it was trained on, so it always
-   names one of them, even for a cat it has never seen. To catch that, each
-   prediction also gets an energy score, which measures how familiar the crop looks
-   to the model. The classifier produces one raw score (logit) per cat, and the
-   energy is `-log(sum(exp(logits)))`. One strong logit, which is what your own
-   cats produce, gives a low energy; uniformly weak logits, typical of an
-   unfamiliar cat, give a high one. At the end of training every validation image is scored this way, and
-   the threshold is set so that 99% of them pass (`energy_ood_percentile`). It is
-   stored in the model file. A crop whose energy is above the threshold is rejected
-   and does not vote, so an unfamiliar cat is reported as Unknown.
+   names one of them, even for a cat it has never seen. The softmax confidence does
+   not help here: softmax rescales the outputs to sum to 1, so an unfamiliar cat
+   whose raw scores are all weak can still come out as "90% Cat1". To catch that,
+   each prediction is checked a second time with an energy score computed from the
+   same raw outputs (logits), before softmax throws their magnitude away. The energy
+   is `-log(sum(exp(logits)))`: one strong logit, which is what your own cats
+   produce, gives a low energy; uniformly weak logits, typical of an unfamiliar
+   cat, give a high one (Liu et al., 2020, "Energy-based Out-of-distribution
+   Detection"). It costs nothing at runtime because it reads the forward pass the
+   classifier already ran. The threshold comes from training: the exported INT8
+   model scores every validation image, and the cutoff is set so that 99% of them
+   pass (`energy_ood_percentile`). It is stored in the model file. A crop whose
+   energy is above the threshold is rejected and does not vote, so an unfamiliar cat
+   is reported as Unknown instead of being given the nearest known name.
 5. A rolling window of predictions confirms an identity once one cat holds a
    majority and the average confidence is above `confidence_threshold`.
 6. Each confirmed visit is written to `classifier_log.db` with the cat, the time of
@@ -402,7 +407,9 @@ Classifier worker: started before GStreamer initializes and pinned to
 the class list and energy threshold from the model file (a
 `classifier.energy_ood_threshold` setting overrides the embedded value), and applies
 ImageNet normalization. Crops arrive on a bounded queue and are dropped when the
-CPU falls behind. The worker's state is written to `/tmp/cat_classifier_status.json`,
+CPU falls behind. Each crop gets one forward pass; the energy score and the softmax
+probabilities are both read from its logits, and the energy check runs first so a
+rejected crop never reaches the vote window. The worker's state is written to `/tmp/cat_classifier_status.json`,
 which the dashboard polls twice a second.
 
 Vote window: a prediction is confirmed when one class holds more than half of
@@ -625,6 +632,10 @@ firewall for port 5003, and use the IP address if `.local` names do not resolve.
   copy.
 - The cross-validation results panel on the Metrics tab does not render yet. Read
   `versions/<v>/cv_results/cv_summary.json` or the step log instead.
+- The classifier has only been tested on cats that are easy to tell apart. With two
+  look-alike cats the vote window would stall rather than misidentify, so visits
+  would go unlogged. What would help, and in what order, is written up in
+  [docs/future_work.md](docs/future_work.md).
 
 ## Contributing
 
