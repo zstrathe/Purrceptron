@@ -355,6 +355,16 @@ class ClassifierGate:
         except QueueFull:
             pass
 
+    @property
+    def visit_start(self) -> float | None:
+        """Wall time of the current visit's first frame at the bowl (None if no visit)."""
+        return self._visit_start
+
+    @property
+    def last_hit(self) -> float | None:
+        """Wall time of the current visit's latest frame at the bowl."""
+        return self._last_hit
+
     def send_reset(self, last_seen: float | None = None) -> None:
         """Tell the classifier worker the cat left, with the time it was last seen."""
         try:
@@ -411,6 +421,64 @@ def draw_bounding_boxes(frame: np.ndarray, detections: list[dict]) -> np.ndarray
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Capture labeling from classifier status
+# ═══════════════════════════════════════════════════════════════════════════
+
+from deploy.cat_classifier import (  # noqa: E402  (numpy-only import)
+    STATUS_PATH as CLASSIFIER_STATUS_PATH,
+    confirmed_visits,
+    read_status as read_classifier_status,
+)
+
+# Detector labels the classifier names (detection_capture.unlabeled_classes) share
+# one capture throttle: it is the same animal at the bowl, whichever name its
+# images end up under.
+CLASSIFIED_THROTTLE_KEY = "classified"
+
+
+def classifier_capture_label(status: dict | None,
+                             visit_start: float | None) -> tuple[str | None, bool]:
+    """Decide how a detection capture taken right now should be labeled.
+
+    Returns (label, backlabel_eligible):
+      - label is the cat this visit was confirmed as (the same cat the event log
+        records), or None to save the image as unlabeled.
+      - backlabel_eligible is True when the image is unlabeled only because the
+        vote has not decided yet; it is renamed if this visit is confirmed later.
+    Never named, and never eligible: images taken while the classifier is
+    rejecting crops (energy above threshold), or while the vote majority has
+    moved to a different cat than the one the visit was confirmed as.
+    A status from another visit carries no information about the cat at the
+    bowl now, apart from its list of confirmed visits.
+    """
+    if visit_start is None:
+        return None, False
+    if not status:
+        return None, True
+    current = status.get("visit_start") == visit_start
+    if current and status.get("last_crop_rejected"):
+        return None, False
+    visit_cat = confirmed_visits(status).get(visit_start)
+    if visit_cat:
+        majority = status.get("confirmed_cat") if current else None
+        if majority and majority != visit_cat:
+            return None, False
+        return visit_cat, False
+    return None, True
+
+
+def capture_plan(status: dict | None, visit_start: float | None, classifier_on: bool,
+                 save_labeled_only: bool) -> tuple[str | None, bool, bool]:
+    """(label, backlabel_eligible, skip) for an unlabeled_classes detection."""
+    if classifier_on:
+        label, eligible = classifier_capture_label(status, visit_start)
+    else:
+        label, eligible = None, False
+    skip = label is None and save_labeled_only and not eligible
+    return label, eligible, skip
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Hailo Detection Callback
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -441,6 +509,13 @@ if HAILO_AVAILABLE:
             self.frame_w: int = 1920
             self.frame_h: int = 1080
             self._track_roi_frames: dict[int, tuple[int, int]] = {}  # track_id -> (roi_frames, miss_frames)
+            from deploy.detection_capturer import VisitBackLabeler
+            self.backlabeler = VisitBackLabeler()  # names a visit's early captures once confirmed
+            # Classifier status as of the last read (2 Hz poll or a capture). The
+            # pre-check uses it only to decide whether a frame is worth extracting;
+            # each capture re-reads the file before choosing a label.
+            self._status: dict | None = None
+            self._status_last_poll: float = 0.0
 
         def set_filter(self, labels: list[str]) -> None:
             self.filter_labels = set(labels)
@@ -554,10 +629,15 @@ if HAILO_AVAILABLE:
         if user_data.detection_capturer and detected_cats:
             if user_data.capture_mode == "detections":
                 min_stable = user_data.stability_frames
+                gate = user_data.classifier_gate
+                _, _, classified_skip = capture_plan(
+                    user_data._status, gate.visit_start if gate else None,
+                    gate is not None, user_data.save_labeled_only)
                 for cat in detected_cats:
-                    save_label = ("unlabeled" if user_data.unlabeled_classes
-                                  and cat in user_data.unlabeled_classes else cat)
-                    if not user_data.detection_capturer.should_capture(save_label):
+                    if _is_classified(user_data, cat) and classified_skip:
+                        continue
+                    if not user_data.detection_capturer.should_capture(
+                            _throttle_key(user_data, cat)):
                         continue
                     # Check if any detection for this cat is stably within ROI
                     if frame_detections and not any(
@@ -598,6 +678,18 @@ if HAILO_AVAILABLE:
                 _maybe_capture_eating_cats(user_data, detected_cats, frame, frame_detections)
             elif user_data.capture_mode == "detections":
                 _maybe_capture_detections(user_data, detected_cats, frame, frame_detections)
+
+        # Classifier status for capture: read at most twice a second, and only while
+        # a visit is open or captures are waiting to be named.
+        gate = user_data.classifier_gate
+        if (gate and user_data.detection_capturer
+                and user_data.capture_mode == "detections"):
+            now = time.time()
+            if (now - user_data._status_last_poll >= 0.5
+                    and (gate.visit_start is not None or user_data.backlabeler)):
+                user_data._status_last_poll = now
+                user_data._status = read_classifier_status()
+                _apply_backlabels(user_data, now)
 
 
     def _handle_capture_command(element, buffer, user_data: CatDetectionCallback, cmd: dict,
@@ -653,16 +745,6 @@ if HAILO_AVAILABLE:
         else:
             print(json.dumps({"response": "capture_error", "message": "imwrite failed"}),
                   flush=True)
-
-
-    def _get_classifier_identity():
-        """Read confirmed cat identity from the classifier status file."""
-        try:
-            with open("/tmp/cat_classifier_status.json") as f:
-                status = json.load(f)
-            return status.get("confirmed_cat")
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
-            return None
 
 
     def _detection_in_roi(det: dict, bowl_roi: tuple, frame_w: int, frame_h: int,
@@ -726,8 +808,11 @@ if HAILO_AVAILABLE:
         """Capture a frame for each detected class (no feeding tracker required).
 
         Only saves detections whose bbox overlaps the bowl ROI above the
-        configured threshold.  Optionally skips unlabeled images when
-        ``save_labeled_only`` is set.
+        configured threshold. For unlabeled_classes detections the label comes
+        from capture_plan(): the cat the current visit was confirmed as, or
+        unlabeled/. Unlabeled images taken before the vote decided are registered
+        for back-labeling. With ``save_labeled_only``, unlabeled images that can
+        never be named are skipped.
 
         Args:
             user_data: CatDetectionCallback with detection_capturer
@@ -736,8 +821,12 @@ if HAILO_AVAILABLE:
             frame_detections: list of detection dicts (label, confidence, bbox_norm)
         """
         min_stable = user_data.stability_frames
-        confirmed = (_get_classifier_identity()
-                     if user_data.classifier_gate else None)
+        gate = user_data.classifier_gate
+        visit = gate.visit_start if gate else None
+        if gate:
+            user_data._status = read_classifier_status()
+        confirmed, backlabel_eligible, skip = capture_plan(
+            user_data._status, visit, gate is not None, user_data.save_labeled_only)
         for cat in detected_cats:
             # Filter to detections in the ROI with stable presence
             roi_dets = None
@@ -756,16 +845,62 @@ if HAILO_AVAILABLE:
             if not roi_dets:
                 continue
 
+            classified = _is_classified(user_data, cat)
             save_label = cat
-            if user_data.unlabeled_classes and cat in user_data.unlabeled_classes:
-                save_label = confirmed if confirmed else "unlabeled"
+            if classified:
+                # With save_labeled_only, an image that may still be named once the
+                # visit is confirmed is kept for now and deleted if it never is.
+                if skip:
+                    continue
+                save_label = confirmed or "unlabeled"
 
-            if user_data.save_labeled_only and save_label == "unlabeled":
-                continue
-
-            saved = user_data.detection_capturer.maybe_capture(save_label, frame, detections=roi_dets)
+            saved = user_data.detection_capturer.maybe_capture(
+                save_label, frame, detections=roi_dets,
+                throttle_key=_throttle_key(user_data, cat))
             if saved:
                 print(f"[capture] Saved as '{save_label}' ({len(roi_dets)} detections)", flush=True)
+                if classified and confirmed is None and backlabel_eligible:
+                    user_data.backlabeler.add(visit, saved)
+
+
+    def _is_classified(user_data, cat: str) -> bool:
+        """True for detector labels whose captures are named by the classifier."""
+        return bool(user_data.unlabeled_classes) and cat in user_data.unlabeled_classes
+
+
+    def _throttle_key(user_data, cat: str) -> str:
+        return CLASSIFIED_THROTTLE_KEY if _is_classified(user_data, cat) else cat
+
+
+    def _apply_backlabels(user_data, now: float) -> None:
+        """Name the captures of visits the classifier has confirmed; with
+        save_labeled_only, delete those of visits that ended unconfirmed."""
+        if not user_data.backlabeler:
+            return
+        capturer = user_data.detection_capturer
+        for paths, cat in user_data.backlabeler.poll(confirmed_visits(user_data._status)):
+            capturer.relabel(paths, cat)
+            print(f"[capture] Visit confirmed as '{cat}': labeling "
+                  f"{len(paths)} earlier capture(s)", flush=True)
+        gate = user_data.classifier_gate
+        expired = user_data.backlabeler.expire(gate.visit_start, now, last_hit=gate.last_hit)
+        if expired and user_data.save_labeled_only:
+            capturer.delete(expired)
+
+
+    def _flush_backlabels(user_data) -> None:
+        """Before the capturer stops: name what is already confirmed, then drop the
+        rest (deleted under save_labeled_only, otherwise left in unlabeled/)."""
+        capturer = user_data.detection_capturer
+        if not capturer or not user_data.backlabeler:
+            return
+        if user_data.classifier_gate:
+            user_data._status = read_classifier_status()
+            for paths, cat in user_data.backlabeler.poll(confirmed_visits(user_data._status)):
+                capturer.relabel(paths, cat)
+        leftover = user_data.backlabeler.drain()
+        if leftover and user_data.save_labeled_only:
+            capturer.delete(leftover)
 
 
     def _maybe_capture_eating_cats(user_data, detected_cats, frame, frame_detections=None):
@@ -779,8 +914,9 @@ if HAILO_AVAILABLE:
         """
         from deploy.feeding_tracker import CatState
 
-        confirmed = (_get_classifier_identity()
-                     if user_data.classifier_gate else None)
+        gate = user_data.classifier_gate
+        confirmed = (classifier_capture_label(read_classifier_status(), gate.visit_start)[0]
+                     if gate else None)
         for cat in detected_cats:
             state = user_data.feeding_tracker.get_cat_state(cat)
             if state != CatState.EATING:
@@ -795,7 +931,7 @@ if HAILO_AVAILABLE:
                     for d in frame_detections if d["label"] == cat
                 ] or None
             user_data.detection_capturer.maybe_capture(save_label, frame, session_id,
-                                                       detections=det_data)
+                                                       detections=det_data, throttle_key=cat)
 
 
     def _handle_set_detection_capture(user_data: CatDetectionCallback, cmd: dict):
@@ -836,6 +972,7 @@ if HAILO_AVAILABLE:
             print_info(f"Detection capture enabled (interval={interval}s, labeled_only={save_labeled_only})")
         else:
             if user_data.detection_capturer:
+                _flush_backlabels(user_data)
                 user_data.detection_capturer.shutdown()
                 user_data.detection_capturer = None
             user_data.capture_mode = None
@@ -955,7 +1092,7 @@ def main():
         classifier_q = multiprocessing.Queue(maxsize=5)
 
         # Clear stale classifier status from previous runs
-        status_file = Path("/tmp/cat_classifier_status.json")
+        status_file = CLASSIFIER_STATUS_PATH
         if status_file.exists():
             status_file.unlink(missing_ok=True)
 
@@ -1134,6 +1271,7 @@ def main():
 
         # Shutdown capturer after feeding tracker (so final sessions are logged first)
         if user_data.detection_capturer:
+            _flush_backlabels(user_data)
             user_data.detection_capturer.print_stats()
             user_data.detection_capturer.shutdown()
 

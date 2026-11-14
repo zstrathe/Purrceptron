@@ -70,26 +70,27 @@ flowchart TB
     subgraph PI["Raspberry Pi 5 + Hailo-10H"]
         DET["Stage 1<br/>Every camera frame runs through a stock<br/>COCO-trained YOLOv8m on the Hailo NPU;<br/>only the 'cat' class is kept. Output per cat:<br/>a bounding box + a tracking ID that persists across frames"] --> GATE{"At the food bowl?"}
         GATE -- "yes: bounding box overlapped the bowl<br/>region of interest (ROI) for 5 frames" --> MODEL{"Classifier deployed<br/>and enabled?"}
-        MODEL -- "not yet: save the image<br/>with its bounding box, unlabeled" --> CAP["Training image saved<br/>(when detection capture is on):<br/>frame + bounding-box JSON,<br/>labeled with the confirmed cat's name,<br/>otherwise left unlabeled"]
+        MODEL -- "not yet: save unlabeled images<br/>to build the first dataset" --> CAP["Training image saved<br/>frame + bounding-box JSON<br/>(at most one every 15 s)"]
         MODEL -- yes --> CLS["Stage 2<br/>Run the trained model (INT8 MobileNetV2, Pi CPU)<br/>on the bounding-box crop resized to 224x224.<br/>Output: a probability for each cat name, and an<br/>energy score (-logsumexp of the raw outputs: low when<br/>one output dominates, high when the model is unsure)"]
         CLS --> KNOWN{"Is the calculated energy<br/>score low enough to be<br/>a known cat?"}
-        KNOWN -- "no: score above the threshold set at training<br/>(99% of validation images fall below it),<br/>skipped, not counted as a vote" --> UNK["Reported as Unknown<br/>(after 5 rejections in a row),<br/>image saved unlabeled"]
+        KNOWN -- "no: score above the threshold set at training<br/>(99% of validation images fall below it),<br/>skipped, not counted as a vote" --> UNK["Reported as Unknown<br/>(after 5 rejections in a row),<br/>image saved unlabeled,<br/>never auto-labeled"]
         KNOWN -- yes --> TALLY["Add the guess to the last 10 votes.<br/>Confirmed when one cat has 6+ votes<br/>and their average confidence<br/>is above the threshold"]
         TALLY --> VOTE{"Identity confirmed?"}
-        VOTE -- "not yet" --> WAIT["Not confirmed yet:<br/>image saved unlabeled,<br/>classify the next crop"]
+        VOTE -- "not yet" --> WAIT["Not confirmed yet:<br/>image saved unlabeled for now,<br/>classify the next crop"]
         WAIT --> CLS
-        WAIT --> CAP
-        VOTE -- yes --> ID["Cat identified:<br/>log the visit, and save the<br/>image labeled with its name"]
+        WAIT --> REFINE
+        VOTE -- yes --> ID["Cat identified:<br/>log the visit, save the image<br/>labeled with its name, and label<br/>this visit's earlier unlabeled images"]
         ID --> LOG[("Visit log: cat name,<br/>arrival = first frame at the bowl,<br/>departure = last frame at the bowl")]
-        ID --> CAP
-        UNK --> CAP
+        ID --> REFINE
+        UNK --> REFINE
+        REFINE["Optional: keep capturing<br/>to refine the next model"] --> CAP
     end
     subgraph PC["Training machine (CUDA recommended)"]
         PULL["Pull images + bounding boxes<br/>into a new dataset version"] --> LABEL["Label cats, add or fix bounding boxes<br/>(auto-detect fills in missing ones)"]
         LABEL --> PREP["Crop each bounding box, resize to 224x224,<br/>split train/val by capture session<br/>so near-duplicate frames stay on one side"]
         PREP --> TRAIN["Fine-tune MobileNetV2 on the labeled crops:<br/>head warmup, partial fine-tune, quantization-aware training.<br/>Export INT8 TorchScript + class list +<br/>energy threshold (99th percentile of validation energies)"]
     end
-    CAP -- "images + bounding boxes copied<br/>to the training machine (rsync)" --> PULL
+    CAP -- "images + bounding boxes copied to the<br/>training machine (rsync) for the next round" --> PULL
     TRAIN -- "model + threshold copied<br/>back to the Pi (scp)" --> CLS
 ```
 
@@ -122,8 +123,13 @@ flowchart TB
    confidence and frame count. The Pi dashboard lists these by day with total
    tracked time per cat.
 7. If detection capture is enabled, stable in-bowl detections are saved with their
-   bounding box in a JSON sidecar, under the confirmed cat's name or in
-   `unlabeled/`, ready for the next training round.
+   bounding box in a JSON sidecar, ready for the next training round. An image is
+   named after the cat the current visit was confirmed as, the same cat the visit
+   log records. Images taken earlier in the visit, while the vote was still
+   undecided, are saved to `unlabeled/` and moved into the cat's folder once the
+   visit is confirmed. Images taken while crops are being rejected by the energy
+   check stay in `unlabeled/` for manual review, because the rejection may be a
+   different cat.
 
 ## Hardware
 
@@ -430,10 +436,35 @@ confirmed and closed when the cat leaves; on shutdown the end time is the shutdo
 time.
 
 Detection-triggered capture: when enabled, a detection is saved once it is stable
-inside the bowl region, at most once per `min_interval_seconds` per label. Labels
-listed in `unlabeled_classes` (`cat` for the stock model) are saved under the
-classifier's confirmed name when there is one, otherwise under `unlabeled/`. Each
-image gets a `.json` sidecar with the timestamp, image size and the in-region
+inside the bowl region, at most once per `min_interval_seconds`. Labels listed in
+`unlabeled_classes` (`cat` for the stock model) are named by the classifier and
+share one throttle, so a cat at the bowl is captured once per interval whatever
+name its images are saved under; other labels are throttled separately.
+
+Their name comes from the classifier's status file. Besides what the dashboard
+shows, it records which visit the latest crop belongs to, whether that crop was
+rejected, and the recent visits the classifier confirmed together with the cat
+each was confirmed as (the visit's first confirmation, as in the event log). Visits
+are the ones the classifier gate defines for the event log: from the first frame at
+the bowl to the last.
+
+- The current visit is confirmed: saved under that cat's name.
+- The latest crop was rejected by the energy check, or the vote majority has moved
+  to a different cat than the one the visit was confirmed as: saved under
+  `unlabeled/` and left there for review. Rejection applies from the first
+  rejected crop, before the dashboard shows Unknown.
+- No decision yet for this visit: saved under `unlabeled/` and registered with the
+  visit. When the visit is confirmed, these images and their sidecars are moved to
+  the cat's folder and renamed `<cat>_<UTC timestamp>.jpg`, with a new line in
+  `capture_log.csv`. A visit confirmed on its last crop, after the cat has gone,
+  still counts. With `save_labeled_only`, they are deleted instead if the visit is
+  not confirmed within 30 s of its last frame at the bowl, or when capture is
+  switched off or detect.py stops.
+
+If the classifier misses a departure (its queue was full), the first crop of the
+next visit closes the previous one, so votes and names never carry over.
+
+Each image gets a `.json` sidecar with the timestamp, image size and the in-region
 detections (`label`, `confidence`, and `bbox_norm` as `[xmin, ymin, w, h]` in the
 range 0 to 1), plus a line in `data/raw/capture_log.csv`. Files are named
 `<label>_<UTC timestamp>.jpg`.
@@ -493,9 +524,9 @@ a key is omitted, it is noted.
 | `detection_capture.enabled` | false | Save stable in-region detections automatically. |
 | `detection_capture.output_dir` | `data/raw` | Where captures go (also used for manual captures). |
 | `detection_capture.unlabeled_classes` | `[cat]` (code fallback `[]`) | Detector labels saved as `unlabeled/`, or under the classifier's confirmed name. |
-| `detection_capture.save_labeled_only` | false | Skip captures that would land in `unlabeled/`. |
-| `detection_capture.min_interval_seconds` | 15 | Minimum seconds between saves per label. |
-| `detection_capture.max_captures_per_session` | 0 | Cap per label per run; 0 is unlimited. |
+| `detection_capture.save_labeled_only` | false | Keep only named captures. Images waiting for the visit to be confirmed are kept until it is and deleted if it never is. |
+| `detection_capture.min_interval_seconds` | 15 | Minimum seconds between saves. `unlabeled_classes` labels share one interval; other labels each have their own. |
+| `detection_capture.max_captures_per_session` | 0 | Cap per saved label per run; 0 is unlimited. |
 | `detection_capture.jpeg_quality` | 95 | JPEG quality. |
 | `detection_capture.csv_logging` | true | Append to `capture_log.csv`. |
 | **Feeding tracker** (see the note above) | | |

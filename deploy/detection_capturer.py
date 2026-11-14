@@ -4,7 +4,7 @@
 # Noncommercial use only; see LICENSE.md. Not licensed for AI/ML training or
 # text and data mining (rights reserved under Art. 4(3) Directive (EU) 2019/790).
 
-"""Detection-triggered image capture — saves frames when cats are confirmed eating."""
+"""Detection-triggered image capture, plus back-labeling of a visit's early captures."""
 from __future__ import annotations
 
 import csv
@@ -12,6 +12,7 @@ import json
 import queue
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -118,7 +119,13 @@ class DetectionCapturer:
         self._active_session_ids: dict[str, str | None] = {cat: None for cat in cats}
 
         # Async save queue: (frame, filepath, quality, detections, ts_iso, session_id)
-        self._queue: queue.Queue[tuple | None] = queue.Queue(maxsize=queue_size)
+        # or a small control item ("relabel" | "delete", paths, label). The queue is
+        # unbounded so control items never block the GStreamer callback; frames are
+        # bounded by hand in maybe_capture() (dropped when queue_size are waiting).
+        self._queue: queue.Queue[tuple | None] = queue.Queue()
+        self._max_queued_frames = queue_size
+        # Paths handed out but possibly not written yet (name-collision check)
+        self._recent_paths: deque[Path] = deque(maxlen=queue_size * 2)
         self._thread = threading.Thread(target=self._save_loop, daemon=True)
         self._lock = threading.Lock()
 
@@ -137,17 +144,16 @@ class DetectionCapturer:
         """Start the background save thread."""
         self._thread.start()
 
-    def should_capture(self, cat_name: str) -> bool:
-        """Check if a capture would be accepted (throttle + session limits).
+    def should_capture(self, throttle_key: str) -> bool:
+        """Check whether the throttle interval for throttle_key has passed.
 
         Use this to avoid expensive frame extraction when capture would be rejected.
+        A capture refused by the per-session cap also restarts the interval, so
+        this stays accurate without knowing the label the image would be saved as.
         """
         now = time.time()
         with self._lock:
-            if (self.max_per_session > 0
-                    and self._session_capture_count.get(cat_name, 0) >= self.max_per_session):
-                return False
-            elapsed = now - self._last_capture_time.get(cat_name, 0.0)
+            elapsed = now - self._last_capture_time.get(throttle_key, 0.0)
             return elapsed >= self.min_interval
 
     def maybe_capture(
@@ -156,52 +162,66 @@ class DetectionCapturer:
         frame: np.ndarray,
         session_id: str | None = None,
         detections: list[dict] | None = None,
-    ) -> bool:
+        throttle_key: str | None = None,
+    ) -> Path | None:
         """Attempt to capture a frame for the given cat.
 
-        Returns True if the frame was enqueued for saving, False if throttled/limited.
+        Returns the path the frame will be saved to, or None if throttled/limited.
+        The file is written asynchronously; relabel()/delete() are queued behind it.
         If detections is provided, a JSON sidecar is written alongside the JPEG with
         normalized bounding box coordinates of the triggering detections.
+        throttle_key (default: cat_name) is what the minimum interval applies to, so
+        one animal at the bowl is throttled once whatever name its images are saved
+        under. The per-session cap applies per saved label (cat_name).
         """
+        key = throttle_key or cat_name
         now = time.time()
         with self._lock:
-            # Check: is this a new feeding session for this cat?
+            # Check: throttle interval
+            elapsed = now - self._last_capture_time.get(key, 0.0)
+            if elapsed < self.min_interval:
+                self.total_skipped_throttle += 1
+                return None
+
+            # Check: is this a new feeding session for this label?
             if session_id != self._active_session_ids.get(cat_name):
                 self._active_session_ids[cat_name] = session_id
                 self._session_capture_count[cat_name] = 0
 
-            # Check: max captures per session
+            # Check: max captures per session (restart the interval so the caller's
+            # should_capture() pre-check does not pass on every frame)
             if (
                 self.max_per_session > 0
                 and self._session_capture_count.get(cat_name, 0) >= self.max_per_session
             ):
+                self._last_capture_time[key] = now
                 self.total_skipped_limit += 1
-                return False
+                return None
 
-            # Check: throttle interval
-            elapsed = now - self._last_capture_time.get(cat_name, 0.0)
-            if elapsed < self.min_interval:
-                self.total_skipped_throttle += 1
-                return False
-
-            # Build filename and path
+            # Build filename and path (suffix if the name is taken, e.g. two
+            # detector labels saved under the same label in the same millisecond)
             ts = datetime.now(timezone.utc)
             ts_iso = ts.isoformat()
-            filename = f"{cat_name}_{ts.strftime('%Y%m%d_%H%M%S_%f')[:-3]}.jpg"
-            filepath = self.output_dir / cat_name / filename
+            stem = f"{cat_name}_{ts.strftime('%Y%m%d_%H%M%S_%f')[:-3]}"
+            filepath = self.output_dir / cat_name / f"{stem}.jpg"
+            counter = 1
+            while filepath in self._recent_paths or filepath.exists():
+                filepath = self.output_dir / cat_name / f"{stem}_{counter}.jpg"
+                counter += 1
+            filename = filepath.name
 
-            # Enqueue (non-blocking: drop frame if queue full)
-            try:
-                self._queue.put_nowait((frame, filepath, self.jpeg_quality,
-                                        detections, ts_iso, session_id or ""))
-            except queue.Full:
-                return False
+            # Enqueue (non-blocking: drop the frame if the writer is behind)
+            if self._queue.qsize() >= self._max_queued_frames:
+                return None
+            self._queue.put_nowait((frame, filepath, self.jpeg_quality,
+                                    detections, ts_iso, session_id or ""))
 
             # Update state
-            self._last_capture_time[cat_name] = now
+            self._last_capture_time[key] = now
             self._session_capture_count[cat_name] = (
                 self._session_capture_count.get(cat_name, 0) + 1
             )
+            self._recent_paths.append(filepath)
             self.total_captured += 1
 
             # CSV log
@@ -211,7 +231,21 @@ class DetectionCapturer:
                 ])
                 self._csv_file.flush()
 
-            return True
+            return filepath
+
+    def relabel(self, paths: list[Path], new_label: str) -> None:
+        """Move saved captures (and their sidecars) into new_label's folder.
+
+        Queued behind pending writes, so it is safe to call right after
+        maybe_capture() returned the paths.
+        """
+        if paths:
+            self._queue.put_nowait(("relabel", list(paths), new_label))
+
+    def delete(self, paths: list[Path]) -> None:
+        """Delete saved captures and their sidecars (queued behind pending writes)."""
+        if paths:
+            self._queue.put_nowait(("delete", list(paths), None))
 
     def reset_session(self, cat_name: str) -> None:
         """Reset capture count for a cat when its feeding session ends."""
@@ -225,6 +259,19 @@ class DetectionCapturer:
             item = self._queue.get()
             if item is None:
                 break
+            # Control items are ("relabel" | "delete", paths, label); capture
+            # items start with an ndarray, so test the type rather than compare.
+            if isinstance(item[0], str):
+                action, paths, new_label = item
+                try:
+                    if action == "relabel":
+                        self._relabel_now(paths, new_label)
+                    elif action == "delete":
+                        self._delete_now(paths)
+                except Exception as exc:
+                    print_error(f"Detection capture {action} failed: {exc}")
+                self._queue.task_done()
+                continue
             frame, filepath, quality, detections, ts_iso, session_id = item
             try:
                 filepath.parent.mkdir(parents=True, exist_ok=True)
@@ -250,6 +297,55 @@ class DetectionCapturer:
                 print_error(f"Detection capture save failed {filepath.name}: {exc}")
             self._queue.task_done()
 
+    def _relabel_now(self, paths: list[Path], new_label: str) -> None:
+        dest_dir = self.output_dir / new_label
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        for src in paths:
+            try:
+                self._relabel_one(src, dest_dir, new_label)
+            except OSError as exc:  # keep going with the rest of the batch
+                print_error(f"Detection capture relabel failed for {src.name}: {exc}")
+
+    def _relabel_one(self, src: Path, dest_dir: Path, new_label: str) -> None:
+        if not src.exists():
+            return
+        old_label = src.parent.name
+        stem = src.stem
+        if stem.startswith(old_label + "_"):
+            stem = stem[len(old_label) + 1:]
+        dest = dest_dir / f"{new_label}_{stem}{src.suffix}"
+        counter = 1
+        while dest.exists() or dest.with_suffix(".json").exists():
+            dest = dest_dir / f"{new_label}_{stem}_{counter}{src.suffix}"
+            counter += 1
+        src_json = src.with_suffix(".json")
+        captured_at, session_id = "", ""
+        if src_json.exists():
+            try:
+                meta = json.loads(src_json.read_text())
+                captured_at = meta.get("timestamp", "")
+                session_id = meta.get("session_id", "")
+            except (OSError, ValueError):
+                pass
+        src.rename(dest)
+        if src_json.exists():
+            src_json.rename(dest.with_suffix(".json"))
+        print_info(f"Detection capture relabeled: {src.name} -> {new_label}/{dest.name}")
+        with self._lock:
+            if self._csv_writer:
+                self._csv_writer.writerow([dest.name, new_label, captured_at, session_id])
+                self._csv_file.flush()
+
+    @staticmethod
+    def _delete_now(paths: list[Path]) -> None:
+        for p in paths:
+            try:
+                p.unlink(missing_ok=True)
+                p.with_suffix(".json").unlink(missing_ok=True)
+                print_info(f"Detection capture removed (visit never confirmed): {p.name}")
+            except OSError as exc:
+                print_error(f"Detection capture delete failed for {p.name}: {exc}")
+
     def _open_csv(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         csv_path = self.output_dir / "capture_log.csv"
@@ -273,3 +369,63 @@ class DetectionCapturer:
             f"{self.total_skipped_throttle} throttled, "
             f"{self.total_skipped_limit} session-limited"
         )
+
+
+class VisitBackLabeler:
+    """Track unlabeled captures per visit and name them once the visit is confirmed.
+
+    A capture is added only when it was taken while the classifier had not yet
+    confirmed the cat and was not rejecting crops. Visits are keyed by the
+    detector's visit start time, which the classifier echoes in its status file,
+    so a confirmation is never applied to another visit's images.
+    """
+
+    def __init__(self, expire_after_seconds: float = 30.0):
+        self._expire_after = expire_after_seconds
+        # visit_start -> {"paths": [...], "last_seen": last in-ROI frame time}
+        # Both keys come from ClassifierGate, the same visit boundaries the
+        # classifier's event log uses for arrival and departure.
+        self._pending: dict[float, dict] = {}
+
+    def __bool__(self) -> bool:
+        return bool(self._pending)
+
+    def drain(self) -> list[Path]:
+        """Forget every pending visit and return their paths."""
+        paths = [p for entry in self._pending.values() for p in entry["paths"]]
+        self._pending.clear()
+        return paths
+
+    def add(self, visit_start: float | None, path: Path, now: float | None = None) -> None:
+        if visit_start is None:
+            return
+        entry = self._pending.setdefault(visit_start, {"paths": [], "last_seen": 0.0})
+        entry["paths"].append(path)
+        entry["last_seen"] = time.time() if now is None else now
+
+    def poll(self, confirmed: dict[float, str]) -> list[tuple[list[Path], str]]:
+        """Return (paths, cat) for each pending visit that has been confirmed.
+
+        confirmed maps visit_start -> cat (see cat_classifier.confirmed_visits).
+        """
+        ready = []
+        for visit in [v for v in self._pending if v in confirmed]:
+            ready.append((self._pending.pop(visit)["paths"], confirmed[visit]))
+        return ready
+
+    def expire(self, current_visit: float | None, now: float | None = None,
+               last_hit: float | None = None) -> list[Path]:
+        """Forget visits that ended without confirmation; return their paths.
+
+        A visit counts as ended once the gate has started a new one or closed it;
+        it expires expire_after_seconds after its last frame at the bowl.
+        """
+        now = time.time() if now is None else now
+        expired: list[Path] = []
+        for visit in list(self._pending):
+            if visit == current_visit:
+                self._pending[visit]["last_seen"] = last_hit if last_hit is not None else now
+                continue
+            if now - self._pending[visit]["last_seen"] >= self._expire_after:
+                expired.extend(self._pending.pop(visit)["paths"])
+        return expired

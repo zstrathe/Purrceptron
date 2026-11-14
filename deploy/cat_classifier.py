@@ -196,14 +196,40 @@ class FeedingEventLogger:
 # Classifier Worker (multiprocessing target)
 # ═══════════════════════════════════════════════════════════════════════════
 
+STATUS_PATH = Path("/tmp/cat_classifier_status.json")
+
+
 def _write_status(status: dict) -> None:
-    """Atomically write classifier status JSON for the dashboard."""
+    """Atomically write classifier status JSON for the dashboard and detect.py."""
     try:
-        tmp = Path("/tmp/cat_classifier_status.json.tmp")
+        tmp = STATUS_PATH.with_name(STATUS_PATH.name + ".tmp")
         tmp.write_text(json.dumps(status))
-        os.replace(str(tmp), "/tmp/cat_classifier_status.json")
+        os.replace(str(tmp), str(STATUS_PATH))
     except OSError:
         pass
+
+
+def read_status() -> dict | None:
+    """Read the status file (None if missing, unreadable or mid-replace)."""
+    try:
+        with open(STATUS_PATH) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+
+
+def confirmed_visits(status: dict | None) -> dict[float, str]:
+    """{visit_start: cat} for the recent visits the classifier confirmed.
+
+    The cat is the visit's first confirmation, the same one the event log records.
+    """
+    if not status:
+        return {}
+    out: dict[float, str] = {}
+    for pair in status.get("confirmed_visits") or []:
+        if isinstance(pair, (list, tuple)) and len(pair) == 2 and pair[1]:
+            out[pair[0]] = pair[1]
+    return out
 
 
 def classifier_worker(q, cfg: dict) -> None:
@@ -299,6 +325,27 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
 
     consecutive_ood = 0
     visit_start: float | None = None  # detector time of the visit's first frame
+    visit_cat: str | None = None      # first confirmed cat this visit (= event log row)
+    # Recent visits with their confirmed cat, [[visit_start, cat], ...], included in
+    # every status write. detect.py uses it to name a visit's early captures; it
+    # survives the departure write, so a confirmation is never missed between
+    # detect.py's status reads.
+    confirmed_visits: deque = deque(maxlen=8)
+    # Last status written for an accepted crop. A short run of rejections re-writes
+    # it with last_crop_rejected=True: ood_rejected drives the dashboard's "Unknown"
+    # (after ood_consecutive_min rejections), last_crop_rejected tells detect.py
+    # from the first rejection on not to name captures.
+    last_status: dict = {"prediction": None}
+
+    def end_visit(end_time: float | None) -> None:
+        nonlocal visit_start, visit_cat, consecutive_ood, last_status
+        vote_window.reset()
+        logger.on_departure(end_time=end_time)
+        visit_start = None
+        visit_cat = None
+        consecutive_ood = 0
+        last_status = {"prediction": None, "confirmed_visits": list(confirmed_visits)}
+        _write_status(last_status)
 
     while True:
         try:
@@ -311,17 +358,18 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
         if item is None or (isinstance(item, tuple) and isinstance(item[0], str)
                              and item[0] == "departed"):
             # Departure -- finalise active event at the last-seen time, reset votes
-            last_seen = item[1] if item is not None else None
-            vote_window.reset()
-            logger.on_departure(end_time=last_seen)
-            visit_start = None
-            consecutive_ood = 0
-            _write_status({"prediction": None})
+            end_visit(item[1] if item is not None else None)
             continue
 
         if isinstance(item, tuple):
             crop, item_start = item
             if item_start is not None:
+                if visit_start is not None and item_start != visit_start:
+                    # The departure message was dropped (queue full): close the
+                    # previous visit so its votes and identity do not carry over.
+                    print("[classifier] New visit without departure -- closing previous",
+                          flush=True)
+                    end_visit(None)
                 visit_start = item_start
         else:
             crop = item
@@ -346,7 +394,14 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
                     "vote_window": vote_window._window_size,
                     "energy": round(energy, 3),
                     "ood_rejected": True,
+                    "last_crop_rejected": True,
+                    "visit_start": visit_start,
+                    "confirmed_visits": list(confirmed_visits),
                 })
+            else:
+                _write_status({**last_status, "last_crop_rejected": True,
+                               "visit_start": visit_start,
+                               "confirmed_visits": list(confirmed_visits)})
             continue
 
         consecutive_ood = 0
@@ -359,13 +414,17 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
         if result is not None:
             confirmed_cat = cats[result[0]] if result[0] < len(cats) else "unknown"
             logger.on_confirmed(confirmed_cat, result[1], start_time=visit_start)
-            print(f"[classifier] Confirmed: {confirmed_cat} ({result[1]:.1%})", flush=True)
+            if visit_cat is None:
+                visit_cat = confirmed_cat
+                if visit_start is not None:
+                    confirmed_visits.append([visit_start, visit_cat])
+                print(f"[classifier] Confirmed: {confirmed_cat} ({result[1]:.1%})", flush=True)
         elif logger._active_row_id is not None:
             logger.on_vote(confidence)
 
-        # Write live status for dashboard
+        # Write live status for dashboard and for capture labeling in detect.py
         vote_counts = vote_window.get_counts()
-        _write_status({
+        last_status = {
             "prediction": cats[class_idx] if class_idx < len(cats) else "unknown",
             "confidence": round(confidence, 3),
             "confirmed": confirmed_cat is not None or logger._active_row_id is not None,
@@ -374,4 +433,8 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
             "vote_window": vote_window._window_size,
             "energy": round(energy, 3),
             "ood_rejected": False,
-        })
+            "last_crop_rejected": False,
+            "visit_start": visit_start,
+            "confirmed_visits": list(confirmed_visits),
+        }
+        _write_status(last_status)
