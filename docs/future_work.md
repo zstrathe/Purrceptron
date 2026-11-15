@@ -82,7 +82,7 @@ Two independent changes, both cheap:
   pretrained weights work unchanged at other sizes. Sites to update:
   `RandomResizedCrop` and the export `example_input` in `train_classifier.py`, the
   `--size` argument in `crop_images.py` (passed from `remote_training/bundle.py`
-  when the Pi packages a job), the resize in `put_crop`, and the model's `_extra_files` so the Pi can
+  when the Pi packages a job), the resize in `put_crop`, and the model's embedded constants so the Pi can
   check that the deployed model and the configured crop size agree.
 
 Cost: compute grows with the square of the side, so 320 is about twice the work of

@@ -450,6 +450,10 @@
             <label>Pi torch version:</label>
             <span class="mono" id="tr-pi-torch">--</span>
           </div>
+          <div class="inference-row">
+            <label title="The Pi runs the classifier with ExecuTorch. Training backends export with the same version.">Pi ExecuTorch version:</label>
+            <span class="mono" id="tr-pi-executorch">--</span>
+          </div>
           <div class="actionrow" style="margin-top:12px">
             <button class="btn btn-sm btn-primary" onclick="saveTrainingConfig()">Save</button>
             <button class="btn btn-sm" id="tr-test-btn" onclick="testTrainingConnection()">Test connection</button>
@@ -1953,6 +1957,7 @@ async function loadTrainingConfig() {
   sel.value = keep && trainCfg.backends.some(b => b.name === keep) ? keep : trainCfg.backend;
   trEl('tr-min-images').value = trainCfg.min_images_per_cat;
   trEl('tr-pi-torch').textContent = trainCfg.pi_torch_version || 'torch not installed';
+  trEl('tr-pi-executorch').textContent = trainCfg.pi_executorch_version || 'not installed (needed to run trained models)';
   renderBackendForm();
 }
 

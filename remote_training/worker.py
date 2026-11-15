@@ -48,9 +48,9 @@ from remote_training.bundle import safe_extract
 _JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _WINDOWS = os.name == "nt"
 
-NO_QNNPACK = ("This PyTorch build has no QNNPACK quantization engine, so it can't make "
-              "INT8 models the Pi runs. Official Windows builds never include it; run "
-              "the worker in WSL or Linux.")
+NO_EXECUTORCH = ("This Python environment can't quantize and export ExecuTorch models "
+                 "(it needs the executorch and torchao packages). Install them with: "
+                 "pip install -r requirements-training.txt")
 _MAX_DETECT_BYTES = 30 * 1024 * 1024
 
 
@@ -129,14 +129,31 @@ class WorkerJobs:
 
     def health(self) -> dict:
         if self._health_cache is None:
-            code = ("import json,torch;e=list(torch.backends.quantized.supported_engines);"
-                    "print(json.dumps({'torch_version':torch.__version__,"
-                    "'cuda':torch.cuda.is_available(),'gpu':torch.cuda.get_device_name(0) "
-                    "if torch.cuda.is_available() else None,"
-                    "'quant_engines':e,'int8_ok':'qnnpack' in e}))")
+            # int8_ok: the modules quantization and export need really import.
+            code = (
+                "import json, torch\n"
+                "from importlib import metadata\n"
+                "def ver(name):\n"
+                "    try:\n"
+                "        return metadata.version(name)\n"
+                "    except Exception:\n"
+                "        return None\n"
+                "err = None\n"
+                "try:\n"
+                "    from executorch.exir import to_edge_transform_and_lower\n"
+                "    from executorch.backends.xnnpack.quantizer.xnnpack_quantizer import XNNPACKQuantizer\n"
+                "    from torchao.quantization.pt2e.quantize_pt2e import prepare_qat_pt2e\n"
+                "except Exception as exc:\n"
+                "    err = type(exc).__name__ + ': ' + str(exc)\n"
+                "print(json.dumps({'torch_version': torch.__version__,\n"
+                "    'cuda': torch.cuda.is_available(),\n"
+                "    'gpu': torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,\n"
+                "    'executorch_version': ver('executorch'), 'torchao_version': ver('torchao'),\n"
+                "    'int8_ok': err is None, 'int8_error': err}))\n"
+            )
             try:
                 out = subprocess.run([self.python_exe, "-c", code], capture_output=True,
-                                     text=True, timeout=60).stdout.strip().splitlines()[-1]
+                                     text=True, timeout=180).stdout.strip().splitlines()[-1]
                 self._health_cache = json.loads(out)
             except Exception as exc:
                 return {"ok": False, "error": f"Training venv not usable: {exc}"}

@@ -28,10 +28,10 @@ keeps a job from touching the host checkout.
 
 Output (in --output-dir, and packed into --output-tar when given):
 
-    train:    cat_classifier.pt, final_metrics.json, training/results.csv
+    train:    cat_classifier.pte, final_metrics.json, training/results.csv
     crossval: cv_summary.json
     detect:   detections.json
-    always:   status.json (exit code, duration, host torch version)
+    always:   status.json (exit code, duration, host torch and ExecuTorch versions)
 
 Usage:
     python <work>/code/train/run_job.py --work <work> \\
@@ -41,13 +41,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import platform
 import shutil
 import subprocess
 import sys
 import tarfile
 import time
+from importlib import metadata
 from pathlib import Path
 
 import yaml
@@ -55,8 +55,8 @@ import yaml
 # Per task: the file that proves success, and the files worth sending back.
 # Checkpoints (training/*.pt, CV fold models) are large and stay behind.
 _TASKS = {
-    "train": ("cat_classifier.pt",
-              ("cat_classifier.pt", "final_metrics.json", "training/results.csv")),
+    "train": ("cat_classifier.pte",
+              ("cat_classifier.pte", "final_metrics.json", "training/results.csv")),
     "crossval": ("cv_summary.json", ("cv_summary.json",)),
     "detect": ("detections.json", ("detections.json",)),
 }
@@ -75,11 +75,20 @@ def _write_config(work: Path, manifest: dict) -> Path:
     return cfg_path
 
 
+def _package_version(name: str) -> str | None:
+    try:
+        return metadata.version(name)
+    except metadata.PackageNotFoundError:
+        return None
+
+
 def _torch_info() -> dict:
     try:
         import torch
         return {
             "torch_version": torch.__version__,
+            "executorch_version": _package_version("executorch"),
+            "torchao_version": _package_version("torchao"),
             "cuda": torch.cuda.is_available(),
             "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
         }
@@ -105,11 +114,13 @@ def main() -> int:
     host = _torch_info()
     print(f"[run_job] job {manifest.get('job_id')} on {platform.node()}", flush=True)
     print(f"[run_job] host torch {host.get('torch_version')}, "
-          f"Pi torch {manifest.get('pi_torch_version')}, "
+          f"ExecuTorch {host.get('executorch_version')} "
+          f"(Pi: {manifest.get('pi_executorch_version') or 'unknown'}), "
           f"GPU: {host.get('gpu') or 'none (CPU)'}", flush=True)
-    if (host.get("torch_version", "").split("+")[0]
-            != str(manifest.get("pi_torch_version", "")).split("+")[0]):
-        print("[run_job] WARNING: torch version differs from the Pi's; "
+    host_et = str(host.get("executorch_version") or "").split("+")[0]
+    pi_et = str(manifest.get("pi_executorch_version") or "").split("+")[0]
+    if host_et and pi_et and host_et != pi_et:
+        print("[run_job] WARNING: ExecuTorch version differs from the Pi's; "
               "the Pi will check that the model loads before deploying it.", flush=True)
 
     task = manifest.get("task", "train")
@@ -117,13 +128,11 @@ def main() -> int:
         print(f"[run_job] unknown task {task!r}", flush=True)
         return 2
     proof, result_files = _TASKS[task]
-    if task in ("train", "crossval"):
-        import torch
-        if "qnnpack" not in torch.backends.quantized.supported_engines:
-            print("[run_job] ERROR: this PyTorch build has no QNNPACK engine, so it can't "
-                  "make INT8 models the Pi runs (official Windows builds never include it). "
-                  "Run training on Linux or WSL.", flush=True)
-            return 3
+    if task in ("train", "crossval") and not (host.get("executorch_version")
+                                               and host.get("torchao_version")):
+        print("[run_job] ERROR: this Python has no ExecuTorch/torchao, which quantization "
+              "and the model export need. Install requirements-training.txt.", flush=True)
+        return 3
 
     cfg_path = _write_config(work, manifest)
     scripts = work / "code" / "train"
@@ -142,13 +151,7 @@ def main() -> int:
                "--output", str(output_dir / "detections.json")]
     print(f"[run_job] stage=training task={task}", flush=True)
     start = time.time()
-    # Hide only the torch.ao.quantization deprecation notice (a long multi-line
-    # message on every run). The INT8 pipeline depends on that API; moving to
-    # its replacement is noted under Known limitations in README.md. Other
-    # warnings show.
-    env = {**os.environ,
-           "PYTHONWARNINGS": "ignore:torch.ao.quantization is deprecated:DeprecationWarning"}
-    rc = subprocess.call(cmd, cwd=str(work / "code"), env=env)
+    rc = subprocess.call(cmd, cwd=str(work / "code"))
     duration = round(time.time() - start, 1)
 
     proof_ok = (output_dir / proof).is_file()

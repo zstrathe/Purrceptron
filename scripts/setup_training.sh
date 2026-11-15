@@ -31,8 +31,8 @@ if torch.cuda.is_available():
     print(f'[OK] GPU: {gpu} ({vram:.1f} GB VRAM)')
 else:
     print('[WARN] No CUDA GPU detected. Training will use CPU (much slower).')
-    print('       Install PyTorch with CUDA support:')
-    print('       pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121')
+    print('       Check the NVIDIA driver (nvidia-smi); requirements-training.txt pins')
+    print('       torch 2.10.0, whose default Linux build needs a CUDA 12.8 capable driver.')
 "
 
 echo ""

@@ -9,7 +9,7 @@ Phases:
   1. FP32 head-only warm-up  (~phase1_epochs epochs)
   2. FP32 partial fine-tune  (~phase2_epochs epochs, last 3 backbone blocks)
   3. Quantization-Aware Training (~phase3_epochs epochs)
-  4. INT8 export → models/cat_classifier.pt
+  4. INT8 export → cat_classifier.pte (ExecuTorch program, XNNPACK backend)
 
 Reads hyperparameters from configs/project.yaml [classifier_training:].
 Writes results.csv with columns: epoch, phase, train_loss, val_loss, train_acc, val_acc, acc_<cat>...
@@ -17,10 +17,14 @@ Writes results.csv with columns: epoch, phase, train_loss, val_loss, train_acc, 
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import math
 import json
+import os
+import shutil
 import sys
+from importlib import metadata
 from pathlib import Path
 
 import cv2
@@ -153,16 +157,144 @@ def _freeze_bn(module: nn.Module) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Quantization (PT2E) and ExecuTorch export
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _ensure_flatc_on_path() -> None:
+    """ExecuTorch's exporter runs the `flatc` program that pip installs next to
+    the interpreter. Make it findable when the venv is used without activating
+    it (the worker starts jobs with the interpreter's full path)."""
+    if shutil.which("flatc") is None:
+        bin_dir = str(Path(sys.executable).parent)
+        os.environ["PATH"] = bin_dir + os.pathsep + os.environ.get("PATH", "")
+
+
+def prepare_qat_model(model: nn.Module) -> nn.Module:
+    """FP32 MobileNetV2 -> exported graph prepared for quantization-aware training.
+
+    The XNNPACK quantizer inserts fake-quantize modules and handles conv+BN
+    folding itself, so no fuse_model() call is needed. The result supports
+    .train()/.eval(), .to(device), parameters() and state_dict() like a module.
+    """
+    from executorch.backends.xnnpack.quantizer.xnnpack_quantizer import (
+        XNNPACKQuantizer, get_symmetric_quantization_config)
+    from torchao.quantization.pt2e import allow_exported_model_train_eval
+    from torchao.quantization.pt2e.quantize_pt2e import prepare_qat_pt2e
+
+    model = model.cpu().train()
+    # Batch 2 in the example: torch.export specializes a dimension whose example
+    # size is 1, which would fix the batch size.
+    example = (torch.randn(2, 3, 224, 224),)
+    batch = torch.export.Dim("batch", min=1, max=1024)
+    exported = torch.export.export(model, example, dynamic_shapes={"x": {0: batch}}).module()
+    quantizer = XNNPACKQuantizer().set_global(
+        get_symmetric_quantization_config(is_per_channel=True, is_qat=True))
+    prepared = prepare_qat_pt2e(exported, quantizer)
+    allow_exported_model_train_eval(prepared)
+    return prepared
+
+
+def freeze_observers(prepared: nn.Module) -> None:
+    """Stop updating quantization ranges (fake-quantize stays on)."""
+    from torchao.quantization.pt2e import disable_observer
+    prepared.apply(disable_observer)
+
+
+def convert_to_int8(prepared: nn.Module) -> nn.Module:
+    """Prepared QAT graph (any device) -> converted INT8 graph on the CPU."""
+    from torchao.quantization.pt2e.quantize_pt2e import convert_pt2e
+    prepared = prepared.cpu()
+    prepared.eval()
+    return convert_pt2e(prepared)
+
+
+def lower_to_pte(quantized: nn.Module, constants: dict[str, str] | None = None) -> bytes:
+    """Converted INT8 graph -> ExecuTorch program bytes (XNNPACK delegate, batch 1).
+
+    constants become zero-argument methods in the program (e.g. classes_json),
+    the replacement for TorchScript's _extra_files.
+    """
+    from executorch.backends.xnnpack.partition.xnnpack_partitioner import XnnpackPartitioner
+    from executorch.exir import to_edge_transform_and_lower
+
+    _ensure_flatc_on_path()
+    exported = torch.export.export(quantized, (torch.zeros(1, 3, 224, 224),))
+    program = to_edge_transform_and_lower(
+        exported, partitioner=[XnnpackPartitioner()], constant_methods=constants or None,
+    ).to_executorch()
+    return bytes(program.buffer)
+
+
+def load_pte(source):
+    """Load a .pte (path or bytes). Returns (program, forward_method).
+
+    Keep the returned program alive while the method is in use, and when
+    loading from bytes keep the bytes object alive too."""
+    from executorch.runtime import Runtime
+    program = Runtime.get().load_program(source if isinstance(source, bytes) else str(source))
+    return program, program.load_method("forward")
+
+
+def read_pte_constant(program, name: str) -> str | None:
+    """A constant method's string value, or None if the program has no such method."""
+    if name not in program.method_names:
+        return None
+    method = program.load_method(name)
+    return method.execute([])[0]
+
+
+@torch.no_grad()
+def eval_pte(forward, loader, num_classes: int):
+    """Run the batch-1 program over a loader, one crop at a time.
+
+    Returns (accuracy, per_class_accuracy, energies) where energies is a 1-D
+    tensor of -logsumexp(logits) per crop. Inputs are made contiguous: the
+    runtime reads tensor memory directly and misreads non-contiguous views.
+    """
+    correct = 0
+    total = 0
+    per_class_correct = [0] * num_classes
+    per_class_total = [0] * num_classes
+    energies = []
+    for images, labels in loader:
+        logits = torch.cat([
+            forward.execute([images[i:i + 1].contiguous()])[0].clone()
+            for i in range(images.size(0))
+        ])
+        energies.append(-torch.logsumexp(logits, dim=1))
+        preds = logits.argmax(dim=1)
+        correct += (preds == labels).sum().item()
+        total += images.size(0)
+        for c in range(num_classes):
+            mask = labels == c
+            per_class_correct[c] += (preds[mask] == labels[mask]).sum().item()
+            per_class_total[c] += mask.sum().item()
+    per_class_acc = [per_class_correct[c] / max(per_class_total[c], 1) for c in range(num_classes)]
+    return correct / max(total, 1), per_class_acc, torch.cat(energies)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Train / eval loops
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _train_epoch(model, loader, optimizer, criterion, device,
                  mixup_alpha: float = 0.0,
                  freeze_bn: bool = False,
-                 grad_clip_norm: float = 0.0) -> tuple[float, float]:
-    model.train()
-    if freeze_bn:
-        _freeze_bn(model)
+                 grad_clip_norm: float = 0.0,
+                 eval_mode: bool = False) -> tuple[float, float]:
+    """One training epoch.
+
+    eval_mode trains with the model in eval mode: BatchNorm running statistics
+    and dropout are frozen while gradients still flow. Used for the last part
+    of QAT, where the model is an exported graph and _freeze_bn cannot reach
+    its BatchNorm nodes.
+    """
+    if eval_mode:
+        model.eval()
+    else:
+        model.train()
+        if freeze_bn:
+            _freeze_bn(model)
     total_loss = 0.0
     correct = 0
     total = 0
@@ -348,12 +480,8 @@ def main() -> None:
         print("Phase 1: FP32 head-only warm-up")
         print("="*60)
 
-        from torchvision.models.quantization import mobilenet_v2
-        from torchvision.models import MobileNet_V2_Weights
-        model = mobilenet_v2(
-            weights=MobileNet_V2_Weights.IMAGENET1K_V1,
-            quantize=False,
-        )
+        from torchvision.models import MobileNet_V2_Weights, mobilenet_v2
+        model = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
         for p in model.features.parameters():
             p.requires_grad = False
         model.classifier[1] = nn.Linear(1280, num_cats)
@@ -403,12 +531,8 @@ def main() -> None:
         print("Phase 2: FP32 partial fine-tune (last 3 backbone blocks)")
         print("="*60)
 
-        from torchvision.models.quantization import mobilenet_v2
-        from torchvision.models import MobileNet_V2_Weights
-        model = mobilenet_v2(
-            weights=MobileNet_V2_Weights.IMAGENET1K_V1,
-            quantize=False,
-        )
+        from torchvision.models import MobileNet_V2_Weights, mobilenet_v2
+        model = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
         model.classifier[1] = nn.Linear(1280, num_cats)
         if phase1_ckpt.is_file():
             ckpt = torch.load(phase1_ckpt, map_location="cpu")
@@ -507,32 +631,23 @@ def main() -> None:
         print("Phase 3: Quantization-Aware Training (QAT)")
         print("="*60)
 
-        from torchvision.models.quantization import mobilenet_v2
-        from torchvision.models import MobileNet_V2_Weights
+        from torchvision.models import MobileNet_V2_Weights, mobilenet_v2
 
-        # Fresh model instance — fuse_model(is_qat=True) cannot be called twice
-        qat_model = mobilenet_v2(
-            weights=MobileNet_V2_Weights.IMAGENET1K_V1,
-            quantize=False,
-        )
-        qat_model.classifier[1] = nn.Linear(1280, num_cats)
+        qat_float = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
+        qat_float.classifier[1] = nn.Linear(1280, num_cats)
 
         src_ckpt = phase2_ckpt if phase2_ckpt.is_file() else phase1_ckpt
         if src_ckpt.is_file():
             ckpt = torch.load(src_ckpt, map_location="cpu")
-            qat_model.load_state_dict(ckpt["model_state_dict"])
+            qat_float.load_state_dict(ckpt["model_state_dict"])
             print(f"  Loaded checkpoint: {src_ckpt.name} "
                   f"(val_acc={ckpt.get('val_acc', '?'):.1%})")
         else:
             print("  WARNING: no prior checkpoint found; QAT from pretrained weights")
 
-        # QAT setup (CPU only for qnnpack)
-        torch.backends.quantized.engine = "qnnpack"
-        qat_model.train()
-        qat_model.fuse_model(is_qat=True)
-        qat_model.qconfig = torch.ao.quantization.get_default_qat_qconfig("qnnpack")
-        torch.ao.quantization.prepare_qat(qat_model, inplace=True)
-        qat_model = qat_model.cpu()
+        # Insert fake-quantize (PT2E, XNNPACK quantizer). Unlike the old eager
+        # QNNPACK flow, this trains on the GPU when there is one.
+        qat_model = prepare_qat_model(qat_float).to(device)
 
         qat_lr = 1e-6  # ~1% of training LR for stable QAT
         optimizer = torch.optim.AdamW(
@@ -540,36 +655,33 @@ def main() -> None:
         )
 
         # QAT uses val transforms for training (no augmentation)
-        from torch.utils.data import DataLoader
         qat_train_ds = _AlbumentationsWrapper(str(dataset_dir / "train"), _make_val_transform())
         qat_train_loader = DataLoader(
             qat_train_ds, batch_size=batch_size, shuffle=True,
-            num_workers=0, drop_last=True  # num_workers=0 for stability with quantized ops
+            num_workers=0, drop_last=True
         )
         qat_val_loader = DataLoader(
             _AlbumentationsWrapper(str(dataset_dir / "val"), _make_val_transform()),
             batch_size=batch_size, shuffle=False, num_workers=0,
         )
 
-        best_val_acc = 0.0
+        best_val_acc = -1.0
+        best_state = None
         no_improve = 0
-        phase3_device = torch.device("cpu")  # quantized models are CPU-only
-        criterion = criterion.to(phase3_device)
         freeze_epoch = max(1, int(math.ceil(phase3_epochs * 0.8)))
         observers_frozen = False
         for epoch in range(1, phase3_epochs + 1):
             # Freeze observers and BN at 80% to stabilize quantization grid
             if epoch >= freeze_epoch and not observers_frozen:
-                torch.ao.quantization.disable_observer(qat_model)
-                for m in qat_model.modules():
-                    if isinstance(m, (nn.BatchNorm2d, nn.SyncBatchNorm)):
-                        m.eval()
+                freeze_observers(qat_model)
                 observers_frozen = True
                 print(f"  Froze observers and BN at epoch {epoch}")
+            # eval_mode keeps BatchNorm statistics frozen for those last epochs
             tl, ta = _train_epoch(qat_model, qat_train_loader, optimizer, criterion,
-                                  phase3_device, grad_clip_norm=grad_clip_norm)
+                                  device, grad_clip_norm=grad_clip_norm,
+                                  eval_mode=observers_frozen)
             vl, va, per_cls = _eval_epoch(qat_model, qat_val_loader, criterion,
-                                          phase3_device, num_cats)
+                                          device, num_cats)
             csv_logger.log(phase1_epochs + phase2_epochs + epoch, "phase3",
                            tl, vl, ta, va, per_cls)
             print(f"  [P3 {epoch:3d}/{phase3_epochs}] "
@@ -577,7 +689,8 @@ def main() -> None:
             if va > best_val_acc:
                 best_val_acc = va
                 no_improve = 0
-                torch.save({"model_state_dict": qat_model.state_dict(),
+                best_state = copy.deepcopy(qat_model.state_dict())
+                torch.save({"model_state_dict": best_state,
                             "val_acc": va, "epoch": epoch}, phase3_ckpt)
             else:
                 no_improve += 1
@@ -585,42 +698,28 @@ def main() -> None:
                     print(f"  Early stop at epoch {epoch} (patience {patience})")
                     break
 
+        if best_state is None:
+            print("ERROR: Phase 3 ran no epochs; set phase3_epochs to at least 1.",
+                  file=sys.stderr)
+            sys.exit(1)
         print(f"Phase 3 done. Best val acc: {best_val_acc:.1%}  → {phase3_ckpt}")
 
         # ── Phase 4: INT8 Export ─────────────────────────────────────────
         print("\n" + "="*60)
-        print("Phase 4: INT8 export")
+        print("Phase 4: INT8 export (ExecuTorch)")
         print("="*60)
 
-        # Reload best QAT checkpoint into a fresh model for conversion
-        qat_model2 = mobilenet_v2(quantize=False)
-        qat_model2.classifier[1] = nn.Linear(1280, num_cats)
-        ckpt = torch.load(phase3_ckpt, map_location="cpu")
-        torch.backends.quantized.engine = "qnnpack"
-        qat_model2.train()
-        qat_model2.fuse_model(is_qat=True)
-        qat_model2.qconfig = torch.ao.quantization.get_default_qat_qconfig("qnnpack")
-        torch.ao.quantization.prepare_qat(qat_model2, inplace=True)
-        qat_model2.load_state_dict(ckpt["model_state_dict"])
-
-        qat_model2 = qat_model2.cpu()
-        qat_model2.eval()
-        torch.ao.quantization.convert(qat_model2, inplace=True)
-
-        example_input = torch.zeros(1, 3, 224, 224)
-        with torch.no_grad():
-            traced = torch.jit.trace(qat_model2, example_input)
-        traced = torch.jit.freeze(traced)
+        # Convert the best QAT epoch to a real INT8 graph (on the CPU)
+        qat_model.load_state_dict(best_state)
+        quantized = convert_to_int8(qat_model)
 
         # ── Energy threshold calibration ───────────────────────────────
+        # Lower once without metadata and score the val set with the ExecuTorch
+        # runtime itself, so the threshold matches what the Pi computes.
         print("\n  Calibrating energy threshold on val set...")
-        all_energies = []
-        with torch.no_grad():
-            for images, _ in qat_val_loader:
-                logits = traced(images.cpu())
-                energies = -torch.logsumexp(logits, dim=1)
-                all_energies.append(energies)
-        all_energies = torch.cat(all_energies)
+        calib_bytes = lower_to_pte(quantized)
+        calib_program, calib_forward = load_pte(calib_bytes)
+        _, _, all_energies = eval_pte(calib_forward, qat_val_loader, num_cats)
         energy_threshold = float(torch.quantile(all_energies, energy_ood_pct).item())
         energy_p95 = float(torch.quantile(all_energies, 0.95).item())
         energy_p99 = float(torch.quantile(all_energies, 0.99).item())
@@ -640,34 +739,37 @@ def main() -> None:
             "n_samples": len(all_energies),
         }
 
-        model_out = PROJECT_ROOT / "models" / "cat_classifier.pt"
-        model_out.parent.mkdir(parents=True, exist_ok=True)
-        torch.jit.save(traced, str(model_out),
-                       _extra_files={
-                           "classes.json": json.dumps(class_names),
-                           "energy_threshold": json.dumps(energy_threshold_data),
-                       })
+        # Final program: the same graph plus the class list and the threshold
+        # as constant methods, so the model stays one self-describing file.
+        pte_bytes = lower_to_pte(quantized, {
+            "classes_json": json.dumps(class_names),
+            "energy_threshold_json": json.dumps(energy_threshold_data),
+        })
+        model_out = output_dir / "cat_classifier.pte"
+        model_out.write_bytes(pte_bytes)
 
-        # Verify
-        loaded = torch.jit.load(str(model_out), map_location="cpu")
-        loaded.eval()
-        with torch.no_grad():
-            out = loaded(example_input)
-        assert out.shape == (1, num_cats), f"Expected (1, {num_cats}), got {out.shape}"
+        # Verify by loading the file back
+        program, forward = load_pte(model_out)
+        assert json.loads(read_pte_constant(program, "classes_json")) == class_names
+        assert (json.loads(read_pte_constant(program, "energy_threshold_json"))
+                == energy_threshold_data)
+        out = forward.execute([torch.zeros(1, 3, 224, 224)])[0]
+        assert tuple(out.shape) == (1, num_cats), f"Expected (1, {num_cats}), got {tuple(out.shape)}"
         size_mb = model_out.stat().st_size / 1_048_576
         print(f"  Exported: {model_out}  ({size_mb:.1f} MB)")
         print(f"  Output shape verified: {tuple(out.shape)}")
 
-        # Copy to version output dir too
-        import shutil
-        shutil.copy2(model_out, output_dir / "cat_classifier.pt")
+        # Convenience copy for command-line runs. A job from the Pi runs the
+        # bundled code, whose PROJECT_ROOT is the job folder, so this never
+        # touches the host checkout.
+        local_copy = PROJECT_ROOT / "models" / "cat_classifier.pte"
+        if local_copy.resolve() != model_out.resolve():
+            local_copy.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(model_out, local_copy)
 
-        # Final per-class accuracy summary
+        # Final per-class accuracy summary, measured with the exported file
         print("\n=== Final Val Accuracy (INT8 model) ===")
-        with torch.no_grad():
-            _, va_final, per_cls_final = _eval_epoch(
-                loaded, qat_val_loader, criterion, torch.device("cpu"), num_cats
-            )
+        va_final, per_cls_final, _ = eval_pte(forward, qat_val_loader, num_cats)
         print(f"  Overall: {va_final:.1%}")
         for cat, acc in zip(class_names, per_cls_final):
             flag = "" if acc >= 0.85 else "  ← below 85% threshold"
@@ -683,6 +785,8 @@ def main() -> None:
             "train_images": len(train_loader.dataset),
             "val_images": len(val_loader.dataset),
             "torch_version": torch.__version__,
+            "executorch_version": metadata.version("executorch"),
+            "model_file": "cat_classifier.pte",
             "device": torch.cuda.get_device_name(0) if device.type == "cuda" else "cpu",
         }
         with open(output_dir / "final_metrics.json", "w") as f:

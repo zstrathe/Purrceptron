@@ -29,6 +29,7 @@ requirements-training.txt
 
 # Large model weights (Pi uses .hef files)
 *.pt
+*.pte
 
 # Hailo SDK (installed on Pi via setup_pi.sh, not synced)
 hailo-apps/
@@ -36,6 +37,7 @@ hailo-apps/
 # Dev-only scripts
 scripts/setup_training.sh
 scripts/windows_port_forward.ps1
+scripts/worker.sh
 scripts/transfer_model.sh
 scripts/sync_to_pi.sh
 scripts/pull_dataset.sh

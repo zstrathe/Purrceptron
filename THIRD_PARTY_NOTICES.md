@@ -57,5 +57,6 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 These are not included in this repository. They are installed by the setup scripts and are covered by their own licenses:
 
 - PyTorch and torchvision (BSD-3-Clause), including the pretrained weights torchvision downloads.
+- ExecuTorch and torchao (BSD-3-Clause): the classifier's runtime on the Pi and the quantization and export tools on the training side.
 - The Hailo runtime, hailo-apps and Hailo model files on the Raspberry Pi.
 - The other Python packages listed in `requirements-*.txt`.

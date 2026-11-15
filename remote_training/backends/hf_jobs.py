@@ -34,22 +34,27 @@ _STAGE_MAP = {
 
 _FLAVORS = ["t4-small", "t4-medium", "l4x1", "a10g-small", "a10g-large", "cpu-upgrade"]
 
-# Extra packages train_classifier.py needs on top of the pytorch image.
+# Extra packages the training scripts need on top of the pytorch image.
+# executorch (pinned to the Pi's runtime version) brings torchao, which does
+# the quantization; it keeps the image's torch when that is new enough.
 _PIP_PACKAGES = "albumentations scikit-learn opencv-python-headless pyyaml"
+# Used only when the Pi has no ExecuTorch yet (cross-validation, auto-detect).
+DEFAULT_EXECUTORCH = "1.1.0"
 
 _DOCKER_TAGS_URL = "https://hub.docker.com/v2/repositories/pytorch/pytorch/tags"
 
 
-def job_script(mount: str = "/bucket") -> str:
+def job_script(mount: str = "/bucket", executorch_version: str = "") -> str:
     """Shell command the Job runs. The job's bucket folder is mounted at
     ``mount`` and holds bundle.tar.gz; results.tar.gz is written back there."""
+    executorch = f"executorch=={executorch_version or DEFAULT_EXECUTORCH}"
     return (
         "set -e; mkdir -p /work; "
         f"tar xzf {mount}/bundle.tar.gz -C /work; "
         # Newer pytorch images mark the system Python as externally managed
         # (PEP 668); overriding that is fine in a throwaway job container.
         "PIP_BREAK_SYSTEM_PACKAGES=1 python -m pip install -q --no-cache-dir "
-        f"--root-user-action=ignore {_PIP_PACKAGES}; "
+        f"--root-user-action=ignore {executorch} {_PIP_PACKAGES}; "
         "python /work/code/train/run_job.py --work /work "
         f"--output-tar {mount}/results.tar.gz"
     )
@@ -78,7 +83,8 @@ class HFJobsBackend(TrainingBackend):
                   help="The job is stopped after this long, e.g. 90m or 2h."),
             Field("image", "Docker image", placeholder="(auto: matches the Pi's torch)",
                   help="Blank picks a pytorch/pytorch CUDA runtime image with the "
-                       "Pi's torch version, so the Pi can load the model."),
+                       "Pi's torch version; the job installs the Pi's ExecuTorch "
+                       "version into it, so the Pi can load the model."),
             Field("bucket", "Bucket", placeholder="(auto: <namespace>/cat-training)",
                   help="Private HF Storage Bucket used to move files. Created if missing."),
         ]
@@ -100,6 +106,9 @@ class HFJobsBackend(TrainingBackend):
             return api.whoami()["name"]
         except Exception as exc:
             raise BackendError(f"Hugging Face rejected the token: {exc}") from exc
+
+    def _pi_executorch(self) -> str:
+        return str(self.context.get("pi_executorch_version") or "").split("+")[0]
 
     def _bucket(self, ns: str) -> str:
         return (self.setting("bucket") or "").strip() or f"{ns}/cat-training"
@@ -156,7 +165,8 @@ class HFJobsBackend(TrainingBackend):
         return CheckResult(
             True,
             f"Signed in as {user}; jobs run under {ns} on {h.pretty_name} ({price}); "
-            f"image {image}. Jobs need prepaid credits on that account.",
+            f"image {image}, ExecuTorch {self._pi_executorch() or DEFAULT_EXECUTORCH}. "
+            "Jobs need prepaid credits on that account.",
             {"user": user, "namespace": ns, "image": image},
         )
 
@@ -173,7 +183,7 @@ class HFJobsBackend(TrainingBackend):
         except Exception as exc:
             raise BackendError(f"Upload to bucket {bucket} failed: {exc}") from exc
 
-        script = job_script()
+        script = job_script(executorch_version=self._pi_executorch())
         try:
             job = api.run_job(
                 image=image,

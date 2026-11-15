@@ -1,0 +1,3 @@
+# The worker image needs only the requirements file; the code is mounted at run time.
+*
+!requirements-training.txt

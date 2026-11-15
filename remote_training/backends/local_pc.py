@@ -83,18 +83,25 @@ class LocalPCBackend(TrainingBackend):
             info = self._request("GET", "/health", timeout=5).json()
         except BackendError as exc:
             return CheckResult(False, str(exc))
-        if info.get("int8_ok") is False:
-            return CheckResult(False, "The PC's PyTorch has no QNNPACK engine, so it can't "
-                                      "make models the Pi runs (Windows builds never include "
-                                      "it). Run train_worker.py in WSL or Linux.", info)
+        if "executorch_version" not in info:
+            return CheckResult(False, "The PC is running an older train_worker.py. Update the "
+                                      "code on the PC and restart the worker.", info)
+        if not info.get("int8_ok"):
+            return CheckResult(False, "The PC's training environment can't export ExecuTorch "
+                                      f"models ({info.get('int8_error') or 'executorch missing'}). "
+                                      "On the PC run: pip install -r requirements-training.txt",
+                               info)
         gpu = info.get("gpu") or "no GPU (CPU training, slow)"
-        msg = f"Connected: torch {info.get('torch_version')}, {gpu}"
+        pc_et = str(info.get("executorch_version") or "").split("+")[0]
+        msg = f"Connected: torch {info.get('torch_version')}, ExecuTorch {pc_et}, {gpu}"
         if info.get("busy"):
             msg += f". Busy right now: {info['busy']}"
-        pi_ver = str(self.context.get("pi_torch_version", "")).split("+")[0]
-        pc_ver = str(info.get("torch_version", "")).split("+")[0]
-        if pi_ver and pc_ver and pi_ver.split(".")[:2] != pc_ver.split(".")[:2]:
-            msg += (f". Warning: the PC has torch {pc_ver} but the Pi has {pi_ver}; "
+        pi_et = str(self.context.get("pi_executorch_version") or "").split("+")[0]
+        if not pi_et:
+            msg += (". Warning: ExecuTorch is not installed on the Pi, so the Pi cannot "
+                    "check or run a trained model.")
+        elif pc_et != pi_et:
+            msg += (f". Warning: the PC has ExecuTorch {pc_et} but the Pi has {pi_et}; "
                     "the Pi may not be able to load the model.")
         return CheckResult(True, msg, info)
 

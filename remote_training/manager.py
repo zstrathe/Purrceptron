@@ -36,7 +36,7 @@ from remote_training.backends import BACKENDS, BackendError, get_backend_class
 from remote_training.backends import base as B
 from remote_training.bundle import (
     TASKS, PackagingError, build_bundle, count_trainable_images, images_missing_bbox,
-    pi_torch_version, safe_extract,
+    pi_executorch_version, pi_torch_version, safe_extract,
 )
 from remote_training.metrics import read_training_metrics
 from utils.config import resolve_path
@@ -86,6 +86,7 @@ class TrainingJobManager:
         self._cancel = threading.Event()
         self._thread: threading.Thread | None = None
         self._torch_version = pi_torch_version()
+        self._executorch_version = pi_executorch_version()
 
         self._resume_latest()
 
@@ -108,6 +109,7 @@ class TrainingJobManager:
             "backend": s["backend"],
             "min_images_per_cat": s["min_images_per_cat"],
             "pi_torch_version": self._torch_version,
+            "pi_executorch_version": self._executorch_version,
             "backends": [
                 {**cls.describe(),
                  "values": s["backends"].get(name, {}),
@@ -154,7 +156,10 @@ class TrainingJobManager:
         merged = {**s["backends"].get(name, {}), **(settings or {})}
         merged_secrets = {**self.secrets.get_section(name),
                           **{k: v for k, v in (secrets or {}).items() if v}}
-        return cls(merged, merged_secrets, {"pi_torch_version": self._torch_version})
+        return cls(merged, merged_secrets, {
+            "pi_torch_version": self._torch_version,
+            "pi_executorch_version": self._executorch_version,
+        })
 
     # ═════════════════════════════════════════════════════════════
     # Job state
@@ -265,6 +270,11 @@ class TrainingJobManager:
             if missing:
                 return {"status": "error",
                         "message": f"{backend.label} is not set up: missing {', '.join(missing)}"}
+            if kind == "train" and not self._executorch_version:
+                return {"status": "error",
+                        "message": "ExecuTorch is not installed on the Pi, so it could not "
+                                   "check or run the trained model. Install it first (see "
+                                   "Software requirements in the README)."}
             counts = self.image_counts()
             short = [f"{c} ({v['with_bbox']})" for c, v in counts.items()
                      if v["with_bbox"] < s["min_images_per_cat"]]
@@ -441,7 +451,7 @@ class TrainingJobManager:
 
     def _validate(self, results_dir: Path) -> None:
         job = self._job
-        model = results_dir / "cat_classifier.pt"
+        model = results_dir / "cat_classifier.pte"
         if not model.is_file():
             raise BackendError("The job finished but returned no model")
         cats = self._read_config()["cats"]
@@ -462,7 +472,7 @@ class TrainingJobManager:
         if not res.get("ok"):
             raise BackendError("Model failed validation on the Pi: " + "; ".join(res["errors"]))
         self.candidates_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(model, self.candidates_dir / f"{job['job_id']}.pt")
+        shutil.copy2(model, self.candidates_dir / f"{job['job_id']}.pte")
         acc = (job.get("metrics") or {}).get("val_acc")
         self._set_stage("ready", f"val accuracy {acc:.1%}" if acc is not None else "")
 
@@ -562,15 +572,16 @@ class TrainingJobManager:
     def _model_paths(self) -> tuple[Path, Path, Path, Path]:
         cfg = self._read_config()
         model = resolve_path(cfg.get("classifier", {}).get("model_path",
-                                                            "models/cat_classifier.pt"),
+                                                            "models/cat_classifier.pte"),
                              self.project_root)
         meta = model.with_suffix(".meta.json")
-        return model, meta, model.with_suffix(".prev.pt"), model.with_suffix(".prev.meta.json")
+        prev = model.with_name(f"{model.stem}.prev{model.suffix}")
+        return model, meta, prev, model.with_suffix(".prev.meta.json")
 
     def deployed_info(self) -> dict:
         model, meta, prev, _ = self._model_paths()
         info = {"exists": model.is_file(), "has_previous": prev.is_file(), "meta": None}
-        if meta.is_file():
+        if model.is_file() and meta.is_file():
             try:
                 info["meta"] = json.loads(meta.read_text())
             except (OSError, json.JSONDecodeError):
@@ -589,11 +600,16 @@ class TrainingJobManager:
         if self.is_active():
             return {"status": "error", "message": "Wait for the running job to finish"}
         state_path = self._job_dir(job_id) / "state.json"
-        candidate = self.candidates_dir / f"{job_id}.pt"
+        candidate = self.candidates_dir / f"{job_id}.pte"
         if not state_path.is_file() or not candidate.is_file():
             return {"status": "error", "message": f"No validated model for job {job_id}"}
         job = json.loads(state_path.read_text())
         model, meta, prev, prev_meta = self._model_paths()
+        if model.suffix != ".pte":
+            return {"status": "error",
+                    "message": f"classifier.model_path is {model.name}, but models are now "
+                               "ExecuTorch .pte files. Set it to models/cat_classifier.pte in "
+                               "configs/project.yaml and restart the dashboard."}
         model.parent.mkdir(parents=True, exist_ok=True)
         if model.is_file():
             shutil.copy2(model, prev)
@@ -709,6 +725,6 @@ class TrainingJobManager:
                 "cv_mean": (j.get("cv") or {}).get("mean_acc"),
                 "has_curves": (self._job_dir(j["job_id"]) / "results" / "training"
                                / "results.csv").is_file(),
-                "candidate": (self.candidates_dir / f"{j['job_id']}.pt").is_file(),
+                "candidate": (self.candidates_dir / f"{j['job_id']}.pte").is_file(),
             })
         return out

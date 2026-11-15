@@ -291,7 +291,7 @@ class DetectionPipelineManager:
         clf_cfg = self._config.get("classifier", {})
         if not clf_cfg.get("enabled", False):
             return
-        model_path = Path(clf_cfg.get("model_path", "models/cat_classifier.pt"))
+        model_path = Path(clf_cfg.get("model_path", "models/cat_classifier.pte"))
         if not model_path.is_absolute():
             model_path = self.project_root / model_path
 
@@ -656,7 +656,7 @@ def create_app(
         cfg = config_mgr.read()
         classifier_cfg = cfg.get("classifier", {})
         model_path = resolve_path(
-            classifier_cfg.get("model_path", "models/cat_classifier.pt"),
+            classifier_cfg.get("model_path", "models/cat_classifier.pte"),
             PROJECT_ROOT,
         )
         result["classifier"] = {

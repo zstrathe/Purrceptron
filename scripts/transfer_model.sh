@@ -7,7 +7,7 @@
 set -euo pipefail
 
 # ═══════════════════════════════════════════════════════════════
-# Transfer trained classifier model (.pt) to Raspberry Pi
+# Transfer trained classifier model (.pte) to Raspberry Pi
 #
 # Usage:
 #   ./scripts/transfer_model.sh <model_path>              # uses .env for PI target
@@ -45,7 +45,7 @@ elif [ $# -eq 1 ]; then
     MODEL_PATH="$1"
 else
     PI_TARGET="${PI_USER:?Set PI_USER in .env}@${PI_HOST:?Set PI_HOST in .env}"
-    MODEL_PATH="$PROJECT_ROOT/models/cat_classifier.pt"
+    MODEL_PATH="$PROJECT_ROOT/models/cat_classifier.pte"
 fi
 
 if [ ! -f "$MODEL_PATH" ]; then
@@ -60,7 +60,7 @@ retry ssh "$PI_TARGET" "mkdir -p $REMOTE_DIR/models $REMOTE_DIR/deploy"
 
 echo "[INFO] Transferring classifier model to $PI_TARGET:$REMOTE_DIR ..."
 echo "  Model: $MODEL_PATH"
-retry scp "$MODEL_PATH" "$PI_TARGET:$REMOTE_DIR/models/cat_classifier.pt"
+retry scp "$MODEL_PATH" "$PI_TARGET:$REMOTE_DIR/models/cat_classifier.pte"
 echo ""
 echo "[OK] Classifier model transferred!"
 

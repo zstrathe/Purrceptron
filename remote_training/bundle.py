@@ -46,6 +46,14 @@ def pi_torch_version() -> str:
         return ""
 
 
+def pi_executorch_version() -> str:
+    """ExecuTorch runtime version of this venv ('' if it is not installed)."""
+    try:
+        return metadata.version("executorch")
+    except metadata.PackageNotFoundError:
+        return ""
+
+
 def _images(d: Path) -> list[Path]:
     return sorted(p for p in d.iterdir() if p.suffix.lower() in _IMG_EXT) if d.is_dir() else []
 
@@ -141,6 +149,7 @@ def build_bundle(
         "classifier_training": tc,
         "crop_padding": padding,
         "pi_torch_version": pi_torch_version(),
+        "pi_executorch_version": pi_executorch_version(),
         "git_commit": _git_commit(project_root),
     }
     # (path inside the bundle, path on disk)

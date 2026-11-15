@@ -53,7 +53,7 @@ label_review:
   trash_dir: data/trash
 classifier:
   enabled: false
-  model_path: models/cat_classifier.pt
+  model_path: models/cat_classifier.pte
   bowl_roi:
   - 760
   - 390

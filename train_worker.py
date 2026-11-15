@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from flask import Flask
 
 from remote_training.worker import (
-    NO_QNNPACK, create_worker_blueprint, default_jobs_dir, load_worker_token, prune_jobs,
+    NO_EXECUTORCH, create_worker_blueprint, default_jobs_dir, load_worker_token, prune_jobs,
 )
 from utils import PROJECT_ROOT
 from utils.display import print_error, print_info, print_success, print_warning
@@ -64,7 +64,7 @@ def main() -> None:
         print_error(health.get("error", "torch is not usable in this Python"))
         sys.exit(1)
     if not health.get("int8_ok"):
-        print_error(NO_QNNPACK + f" (engines here: {health.get('quant_engines')})")
+        print_error(NO_EXECUTORCH + f" ({health.get('int8_error')})")
         sys.exit(1)
     gpu = health.get("gpu")
     print_info(f"Python: {sys.executable}")
@@ -72,7 +72,8 @@ def main() -> None:
     removed = prune_jobs(jobs_dir, args.keep_jobs)
     if removed:
         print_info(f"Deleted {len(removed)} old job folder(s), keeping the {args.keep_jobs} newest")
-    print_info(f"torch {health.get('torch_version')}")
+    print_info(f"torch {health.get('torch_version')}, "
+               f"ExecuTorch {health.get('executorch_version')}")
     if gpu:
         print_success(f"GPU: {gpu}")
     else:

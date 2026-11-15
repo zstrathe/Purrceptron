@@ -43,6 +43,7 @@ from train_classifier import (
     _make_train_transform,
     _make_val_transform,
     _train_epoch,
+    prepare_qat_model,
 )
 
 
@@ -130,10 +131,9 @@ def train_fold(
     best_per_class = [0.0] * num_cats
 
     # ── Phase 1: head-only ─────────────────────────────────────────────
-    from torchvision.models.quantization import mobilenet_v2
-    from torchvision.models import MobileNet_V2_Weights
+    from torchvision.models import MobileNet_V2_Weights, mobilenet_v2
 
-    model = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1, quantize=False)
+    model = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
     for p in model.features.parameters():
         p.requires_grad = False
     model.classifier[1] = nn.Linear(1280, num_cats)
@@ -170,7 +170,7 @@ def train_fold(
         best_overall_acc = best_p1_acc
 
     # ── Phase 2: partial fine-tune ─────────────────────────────────────
-    model = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1, quantize=False)
+    model = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
     model.classifier[1] = nn.Linear(1280, num_cats)
     if best_p1_state:
         model.load_state_dict(best_p1_state)
@@ -217,23 +217,16 @@ def train_fold(
         best_overall_acc = best_p2_acc
 
     # ── Phase 3: QAT ──────────────────────────────────────────────────
-    qat_model = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1, quantize=False)
+    qat_model = mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
     qat_model.classifier[1] = nn.Linear(1280, num_cats)
     src_state = best_p2_state or best_p1_state
     if src_state:
         qat_model.load_state_dict(src_state)
 
-    torch.backends.quantized.engine = "qnnpack"
-    qat_model.train()
-    qat_model.fuse_model(is_qat=True)
-    qat_model.qconfig = torch.ao.quantization.get_default_qat_qconfig("qnnpack")
-    torch.ao.quantization.prepare_qat(qat_model, inplace=True)
-    qat_model = qat_model.cpu()
-
-    if balance_classes:
-        qat_criterion = nn.CrossEntropyLoss(weight=criterion.weight.detach().cpu())
-    else:
-        qat_criterion = nn.CrossEntropyLoss()
+    # Same PT2E fake-quantize preparation as train_classifier.py; it trains on
+    # the fold's device (GPU included), so the criterion is used as is.
+    qat_model = prepare_qat_model(qat_model).to(device)
+    qat_criterion = criterion
     optimizer = torch.optim.AdamW(qat_model.parameters(), lr=1e-5, weight_decay=weight_decay)
 
     qat_train_ds = _AlbumentationsWrapper(str(fold_dir / "train"), _make_val_transform())
@@ -243,11 +236,10 @@ def train_fold(
     qat_val_loader = DataLoader(qat_val_ds, batch_size=batch_size, shuffle=False,
                                 num_workers=0)
 
-    cpu_device = torch.device("cpu")
     no_improve = 0
     for epoch in range(1, phase3_epochs + 1):
-        tl, ta = _train_epoch(qat_model, qat_train_loader, optimizer, qat_criterion, cpu_device)
-        vl, va, per_cls = _eval_epoch(qat_model, qat_val_loader, qat_criterion, cpu_device, num_cats)
+        tl, ta = _train_epoch(qat_model, qat_train_loader, optimizer, qat_criterion, device)
+        vl, va, per_cls = _eval_epoch(qat_model, qat_val_loader, qat_criterion, device, num_cats)
         print(f"  {prefix} [P3 {epoch:3d}/{phase3_epochs}] "
               f"loss {tl:.3f}/{vl:.3f}  acc {ta:.1%}/{va:.1%}")
         print(f"[CV PROGRESS] fold={fold_idx + 1}/{n_folds} phase=3 epoch={epoch}/{phase3_epochs}")
@@ -264,7 +256,7 @@ def train_fold(
     # If P3 didn't improve, use P2's best per-class (re-eval)
     if best_per_class == [0.0] * num_cats and best_p2_state:
         # Re-evaluate P2 best model for per-class stats
-        model = mobilenet_v2(quantize=False)
+        model = mobilenet_v2()
         model.classifier[1] = nn.Linear(1280, num_cats)
         model.load_state_dict(best_p2_state)
         model = model.to(device)

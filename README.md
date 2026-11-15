@@ -30,8 +30,9 @@ Design points:
 - The classifier computes an energy score for every crop and rejects crops that do
   not resemble any cat it was trained on. A visiting cat is reported as "Unknown"
   rather than assigned the nearest known name.
-- The classifier is trained with quantization-aware training and exported as INT8
-  TorchScript, which runs comfortably on one Pi CPU core.
+- The classifier is trained with quantization-aware training and exported as an
+  INT8 ExecuTorch program (XNNPACK backend), which classifies a crop in about 10 ms
+  on one Pi CPU core.
 
 The same approach applies to other animals in the COCO classes (dogs, birds,
 horses): set `deployment.tracking_objects` to the detector label and list the
@@ -90,7 +91,7 @@ flowchart TB
     CAP --> LABEL["Pi dashboard: label cats (Review tab),<br/>add or fix bounding boxes (Annotate tab;<br/>auto-detect fills in missing ones)"]
     LABEL --> PREP["Pi: crop each bounding box, resize to 224x224,<br/>split train/val by capture session<br/>so near-duplicate frames stay on one side"]
     subgraph PC["Training backend: your PC or Hugging Face Jobs (CUDA)"]
-        TRAIN["Fine-tune MobileNetV2 on the labeled crops:<br/>head warmup, partial fine-tune, quantization-aware training.<br/>Export INT8 TorchScript + class list +<br/>energy threshold (99th percentile of validation energies)"]
+        TRAIN["Fine-tune MobileNetV2 on the labeled crops:<br/>head warmup, partial fine-tune, quantization-aware training.<br/>Export INT8 ExecuTorch program + class list +<br/>energy threshold (99th percentile of validation energies)"]
     end
     PREP -- "crops sent as a job" --> TRAIN
     TRAIN -- "model + threshold sent back; the Pi checks<br/>it loads, then installs it on Deploy" --> CLS
@@ -149,8 +150,8 @@ flowchart TB
 
 - A Linux or WSL2 machine. An NVIDIA GPU with CUDA is recommended but not
   required: without one, training and auto-detect run on the CPU, much more
-  slowly. Quantization-aware training and the INT8 export run on the CPU either
-  way.
+  slowly. Quantization-aware training uses the GPU too; the final INT8 export runs
+  on the CPU.
 
 ## Software requirements
 
@@ -165,20 +166,28 @@ flowchart TB
 - Everything runs in the single Python virtual environment that hailo-apps creates
   (`hailo-apps/venv_hailo_apps`), activated with `source hailo-apps/setup_env.sh`.
   `setup_pi.sh` installs `requirements-pi.txt` (Flask, OpenCV, NumPy, PyTorch, PyYAML)
-  into it.
+  and the ExecuTorch runtime the classifier uses into it. ExecuTorch is installed
+  without its declared dependencies, which are only needed for exporting models;
+  after updating an existing Pi, run those two `pip install` lines from
+  `setup_pi.sh` again in the activated venv.
 
 **Training machine**
 
 Only needed for the Local PC backend (Hugging Face Jobs needs no machine of your
 own), and to push code to the Pi:
 
-- Python 3.10 or newer (developed on 3.12), `rsync` and `ssh`.
-- Linux, or WSL2 on Windows (native Windows can't build models the Pi runs; see
-  [Training from the Pi](#training-from-the-pi)).
-- `scripts/setup_training.sh` creates `venv_train` and installs
-  `requirements-training.txt` (PyTorch, torchvision, Albumentations, scikit-learn,
-  OpenCV, Flask, PyYAML). Start the worker with `venv_train/bin/python
-  train_worker.py`; it runs every job with that Python.
+- Linux, or WSL2 on Windows (the tested setups), with `rsync` and `ssh`.
+- For the worker, either:
+  - Docker with the NVIDIA Container Toolkit (recommended). `compose.worker.yaml`
+    builds an image from the same `pytorch/pytorch` base image Hugging Face jobs use
+    and installs `requirements-training.txt` into it, so every package version is
+    pinned in one place. The GPU driver must support CUDA 12.6.
+  - Or Python 3.10 or newer (developed on 3.12): `scripts/setup_training.sh`
+    creates `venv_train` and installs `requirements-training.txt` (PyTorch,
+    torchvision, ExecuTorch and torchao, Albumentations, scikit-learn, OpenCV,
+    Flask, PyYAML). The default PyTorch build there needs a driver that supports
+    CUDA 12.8. Start the worker with `venv_train/bin/python train_worker.py`; it
+    runs every job with that Python.
 
 ## Quick start
 
@@ -216,7 +225,8 @@ python pi_dashboard.py                  # open http://<pi-ip>:5003
 
 # ── Back on the training machine (for the Local PC backend) ─────────────
 echo "WORKER_TOKEN=$(openssl rand -hex 24)" >> .env
-venv_train/bin/python train_worker.py   # listens on port 5004 for the Pi's jobs
+scripts/worker.sh                       # GPU worker in Docker on port 5004; shows its output
+# (without Docker: venv_train/bin/python train_worker.py)
 # The Pi must reach this port; under WSL2 run scripts\windows_port_forward.ps1
 # once as administrator (see "Training from the Pi").
 
@@ -336,7 +346,7 @@ flowchart LR
     A["Pi: crop + split<br/>labeled images"] --> B["bundle.tar.gz<br/>crops + train code + manifest"]
     B --> C["Backend runs<br/>train/run_job.py"]
     C --> D["results.tar.gz<br/>model + metrics"]
-    D --> E["Pi: load-test model<br/>with its own torch"]
+    D --> E["Pi: load-test model<br/>with its ExecuTorch runtime"]
     E --> F["Deploy / Roll back"]
 ```
 
@@ -344,19 +354,22 @@ flowchart LR
    `train/prepare_classifier_dataset.py` run on `data/raw/<cat>/` at low priority,
    kept off the classifier's CPU core. Only images with a bounding-box sidecar
    count. The 224x224 crops, a copy of `train/` and `utils/`, and a manifest (cats,
-   `classifier_training` settings, the Pi's torch version) are packed into one
-   tarball, typically a few MB to a few tens of MB.
+   `classifier_training` settings, the Pi's torch and ExecuTorch versions) are
+   packed into one tarball, typically a few MB to a few tens of MB.
 2. **Train (on the backend).** Every backend runs the same `train/run_job.py`
    from the bundle, which runs the bundled `train_classifier.py`. The bundled copy
    writes only inside the job's folder, so a job never overwrites the PC's own
-   `models/cat_classifier.pt`.
-3. **Check (on the Pi).** The returned model must load with the Pi's torch, embed
-   the configured cat names and an energy threshold, and produce one output per
-   cat. A model that fails is never offered for deployment.
+   `models/cat_classifier.pte`.
+3. **Check (on the Pi).** The returned model must load with the Pi's ExecuTorch
+   runtime, embed the configured cat names and an energy threshold, and produce
+   one output per cat. A model that fails is never offered for deployment.
 4. **Deploy.** The tab compares the new model's validation accuracy, overall and
    per cat, with the deployed one, then installs it on request. The current model
-   is kept as `models/cat_classifier.prev.pt`; Roll back swaps the two (pressing it
+   is kept as `models/cat_classifier.prev.pte`; Roll back swaps the two (pressing it
    again swaps back). Detection restarts with the new model within seconds.
+   Models are ExecuTorch `.pte` files; an older TorchScript `cat_classifier.pt` is
+   not used, so after the switch there is nothing to roll back to until a second
+   `.pte` has been deployed.
 
 The same path runs two other kinds of job: **cross-validation** (the Training tab's
 "Run cross-validation"; it sends the crops unsplit, trains one model per fold with
@@ -391,20 +404,37 @@ Training tab, then **Save**. Tokens are stored in `configs/secrets.yaml`
 other settings go to `configs/runtime.yaml`.
 
 **Local PC.** `train_worker.py` runs on the PC and does the jobs the Pi sends. It
-has no web page of its own. It runs on Linux, or in WSL2 on a Windows PC. It does
-not run on native Windows: official Windows builds of PyTorch leave out QNNPACK,
-the quantization engine the Pi's INT8 model needs, and the alternative engine runs
-about 12 times slower on the Pi.
+has no web page of its own. It runs on Linux or in WSL2, either in Docker
+(recommended: one image pins every package, built from the same base image
+Hugging Face jobs use) or from `venv_train`.
 
 1. Put a token in the PC's `.env` (a line `WORKER_TOKEN=<any long random string>`;
    `openssl rand -hex 24` makes one).
-2. Set up the training venv once and start the worker:
+2. Start the worker. With Docker, `scripts/worker.sh` does the usual things:
+   ```bash
+   scripts/worker.sh            # start it if needed, then show its output live
+                                # (Ctrl+C stops watching; the worker keeps running)
+   scripts/worker.sh run        # run it in this terminal; Ctrl+C stops the worker
+   scripts/worker.sh status     # container state, GPU and versions, recent jobs
+   scripts/worker.sh stop       # stop it (a running job is cancelled)
+   ```
+   It wraps `docker compose -f compose.worker.yaml` (`up -d --build`, `logs -f`,
+   `down`), which also work directly.
+   The container restarts with Docker (`restart: unless-stopped`). The project
+   folder is mounted read-only, so a code update needs only
+   `docker compose -f compose.worker.yaml restart`; a changed
+   `requirements-training.txt` needs `up -d --build`. Job folders and downloaded
+   model weights live in Docker volumes. `WORKER_PORT=5006 docker compose ...`
+   publishes another port.
+
+   Without Docker:
    ```bash
    bash scripts/setup_training.sh
    venv_train/bin/python train_worker.py         # --port to change 5004
    ```
-   It prints the GPU and torch version it found, and refuses to start without a
-   token or without QNNPACK. Ctrl+C stops it and any job it is running.
+   Either way it prints the GPU and the torch and ExecuTorch versions it found, and
+   refuses to start without a token or without ExecuTorch. Stopping it (Ctrl+C, or
+   `docker compose ... down`) also stops any job it is running.
 3. Make the worker reachable from the Pi.
    - Linux PC: allow port 5004 in its firewall, if it has one. The Pi uses port 5004.
    - WSL2 on Windows 10, or with WSL's default networking: run once, in an
@@ -423,15 +453,16 @@ about 12 times slower on the Pi.
      New-NetFirewallHyperVRule -Name WSLTrainingWorker -DisplayName "WSL training worker" -Direction Inbound -VMCreatorId '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -Protocol TCP -LocalPorts 5004
      ```
 4. On the Pi's Training tab, enter the PC's LAN address, the port from step 3, and
-   the token. Test connection reports the PC's GPU and torch version, and warns
-   when the torch version differs from the Pi's. Reserving the PC's address in your
-   router keeps this setting valid.
+   the token. Test connection reports the PC's GPU and torch and ExecuTorch
+   versions, and warns when the ExecuTorch version differs from the Pi's.
+   Reserving the PC's address in your router keeps this setting valid.
 
 Job files stay on the PC: the extracted bundle, everything the job wrote, and
 `worker.log`. They go in `data/worker_jobs/<job_id>/`, or in
 `~/.local/share/cat_detection/worker_jobs/` when the project is on a Windows drive
 under WSL (`/mnt/c/...`), where thousands of small files unpack and load slowly.
-`--jobs-dir` picks another folder. At startup the worker keeps the 10 newest job
+`--jobs-dir` picks another folder (in Docker they are in the `worker-jobs` volume).
+At startup the worker keeps the 10 newest job
 folders and deletes older ones (`--keep-jobs`, 0 keeps all). Each job's output is
 also shown in the worker's terminal as it runs.
 
@@ -442,9 +473,9 @@ also shown in the worker's terminal as it runs.
 2. On the Training tab choose Hugging Face Jobs and paste the token. Leave
    Namespace blank to bill your own account, or enter an organization.
 3. Hardware `t4-small` is plenty for MobileNetV2. Docker image blank picks the
-   `pytorch/pytorch` CUDA runtime image with the Pi's torch version, so the INT8
-   model loads on the Pi; set it explicitly if Test connection reports that no
-   matching image exists.
+   `pytorch/pytorch` CUDA runtime image with the Pi's torch version, and the job
+   installs the Pi's ExecuTorch version into it, so the model loads on the Pi; set
+   the image explicitly if Test connection reports that no matching image exists.
 
 The job uploads the bundle to a private bucket (`<namespace>/cat-training` by
 default), mounts the job's folder in the container, installs the few extra
@@ -491,7 +522,7 @@ python train/crop_images.py --input-dir $V/raw_images --output-dir $V/cropped_im
 python train/prepare_classifier_dataset.py --source-dir $V/cropped_images --output-dir $V/classifier_dataset
 python train/cross_validate.py --source-dir $V/cropped_images --output-dir $V/cv_results   # optional
 python train/train_classifier.py --dataset-dir $V/classifier_dataset --output-dir $V
-bash scripts/transfer_model.sh $V/cat_classifier.pt # scp the model to the Pi
+bash scripts/transfer_model.sh $V/cat_classifier.pte # scp the model to the Pi
 ```
 
 `train_classifier.py --skip-phase N` skips a phase (1 to 3). Skipping phase 3 also
@@ -499,7 +530,7 @@ skips the INT8 export.
 
 ## How training works
 
-The classifier is torchvision's quantizable MobileNetV2 with ImageNet weights. The
+The classifier is torchvision's MobileNetV2 with ImageNet weights. The
 backbone is kept and a new linear head, sized to the number of cats, is trained on
 top. Training requires at least two cats and runs in four phases.
 
@@ -513,11 +544,14 @@ top. Training requires at least two cats and runs in four phases.
    phase only. Stochastic weight averaging runs over the final 25% of the phase, and
    the averaged model replaces the checkpoint if its validation accuracy is at least
    as good. If accuracy is low, this is the phase to lengthen.
-3. Quantization-aware training (default 10 epochs, CPU). The model is fused and
-   trained with simulated INT8 quantization (qnnpack backend) at a fixed 1e-6
-   learning rate and without augmentation, so it adapts to 8-bit rounding.
-   Observers are frozen for the last 20% of the phase.
-4. INT8 export. The model is converted, traced and frozen into a TorchScript file.
+3. Quantization-aware training (default 10 epochs, on the GPU when there is one).
+   The model is captured with `torch.export` and prepared by ExecuTorch's XNNPACK
+   quantizer (torchao's PT2E flow): it trains with simulated INT8 quantization
+   (per-channel weights) at a fixed 1e-6 learning rate and without augmentation,
+   so it adapts to 8-bit rounding. For the last 20% of the phase the quantization
+   ranges and the batch-norm statistics are frozen.
+4. INT8 export. The best QAT epoch is converted to INT8 and lowered to an
+   ExecuTorch program (`.pte`) that runs on XNNPACK, the CPU backend the Pi uses.
 
 All phases use AdamW with `weight_decay` 0.005, batch size 32, label smoothing 0.1,
 gradient clipping at norm 1.0, and early stopping after `patience` (default 15)
@@ -530,17 +564,18 @@ applied, and horizontal flip, brightness/contrast, shift-scale-rotate, Gaussian 
 coarse dropout and Gaussian noise are on by default. Hue/saturation and CLAHE are
 available and enabled in the shipped template. Validation applies normalization only.
 
-After export, the INT8 model scores every validation image and the
-`energy_ood_percentile` quantile (default 0.99) of those energy values becomes the
-rejection threshold. It is embedded in the model file with the class list, so the Pi
-needs no extra configuration for unknown-cat rejection.
+After export, the ExecuTorch program itself (run with the ExecuTorch runtime, as on
+the Pi) scores every validation image, and the `energy_ood_percentile` quantile
+(default 0.99) of those energy values becomes the rejection threshold. It is
+embedded in the program with the class list, as constant methods, so the Pi needs
+no extra configuration for unknown-cat rejection.
 
-Outputs go to the `--output-dir`: `cat_classifier.pt`, `training/results.csv` with
+Outputs go to the `--output-dir`: `cat_classifier.pte`, `training/results.csv` with
 per-epoch loss, accuracy and per-class validation accuracy, `final_metrics.json`, and
 the best checkpoint of each phase. Run from the command line, it also overwrites the
-local `models/cat_classifier.pt`; a job from the Pi writes only inside the job's
-folder. The script ends by evaluating the exported INT8 model on the validation set
-and printing overall and per-class accuracy.
+local `models/cat_classifier.pte`; a job from the Pi writes only inside the job's
+folder. The script ends by evaluating the exported program on the validation set
+with the ExecuTorch runtime and printing overall and per-class accuracy.
 
 ## Inference details
 
@@ -557,8 +592,9 @@ region keeps its stability count for `classifier.miss_tolerance` frames (default
 after that the count resets and a departure signal closes the current visit.
 
 Classifier worker: started before GStreamer initializes and pinned to
-`classifier.cpu_core`. It loads the TorchScript model with the qnnpack engine, reads
-the class list and energy threshold from the model file (a
+`classifier.cpu_core`. It loads the ExecuTorch program (XNNPACK backend, one
+thread; about 10 ms per crop on a Pi 5 core), reads the class list and energy
+threshold embedded in it (a
 `classifier.energy_ood_threshold` setting overrides the embedded value), and applies
 ImageNet normalization. Crops arrive on a bounded queue and are dropped when the
 CPU falls behind. Each crop gets one forward pass; the energy score and the softmax
@@ -651,7 +687,7 @@ a key is omitted, it is noted.
 | `deployment.preview_jpeg_quality` | not in template; code default 70 | Preview JPEG quality. |
 | **Classifier (Stage 2)** | | |
 | `classifier.enabled` | false | Run the identity classifier. |
-| `classifier.model_path` | `models/cat_classifier.pt` | TorchScript model. |
+| `classifier.model_path` | `models/cat_classifier.pte` | ExecuTorch model the classifier runs. |
 | `classifier.bowl_roi` | `[760, 390, 1160, 790]` (code fallback: full frame) | Bowl region `[x_min, y_min, x_max, y_max]` in frame pixels. Set it by dragging in the dashboard. |
 | `classifier.roi_overlap_threshold` | 0.01 | Fraction of the bowl region a bounding box must cover to count. |
 | `classifier.stability_frames` | 5 | Consecutive in-region frames before classifying (also gates detection capture). |
@@ -707,7 +743,7 @@ a key is omitted, it is noted.
 | `training_backend.hf_jobs.namespace` | `''` | HF user or organization that runs and pays for jobs; blank uses the token's user. |
 | `training_backend.hf_jobs.flavor` | `t4-small` | HF Jobs hardware. |
 | `training_backend.hf_jobs.timeout` | `2h` | Job time limit. |
-| `training_backend.hf_jobs.image` | `''` | Docker image; blank picks `pytorch/pytorch` with the Pi's torch version. |
+| `training_backend.hf_jobs.image` | `''` | Docker image; blank picks `pytorch/pytorch` with the Pi's torch version. Jobs install the Pi's ExecuTorch version into it. |
 | `training_backend.hf_jobs.bucket` | `''` | Private bucket for moving files; blank uses `<namespace>/cat-training`. |
 
 Keys in the template that nothing reads: `camera.fps`, `camera.format`,
@@ -722,6 +758,8 @@ Keys in the template that nothing reads: `camera.fps`, `camera.format`,
 Purrceptron/
 ├── pi_dashboard.py                 # Pi web dashboard: capture, review, annotate, training (port 5003)
 ├── train_worker.py                 # Headless worker on the PC for the Local PC backend (port 5004)
+├── compose.worker.yaml             # Runs train_worker.py in Docker with the GPU
+├── docker/worker.Dockerfile        # Worker image: pytorch/pytorch base + requirements-training.txt
 ├── templates/
 │   └── dashboard.html              # Pi dashboard UI
 ├── static/
@@ -744,7 +782,7 @@ Purrceptron/
 │   ├── bundle.py                   # Pack a job: crops (train, cross-validation) or images (auto-detect)
 │   ├── settings.py                 # Training settings the Training tab edits
 │   ├── metrics.py                  # results.csv to chart data
-│   ├── validate_model.py           # Load-test a returned model with the Pi's torch
+│   ├── validate_model.py           # Load-test a returned model with the Pi's ExecuTorch runtime
 │   ├── worker.py                   # Job API served by train_worker.py for the local_pc backend
 │   └── backends/                   # base.py interface, local_pc.py, hf_jobs.py
 ├── train/                          # Runs on the training machine
@@ -753,12 +791,13 @@ Purrceptron/
 │   ├── import_captures.py          # Copy data/raw/ into a version (command-line path)
 │   ├── crop_images.py              # Crop detections using bbox sidecars
 │   ├── prepare_classifier_dataset.py  # Session-aware train/val split
-│   ├── train_classifier.py         # Four-phase MobileNetV2 training and INT8 export
+│   ├── train_classifier.py         # Four-phase MobileNetV2 training and ExecuTorch INT8 export
 │   └── cross_validate.py           # Session-aware stratified k-fold
 ├── scripts/
 │   ├── setup_pi.sh                 # Pi setup: hailo-apps, Python deps, data dirs
 │   ├── setup_training.sh           # Training venv and GPU check (Linux / WSL2)
 │   ├── windows_port_forward.ps1    # One-time: let the Pi reach a worker inside WSL
+│   ├── worker.sh                   # Start, watch and stop the Docker worker
 │   ├── sync_to_pi.sh               # rsync the project to the Pi (.syncignore applies)
 │   ├── pull_dataset.sh             # rsync data/raw/ from the Pi (command-line path)
 │   ├── transfer_model.sh           # scp a model to the Pi (command-line path)
@@ -795,15 +834,19 @@ load on the Pi. It is independent of the detector's frame rate. Reducing
 `web_ui.preview_width` and `height` helps.
 
 Classifier shows "No model found" or never activates: the model must be at
-`models/cat_classifier.pt` on the Pi (the Deploy step copies it there), and
+`models/cat_classifier.pte` on the Pi (the Deploy step copies it there), and
 "Enable classifier" must be on, which restarts the pipeline. The classifier only
 runs for detections inside the bowl region, so check the region with "Show ROI" and
 lower `roi_overlap_threshold` if detections rarely qualify.
 
 Identity flips, or takes too long to confirm: raise `vote_window_size` for steadier
 results, or lower `confidence_threshold` to confirm sooner. Confirmation needs a
-majority of the whole window, so 10 votes at one crop per second takes at least
-6 seconds.
+majority of the whole window, so 10 votes at one crop per second takes about
+5 seconds (6 agreeing votes, 5 intervals apart).
+
+Classifier error "is not an ExecuTorch model": `classifier.model_path` still points
+to an older TorchScript `.pt` file. Set it to `models/cat_classifier.pte` in
+`configs/project.yaml` and deploy a model from the Training tab.
 
 Everything shows as Unknown: the energy threshold was calibrated on your validation
 images, and lighting very different from the training data raises energy scores.
@@ -826,16 +869,13 @@ firewall for port 5003, and use the IP address if `.local` names do not resolve.
   deploy a model. Run it on a trusted network only. Tokens are never sent back to
   the browser.
 - The feeding tracker only works with a custom HEF that outputs the configured cat names.
-- INT8 quantization uses PyTorch's eager-mode `torch.ao.quantization` (QAT, then a
-  TorchScript export run with the QNNPACK engine on the Pi). PyTorch has deprecated
-  that API in favor of `torchao`'s PT2E flow, whose models run fast on ARM through
-  ExecuTorch with XNNPACK. It still works in torch 2.10, which both the Pi and the
-  training side use; moving over means changing the export and the Pi's classifier
-  runtime together and re-measuring accuracy and latency. Jobs hide only this one
-  deprecation warning.
+- The Pi's ExecuTorch runtime and the training side's ExecuTorch must be the same
+  version (pinned in `requirements-training.txt` and `scripts/setup_pi.sh`); Test
+  connection warns when they differ. ExecuTorch 1.6 and later need torch 2.15,
+  whose CUDA build needs a newer NVIDIA driver (CUDA 13.2) than some PCs have.
 - Prepare produces train and validation splits only. There is no held-out test set.
 - Run from the command line, `train_classifier.py` overwrites the local
-  `models/cat_classifier.pt` as well as the version's copy.
+  `models/cat_classifier.pte` as well as the version's copy.
 - The classifier has only been tested on cats that are easy to tell apart. With two
   look-alike cats the vote window would stall rather than misidentify, so visits
   would go unlogged. What would help, and in what order, is written up in

@@ -5,6 +5,9 @@
 
 """Stage 2: MobileNetV2-INT8 cat identity classifier worker.
 
+Runs the ExecuTorch model (.pte, XNNPACK backend) exported by
+train/train_classifier.py.
+
 Runs as a separate process pinned to a single CPU core.  Receives
 pre-cropped 224×224 BGR numpy arrays from Stage 1 (detect.py) via a
 bounded multiprocessing.Queue.
@@ -35,13 +38,31 @@ _IMAGENET_STD  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _preprocess(frame_bgr: np.ndarray):
-    """Convert a 224×224 BGR uint8 frame to a normalised CHW float tensor."""
+    """Convert a 224×224 BGR uint8 frame to a normalised NCHW float32 tensor.
+
+    The result must be C-contiguous: ExecuTorch reads the tensor's memory
+    directly, and a transposed (non-contiguous) view gives wrong logits
+    without raising any error.
+    """
     import torch
-    rgb = frame_bgr[:, :, ::-1].copy()          # BGR → RGB
-    rgb = rgb.astype(np.float32) / 255.0
+    rgb = frame_bgr[:, :, ::-1].astype(np.float32) / 255.0   # BGR → RGB
     rgb = (rgb - _IMAGENET_MEAN) / _IMAGENET_STD
-    tensor = torch.from_numpy(rgb.transpose(2, 0, 1))   # HWC → CHW
-    return tensor.unsqueeze(0)                           # add batch dim
+    chw = np.ascontiguousarray(rgb.transpose(2, 0, 1))        # HWC → CHW
+    return torch.from_numpy(chw).unsqueeze(0)                 # add batch dim
+
+
+# Flatbuffer file identifier of an ExecuTorch program, at bytes 4..8.
+_PTE_MAGIC = b"ET12"
+
+
+def _is_pte_file(path: Path) -> bool:
+    """True if the file starts like an ExecuTorch program. Checked before
+    loading: the loader aborts the whole process on a garbage header."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(8)[4:8] == _PTE_MAGIC
+    except OSError:
+        return False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -261,19 +282,41 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
     except (AttributeError, OSError):
         pass
 
-    torch.backends.quantized.engine = "qnnpack"
-
     model_path = Path(cfg["model_path"])
     if not model_path.is_file():
         msg = f"Model not found: {model_path}"
         print(f"[classifier] {msg}", flush=True)
         _write_status({"error": msg, "prediction": None})
         return
+    if not _is_pte_file(model_path):
+        msg = (f"{model_path.name} is not an ExecuTorch model (.pte). Train and deploy a "
+               "model from the Training tab; classifier.model_path must point to it.")
+        print(f"[classifier] {msg}", flush=True)
+        _write_status({"error": msg, "prediction": None})
+        return
 
-    extra_files = {"classes.json": "", "energy_threshold": ""}
-    model = torch.jit.load(str(model_path), map_location="cpu",
-                           _extra_files=extra_files)
-    model.eval()
+    from executorch.runtime import Runtime
+    try:
+        # One inference thread: this process is pinned to a single core.
+        from executorch.extension.pybindings.portable_lib import _unsafe_reset_threadpool
+        _unsafe_reset_threadpool(1)
+    except Exception:
+        pass
+    torch.set_num_threads(1)
+
+    # `program` must stay referenced for as long as `forward` is used.
+    program = Runtime.get().load_program(str(model_path))
+    forward = program.load_method("forward")
+
+    def _model_constant(name: str) -> str:
+        """A string the exporter embedded as a constant method ('' if absent)."""
+        if name not in program.method_names:
+            return ""
+        method = program.load_method(name)
+        return method.execute([])[0]
+
+    extra_files = {"classes.json": _model_constant("classes_json"),
+                   "energy_threshold": _model_constant("energy_threshold_json")}
 
     # Use class order from training (embedded in model) to avoid index mismatch
     if extra_files["classes.json"]:
@@ -375,8 +418,7 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
             crop = item
 
         tensor = _preprocess(crop)
-        with torch.no_grad():
-            logits = model(tensor)
+        logits = forward.execute([tensor])[0]
 
         # Energy-based OOD rejection (before voting)
         energy = float(-torch.logsumexp(logits, dim=1).item())

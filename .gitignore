@@ -36,6 +36,7 @@ Thumbs.db
 *.log
 =*
 *.pt
+*.pte
 *.har
 # *labels.json
 *.pdf

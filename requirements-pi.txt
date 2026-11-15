@@ -2,6 +2,13 @@ opencv-python-headless>=4.8
 PyYAML>=6.0
 numpy>=1.24
 flask>=3.0
-torch>=2.0
+# The classifier runs with the ExecuTorch runtime, whose binary is built
+# against this exact torch release. scripts/setup_pi.sh installs
+# executorch==1.1.0 itself with --no-deps (its declared dependencies
+# pull in about 35 packages the Pi does not need); these two are the only
+# ones its runtime imports.
+torch==2.10.0
+ruamel.yaml
+tabulate
 requests>=2.31
 huggingface_hub>=2.4

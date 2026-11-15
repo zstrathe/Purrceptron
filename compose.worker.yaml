@@ -1,0 +1,31 @@
+# Training worker in Docker (GPU). See "Training from the Pi" in README.md.
+#
+#   docker compose -f compose.worker.yaml up -d --build   # build and start
+#   docker compose -f compose.worker.yaml logs -f         # watch jobs as they run
+#   docker compose -f compose.worker.yaml down            # stop
+#
+# WORKER_TOKEN comes from the project's .env (Compose reads it, and the file is
+# also mounted). WORKER_PORT changes the published port (default 5004).
+name: cat-detection-worker
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: docker/worker.Dockerfile
+    image: cat-detection-worker:latest
+    restart: unless-stopped
+    gpus: all
+    init: true              # reaps leftover processes of cancelled jobs
+    shm_size: "2gb"         # PyTorch DataLoader workers share memory through /dev/shm
+    stop_grace_period: 15s  # time for the worker to stop a running job
+    environment:
+      WORKER_TOKEN: ${WORKER_TOKEN:-}
+    ports:
+      - "${WORKER_PORT:-5004}:5004"
+    volumes:
+      - .:/app:ro                   # project code and .env
+      - worker-jobs:/jobs           # job folders, on Docker's Linux disk (fast)
+      - worker-cache:/cache         # downloaded model weights (auto-detect)
+volumes:
+  worker-jobs:
+  worker-cache:

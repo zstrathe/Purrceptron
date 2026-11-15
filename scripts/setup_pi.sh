@@ -43,6 +43,9 @@ source setup_env.sh
 set -u
 pip install --upgrade pip
 pip install -r "$SAVE_PROJECT_ROOT/requirements-pi.txt"
+# ExecuTorch runtime for the classifier (see the note in requirements-pi.txt).
+# Must match executorch in requirements-training.txt.
+pip install --no-deps "executorch==1.1.0"
 deactivate 2>/dev/null || true
 PROJECT_ROOT="$SAVE_PROJECT_ROOT"
 cd "$PROJECT_ROOT"
