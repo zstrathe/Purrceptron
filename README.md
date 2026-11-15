@@ -625,10 +625,15 @@ top. Training requires at least two cats and runs in four phases.
 4. INT8 export. The best QAT epoch is converted to INT8 and lowered to an
    ExecuTorch program (`.pte`) that runs on XNNPACK, the CPU backend the Pi uses.
 
-Data loading keeps the GPU busy: the crops are decoded once into memory instead
-of every epoch, eight loader workers (fewer on small machines) apply the
-augmentation, and the unaugmented sets (validation, and QAT training) are kept on
-the GPU and normalized there, with the same values Albumentations produces.
+Data loading keeps the GPU busy and adapts to the machine it runs on; the job log
+says what it chose. The crops are decoded once into memory instead of every epoch
+(when they fit in half the available RAM). Loader workers apply the augmentation,
+each with its own random stream: up to 8, two fewer than the usable CPUs
+(container CPU limits count), and fewer still when `/dev/shm` is too small for
+the batches they prepare. The unaugmented sets (validation, and QAT training) are
+kept on the GPU when they fit in 40% of its free memory, otherwise in CPU memory
+and copied one batch at a time, and are normalized on the GPU with the same values
+Albumentations produces.
 
 All phases use AdamW with `weight_decay` 0.005, batch size 32, label smoothing 0.1,
 gradient clipping at norm 1.0, and early stopping after `patience` (default 15)

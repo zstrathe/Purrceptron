@@ -191,9 +191,14 @@ class DeviceBatches:
         if not images or shapes != {(224, 224, 3)}:
             raise ValueError(f"expected 224x224 RGB crops, got {len(images)} images "
                              f"with shapes {sorted(shapes)}")
-        self.device = torch.device(device)
-        self._x = torch.from_numpy(np.stack(images)).to(self.device)      # (N,224,224,3) uint8
-        self._y = torch.as_tensor(list(labels), dtype=torch.long).to(self.device)
+        self.device = torch.device(device)          # where batches are used
+        # Where the images are kept: the GPU when they fit (see _storage_for)
+        self.storage, self.placement = _storage_for(len(images) * _CROP_BYTES, self.device)
+        # Not pinned when kept in CPU memory: page-locked memory is limited
+        # (notably under WSL2), and the training DataLoader needs it for its own
+        # batches. Copying one 4.8 MB uint8 batch at a time is cheap anyway.
+        self._x = torch.from_numpy(np.stack(images)).to(self.storage)   # (N,224,224,3) uint8
+        self._y = torch.as_tensor(list(labels), dtype=torch.long).to(self.storage)
         self._lut = _val_transform_lut().to(self.device)
         self.batch_size = batch_size
         self.sampler = sampler
@@ -204,7 +209,7 @@ class DeviceBatches:
     def on(self, device) -> "DeviceBatches":
         """The same images and labels on another device (in order, no sampler)."""
         other = copy.copy(self)
-        other.device = torch.device(device)
+        other.device = other.storage = torch.device(device)
         other._x, other._y, other._lut = (t.to(other.device) for t in (self._x, self._y, self._lut))
         other.sampler, other.shuffle, other.drop_last = None, False, False
         return other
@@ -220,14 +225,151 @@ class DeviceBatches:
             order = torch.randperm(self.num_samples)
         else:
             order = torch.arange(self.num_samples)
-        order = order.to(self.device)
+        order = order.to(self.storage)
         n = len(order)
         stop = n - n % self.batch_size if self.drop_last else n
         channels = torch.arange(3, device=self.device)
         for start in range(0, stop, self.batch_size):
             idx = order[start:start + self.batch_size]
-            x = self._lut[channels, self._x[idx].long()]                  # (B,224,224,3) float32
-            yield x.permute(0, 3, 1, 2).contiguous(), self._y[idx]
+            x, y = self._x[idx], self._y[idx]
+            if self.storage != self.device:             # kept in CPU memory: copy uint8
+                x = x.to(self.device, non_blocking=True)
+                y = y.to(self.device, non_blocking=True)
+            x = self._lut[channels, x.long()]                             # (B,224,224,3) float32
+            yield x.permute(0, 3, 1, 2).contiguous(), y
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Machine resources: decide what to cache where from what this machine has
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Shares of each resource the data pipeline may take. The rest is left for the
+# model, its activations and gradients (GPU), and for everything else (RAM).
+GPU_CACHE_SHARE = 0.4     # of free GPU memory, for images kept on the GPU
+RAM_CACHE_SHARE = 0.5     # of available RAM, for decoded images
+SHM_SHARE = 0.75          # of free /dev/shm, for batches in flight from loader workers
+_CROP_BYTES = 224 * 224 * 3
+
+
+def _read_int(path: str) -> int | None:
+    try:
+        return int(Path(path).read_text().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _usable_cpus() -> int:
+    """CPUs this process may use: its CPU affinity, capped by a container's
+    CPU quota (cgroup v2 or v1), which os.cpu_count() doesn't see."""
+    try:
+        n = len(os.sched_getaffinity(0))
+    except AttributeError:          # not on Linux
+        n = os.cpu_count() or 1
+    quota = None
+    try:
+        q, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()[:2]
+        if q != "max":
+            quota = int(q) / int(period)
+    except (OSError, ValueError):
+        q, period = (_read_int("/sys/fs/cgroup/cpu/cpu.cfs_quota_us"),
+                     _read_int("/sys/fs/cgroup/cpu/cpu.cfs_period_us"))
+        if q and q > 0 and period:
+            quota = q / period
+    if quota:
+        n = min(n, max(1, int(quota)))
+    return max(1, n)
+
+
+def _available_ram() -> int | None:
+    """Bytes of RAM available to this process: MemAvailable, capped by a
+    container's memory limit (cgroup v2 or v1). None if unknown."""
+    avail = None
+    try:
+        for line in open("/proc/meminfo"):
+            if line.startswith("MemAvailable:"):
+                avail = int(line.split()[1]) * 1024
+                break
+    except OSError:
+        return None
+    for limit_f, usage_f in (("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"),
+                             ("/sys/fs/cgroup/memory/memory.limit_in_bytes",
+                              "/sys/fs/cgroup/memory/memory.usage_in_bytes")):
+        limit, usage = _read_int(limit_f), _read_int(usage_f)
+        if limit and usage is not None and limit < (1 << 60):    # "max" / no limit
+            room = max(0, limit - usage)
+            avail = room if avail is None else min(avail, room)
+            break
+    return avail
+
+
+def _shm_free() -> int | None:
+    try:
+        return shutil.disk_usage("/dev/shm").free
+    except OSError:
+        return None
+
+
+def _gpu_free(device: torch.device) -> int:
+    """Free GPU memory, counting memory PyTorch has reserved but isn't using."""
+    free, _total = torch.cuda.mem_get_info(device)
+    return free + torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
+
+
+def _gb(n: float) -> str:
+    return f"{n / 1e9:.2f} GB"
+
+
+def _storage_for(nbytes: int, device) -> tuple[torch.device, str]:
+    """Where to keep nbytes of fixed images used on device: on the GPU when
+    they fit in its share of free memory, otherwise in CPU memory (copied to
+    the GPU one batch at a time)."""
+    device = torch.device(device)
+    if device.type != "cuda":
+        return device, f"in CPU memory ({_gb(nbytes)})"
+    try:
+        free = _gpu_free(device)
+    except Exception as exc:          # driver query failed: play safe
+        return torch.device("cpu"), f"in CPU memory ({_gb(nbytes)}; GPU memory unknown: {exc})"
+    if nbytes <= free * GPU_CACHE_SHARE:
+        return device, f"on the GPU ({_gb(nbytes)}; {_gb(free)} free)"
+    return (torch.device("cpu"),
+            f"in CPU memory, copied per batch ({_gb(nbytes)} is more than "
+            f"{GPU_CACHE_SHARE:.0%} of the {_gb(free)} free on the GPU)")
+
+
+def _ram_cache_ok(n_images: int) -> tuple[bool, str]:
+    """Whether n decoded 224x224 crops fit in RAM's share, with the reason."""
+    need = n_images * _CROP_BYTES
+    avail = _available_ram()
+    if avail is None:
+        return False, "decoded from disk each time (available RAM unknown)"
+    if need <= avail * RAM_CACHE_SHARE:
+        return True, f"decoded once and kept in RAM ({_gb(need)}; {_gb(avail)} available)"
+    return False, (f"decoded from disk each time ({_gb(need)} would be more than "
+                   f"{RAM_CACHE_SHARE:.0%} of the {_gb(avail)} RAM available)")
+
+
+def _loader_plan(batch_bytes: int) -> tuple[int, int, str]:
+    """(workers, prefetch per worker, description) for the augmented training
+    loader. Workers: the usable CPUs minus two for the training loop, at most
+    8. Batches waiting in /dev/shm (workers x prefetch) are kept within its
+    share of free space; with too little, data loads in the training process."""
+    cpus = _usable_cpus()
+    workers, prefetch = min(8, max(1, cpus - 2)), 4
+    shm = _shm_free()
+    if shm is not None:
+        fits = int(shm * SHM_SHARE // max(batch_bytes, 1))
+        while workers * prefetch > fits and prefetch > 1:
+            prefetch -= 1
+        while workers * prefetch > fits and workers > 1:
+            workers -= 1
+        if workers * prefetch > fits:
+            workers, prefetch = 0, 0
+    shm_note = f"/dev/shm {_gb(shm)} free" if shm is not None else "no /dev/shm"
+    what = (f"{workers} loader worker{'s' if workers != 1 else ''}, "
+            f"{prefetch} batch{'es' if prefetch != 1 else ''} ahead each"
+            if workers else "loading in the training process")
+    return workers, prefetch, f"{what} ({cpus} usable CPUs, {shm_note})"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -303,16 +445,6 @@ def _make_criterion(train_ds, method: str, device, label_smoothing: float = 0.0)
     return nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
 
-def _loader_workers() -> int:
-    """DataLoader workers for the augmented training set: most of the CPUs this
-    process may use, leaving two for the training loop itself, at most 8."""
-    try:
-        n = len(os.sched_getaffinity(0))
-    except AttributeError:          # not on Linux
-        n = os.cpu_count() or 2
-    return min(8, max(1, n - 2))
-
-
 def _reseed_augmentation(transform, seed: int) -> None:
     """Give an Albumentations pipeline, and each transform in it, its own
     random stream derived from seed.
@@ -360,23 +492,31 @@ def _build_loaders(dataset_dir: Path, batch_size: int, aug_cfg: dict | None = No
     worker decodes from disk as before.
     """
     import torch.multiprocessing as tmp
-    cache = tmp.get_context().get_start_method() == "fork"
+    n_train = len(torchvision.datasets.ImageFolder(str(dataset_dir / "train")).samples)
+    if tmp.get_context().get_start_method() == "fork":
+        cache, cache_note = _ram_cache_ok(n_train)
+    else:
+        cache, cache_note = False, "decoded from disk each time (workers don't start with fork)"
     train_ds = _AlbumentationsWrapper(str(dataset_dir / "train"), _make_train_transform(aug_cfg),
                                       cache=cache)
+    print(f"Training images: {cache_note}")
     val_ds = torchvision.datasets.ImageFolder(str(dataset_dir / "val"))
     # Label val images by cat name with the train set's numbering, in case a
     # split lacks a cat folder (ImageFolder numbers the folders it finds).
     val_labels = [train_ds.class_to_idx[val_ds.classes[t]] for t in val_ds.targets]
     sampler = (BalancedEpochSampler([label for _, label in train_ds.samples])
                if oversample else None)
-    workers = _loader_workers()
+    workers, prefetch, plan = _loader_plan(batch_size * _CROP_BYTES * 4)   # float32 batches
+    print(f"Data loading: {plan}")
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=sampler is None,
                               sampler=sampler, num_workers=workers,
                               pin_memory=torch.cuda.is_available(), drop_last=True,
-                              persistent_workers=True, prefetch_factor=4,
-                              worker_init_fn=_worker_init)
+                              persistent_workers=workers > 0,
+                              prefetch_factor=prefetch if workers else None,
+                              worker_init_fn=_worker_init if workers else None)
     val_batches = DeviceBatches(_decode_all([p for p, _ in val_ds.samples]), val_labels,
                                 batch_size, device)
+    print(f"Validation images: {val_batches.placement}")
     return train_loader, val_batches, train_ds.classes
 
 
@@ -386,8 +526,10 @@ def _qat_train_batches(train_loader: DataLoader, batch_size: int, device,
     _make_val_transform), balanced the same way as phases 1-2, on the device."""
     ds = train_loader.dataset
     sampler = BalancedEpochSampler(ds.targets) if oversample else None
-    return DeviceBatches(ds.decoded_images(), ds.targets, batch_size, device,
-                         sampler=sampler, shuffle=sampler is None, drop_last=True)
+    batches = DeviceBatches(ds.decoded_images(), ds.targets, batch_size, device,
+                            sampler=sampler, shuffle=sampler is None, drop_last=True)
+    print(f"QAT training images: {batches.placement}")
+    return batches
 
 
 # ═══════════════════════════════════════════════════════════════════════════
