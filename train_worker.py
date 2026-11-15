@@ -4,16 +4,17 @@
 # Noncommercial use only; see LICENSE.md. Not licensed for AI/ML training or
 # text and data mining (rights reserved under Art. 4(3) Directive (EU) 2019/790).
 
-"""Training worker for the PC: runs the jobs the Pi dashboard sends.
+r"""Training worker for the PC: runs the jobs the Pi dashboard sends.
 
 Headless; all UI is on the Pi dashboard. The Pi's "Local PC" backend sends
 training, cross-validation, and auto-detect jobs here, and the Annotate tab's
 Auto-detect button asks it for one image's bounding box. Jobs run with this
-Python, so start it from the training venv. API: remote_training/worker.py.
+Python, so start it from the training venv. Runs on Linux (including WSL2)
+and Windows. API: remote_training/worker.py.
 
-Usage:
-    echo "WORKER_TOKEN=$(openssl rand -hex 24)" >> .env    # once
-    venv_train/bin/python train_worker.py [--host 0.0.0.0] [--port 5004]
+Usage (WORKER_TOKEN=<long random string> in .env first):
+    venv_train/bin/python train_worker.py [--host 0.0.0.0] [--port 5004]   # Linux / WSL2
+    venv_win\Scripts\python train_worker.py [--port 5004]                   # Windows
 """
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from flask import Flask
 
-from remote_training.worker import create_worker_blueprint, load_worker_token
+from remote_training.worker import NO_QNNPACK, create_worker_blueprint, load_worker_token
 from utils import PROJECT_ROOT
 from utils.display import print_error, print_info, print_success, print_warning
 
@@ -38,9 +39,9 @@ def main() -> None:
     args = parser.parse_args()
 
     if not load_worker_token(PROJECT_ROOT):
-        print_error("WORKER_TOKEN is not set. Add one to .env, e.g.:\n"
-                    '  echo "WORKER_TOKEN=$(openssl rand -hex 24)" >> .env\n'
-                    "and enter the same token on the Pi dashboard's Training tab.")
+        print_error("WORKER_TOKEN is not set. Add a line WORKER_TOKEN=<any long random "
+                    "string> to .env,\nand enter the same token on the Pi dashboard's "
+                    "Training tab.")
         sys.exit(1)
 
     app = Flask(__name__)
@@ -50,6 +51,9 @@ def main() -> None:
     health = jobs.health()
     if not health.get("ok"):
         print_error(health.get("error", "torch is not usable in this Python"))
+        sys.exit(1)
+    if not health.get("int8_ok"):
+        print_error(NO_QNNPACK + f" (engines here: {health.get('quant_engines')})")
         sys.exit(1)
     gpu = health.get("gpu")
     print_info(f"Python: {sys.executable}")
@@ -70,6 +74,8 @@ def main() -> None:
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
+    if hasattr(signal, "SIGBREAK"):          # Windows Ctrl+Break
+        signal.signal(signal.SIGBREAK, shutdown)
 
     print_success(f"Worker listening on http://{args.host}:{args.port}/api/worker")
     app.run(host=args.host, port=args.port, threaded=True, use_reloader=False)

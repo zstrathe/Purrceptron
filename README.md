@@ -173,6 +173,8 @@ Only needed for the Local PC backend (Hugging Face Jobs needs no machine of your
 own), and to push code to the Pi:
 
 - Python 3.10 or newer (developed on 3.12), `rsync` and `ssh`.
+- Linux, or WSL2 on Windows (native Windows can't build models the Pi runs; see
+  [Training from the Pi](#training-from-the-pi)).
 - `scripts/setup_training.sh` creates `venv_train` and installs
   `requirements-training.txt` (PyTorch, torchvision, Albumentations, scikit-learn,
   OpenCV, Flask, PyYAML). Start the worker with `venv_train/bin/python
@@ -215,13 +217,15 @@ python pi_dashboard.py                  # open http://<pi-ip>:5003
 # ── Back on the training machine (for the Local PC backend) ─────────────
 echo "WORKER_TOKEN=$(openssl rand -hex 24)" >> .env
 venv_train/bin/python train_worker.py   # listens on port 5004 for the Pi's jobs
-# The Pi must be able to reach this port; under WSL2 see "Training from the Pi".
+# The Pi must reach this port; under WSL2 run scripts\windows_port_forward.ps1
+# once as administrator (see "Training from the Pi").
 
 # ── In the Pi dashboard ─────────────────────────────────────────────────
-# Training tab: choose Local PC, enter the PC's address, port 5004 and the
-# token, press Test connection, then Save. Press Start training, wait for
-# Ready, compare the accuracy, and press Deploy. Then turn on "Enable
-# classifier" on the Capture tab: the identity bar shows who is at the bowl.
+# Training tab: choose Local PC, enter the PC's address, the port (5004, or
+# 5005 through the WSL port forward) and the token, press Test connection,
+# then Save. Press Start training, wait for Ready, compare the accuracy, and
+# press Deploy. Then turn on "Enable classifier" on the Capture tab: the
+# identity bar shows who is at the bowl.
 ```
 
 `sync_to_pi.sh` pushes `configs/project.yaml` too, so edit it on the training machine.
@@ -387,32 +391,41 @@ Training tab, then **Save**. Tokens are stored in `configs/secrets.yaml`
 other settings go to `configs/runtime.yaml`.
 
 **Local PC.** `train_worker.py` runs on the PC and does the jobs the Pi sends. It
-has no web page of its own.
+has no web page of its own. It runs on Linux, or in WSL2 on a Windows PC. It does
+not run on native Windows: official Windows builds of PyTorch leave out QNNPACK,
+the quantization engine the Pi's INT8 model needs, and the alternative engine runs
+about 12 times slower on the Pi.
 
-1. Add a token to the PC's `.env` (any long random string) and start the worker
-   from the training venv:
+1. Put a token in the PC's `.env` (a line `WORKER_TOKEN=<any long random string>`;
+   `openssl rand -hex 24` makes one).
+2. Set up the training venv once and start the worker:
    ```bash
-   echo "WORKER_TOKEN=$(openssl rand -hex 24)" >> .env
-   venv_train/bin/python train_worker.py        # --port to change 5004
+   bash scripts/setup_training.sh
+   venv_train/bin/python train_worker.py         # --port to change 5004
    ```
-   It prints the GPU and torch version it found and refuses to start without a
-   token. Ctrl+C stops it and any job it is running.
-2. Make port 5004 reachable from the Pi. Under WSL2 the easiest way is mirrored
-   networking: put `networkingMode=mirrored` under `[wsl2]` in
-   `%UserProfile%\.wslconfig`, run `wsl --shutdown`, and allow the port in an
-   administrator PowerShell:
-   ```powershell
-   New-NetFirewallHyperVRule -Name WSLTrainingWorker -DisplayName "WSL training worker" -Direction Inbound -VMCreatorId '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -Protocol TCP -LocalPorts 5004
-   ```
-   With the default NAT networking, forward the port instead (the WSL address
-   changes after a reboot, so the rule has to be updated):
-   ```powershell
-   netsh interface portproxy add v4tov4 listenport=5004 listenaddress=0.0.0.0 connectport=5004 connectaddress=<WSL IP from: wsl hostname -I>
-   New-NetFirewallRule -DisplayName "Training worker" -Direction Inbound -Protocol TCP -LocalPort 5004 -Action Allow
-   ```
-3. On the Pi's Training tab, enter the PC's LAN address, port 5004 and the token.
-   Test connection reports the PC's GPU and torch version, and warns when the
-   torch version differs from the Pi's.
+   It prints the GPU and torch version it found, and refuses to start without a
+   token or without QNNPACK. Ctrl+C stops it and any job it is running.
+3. Make the worker reachable from the Pi.
+   - Linux PC: allow port 5004 in its firewall, if it has one. The Pi uses port 5004.
+   - WSL2 on Windows 10, or with WSL's default networking: run once, in an
+     administrator PowerShell:
+     ```powershell
+     powershell -ExecutionPolicy Bypass -File scripts\windows_port_forward.ps1
+     ```
+     It forwards LAN port 5005 to the worker in WSL and opens 5005 in the firewall
+     for Private networks. Nothing needs updating after reboots. The Pi uses port
+     5005. `-Remove` undoes it.
+   - WSL2 on Windows 11 22H2 or later can use mirrored networking instead: put
+     `networkingMode=mirrored` under `[wsl2]` in `%UserProfile%\.wslconfig`, run
+     `wsl --shutdown`, and allow the port in an administrator PowerShell. The Pi
+     then uses port 5004.
+     ```powershell
+     New-NetFirewallHyperVRule -Name WSLTrainingWorker -DisplayName "WSL training worker" -Direction Inbound -VMCreatorId '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -Protocol TCP -LocalPorts 5004
+     ```
+4. On the Pi's Training tab, enter the PC's LAN address, the port from step 3, and
+   the token. Test connection reports the PC's GPU and torch version, and warns
+   when the torch version differs from the Pi's. Reserving the PC's address in your
+   router keeps this setting valid.
 
 Job files stay on the PC in `data/worker_jobs/<job_id>/` (the extracted bundle,
 everything the job wrote, and `worker.log`); delete old ones when you like.
@@ -739,7 +752,8 @@ Purrceptron/
 │   └── cross_validate.py           # Session-aware stratified k-fold
 ├── scripts/
 │   ├── setup_pi.sh                 # Pi setup: hailo-apps, Python deps, data dirs
-│   ├── setup_training.sh           # Training venv and GPU check
+│   ├── setup_training.sh           # Training venv and GPU check (Linux / WSL2)
+│   ├── windows_port_forward.ps1    # One-time: let the Pi reach a worker inside WSL
 │   ├── sync_to_pi.sh               # rsync the project to the Pi (.syncignore applies)
 │   ├── pull_dataset.sh             # rsync data/raw/ from the Pi (command-line path)
 │   ├── transfer_model.sh           # scp a model to the Pi (command-line path)

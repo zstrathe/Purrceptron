@@ -83,6 +83,10 @@ class LocalPCBackend(TrainingBackend):
             info = self._request("GET", "/health", timeout=5).json()
         except BackendError as exc:
             return CheckResult(False, str(exc))
+        if info.get("int8_ok") is False:
+            return CheckResult(False, "The PC's PyTorch has no QNNPACK engine, so it can't "
+                                      "make models the Pi runs (Windows builds never include "
+                                      "it). Run train_worker.py in WSL or Linux.", info)
         gpu = info.get("gpu") or "no GPU (CPU training, slow)"
         msg = f"Connected: torch {info.get('torch_version')}, {gpu}"
         if info.get("busy"):

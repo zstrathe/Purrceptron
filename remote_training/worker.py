@@ -45,6 +45,11 @@ from flask import Blueprint, jsonify, request, send_file
 from remote_training.bundle import safe_extract
 
 _JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_WINDOWS = os.name == "nt"
+
+NO_QNNPACK = ("This PyTorch build has no QNNPACK quantization engine, so it can't make "
+              "INT8 models the Pi runs. Official Windows builds never include it; run "
+              "the worker in WSL or Linux.")
 _MAX_DETECT_BYTES = 30 * 1024 * 1024
 
 
@@ -98,9 +103,11 @@ class WorkerJobs:
 
     def health(self) -> dict:
         if self._health_cache is None:
-            code = ("import json,torch;print(json.dumps({'torch_version':torch.__version__,"
+            code = ("import json,torch;e=list(torch.backends.quantized.supported_engines);"
+                    "print(json.dumps({'torch_version':torch.__version__,"
                     "'cuda':torch.cuda.is_available(),'gpu':torch.cuda.get_device_name(0) "
-                    "if torch.cuda.is_available() else None}))")
+                    "if torch.cuda.is_available() else None,"
+                    "'quant_engines':e,'int8_ok':'qnnpack' in e}))")
             try:
                 out = subprocess.run([self.python_exe, "-c", code], capture_output=True,
                                      text=True, timeout=60).stdout.strip().splitlines()[-1]
@@ -136,15 +143,21 @@ class WorkerJobs:
         cmd = [self.python_exe, "-u", str(work / "code" / "train" / "run_job.py"),
                "--work", str(work), "--output-dir", str(jdir / "output"),
                "--output-tar", str(job.results_tar)]
+        # UTF-8 everywhere: training prints non-ASCII characters, and a piped
+        # child on Windows would otherwise encode with the ANSI code page.
+        env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+        # Own process group, so cancel stops run_job.py and everything it started.
+        group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if _WINDOWS
+                 else {"start_new_session": True})
         job.proc = subprocess.Popen(cmd, cwd=str(work / "code"), stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, text=True, bufsize=1,
-                                    start_new_session=True)
+                                    stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                                    errors="replace", bufsize=1, env=env, **group)
         job.stage = "running"
         threading.Thread(target=self._watch, args=(job,), daemon=True).start()
         return job
 
     def _watch(self, job: WorkerJob) -> None:
-        log = open(job.job_dir / "worker.log", "a")
+        log = open(job.job_dir / "worker.log", "a", encoding="utf-8")
         try:
             assert job.proc and job.proc.stdout
             for line in job.proc.stdout:
@@ -184,7 +197,7 @@ class WorkerJobs:
         job = WorkerJob(job_id, jdir)
         log = jdir / "worker.log"
         if log.is_file():
-            job.lines = log.read_text(errors="replace").splitlines()
+            job.lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
         if job.results_tar.is_file():
             job.stage, job.message = "succeeded", "Finished"
         else:
@@ -199,6 +212,11 @@ class WorkerJobs:
             job.cancelled = True
             proc = job.proc
         if proc and proc.poll() is None:
+            if _WINDOWS:
+                # /T: the whole tree (run_job.py, training, DataLoader workers)
+                subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                               capture_output=True)
+                return
             try:
                 os.killpg(proc.pid, signal.SIGTERM)
                 time.sleep(3)
@@ -291,14 +309,16 @@ def create_worker_blueprint(project_root: Path, python_exe: str
         data = request.get_data(cache=False)
         if not data or len(data) > _MAX_DETECT_BYTES:
             return jsonify({"status": "error", "message": "Send one JPEG image"}), 400
-        with tempfile.NamedTemporaryFile(suffix=".jpg") as tmp:
-            tmp.write(data)
-            tmp.flush()
-            try:
-                bbox = jobs.detect(Path(tmp.name))
-            except Exception as exc:
-                return jsonify({"status": "error",
-                                "message": f"Auto-detect failed: {exc}"}), 500
+        # A closed temp file: Windows can't open a file twice while it is open.
+        fd, tmp = tempfile.mkstemp(suffix=".jpg")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            bbox = jobs.detect(Path(tmp))
+        except Exception as exc:
+            return jsonify({"status": "error", "message": f"Auto-detect failed: {exc}"}), 500
+        finally:
+            Path(tmp).unlink(missing_ok=True)
         return jsonify({"status": "ok", "bbox": bbox})
 
     return bp, jobs

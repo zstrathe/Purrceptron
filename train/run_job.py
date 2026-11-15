@@ -116,6 +116,13 @@ def main() -> int:
         print(f"[run_job] unknown task {task!r}", flush=True)
         return 2
     proof, result_files = _TASKS[task]
+    if task in ("train", "crossval"):
+        import torch
+        if "qnnpack" not in torch.backends.quantized.supported_engines:
+            print("[run_job] ERROR: this PyTorch build has no QNNPACK engine, so it can't "
+                  "make INT8 models the Pi runs (official Windows builds never include it). "
+                  "Run training on Linux or WSL.", flush=True)
+            return 3
 
     cfg_path = _write_config(work, manifest)
     scripts = work / "code" / "train"
