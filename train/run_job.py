@@ -142,10 +142,12 @@ def main() -> int:
                "--output", str(output_dir / "detections.json")]
     print(f"[run_job] stage=training task={task}", flush=True)
     start = time.time()
-    # Hide known, harmless deprecation notices (torch.ao.quantization; Albumentations'
-    # ShiftScaleRotate) so the job log shows training progress. Filters only.
-    env = {**os.environ, "PYTHONWARNINGS": "ignore::DeprecationWarning,"
-           "ignore:ShiftScaleRotate is a special case:UserWarning"}
+    # Hide only the torch.ao.quantization deprecation notice (a long multi-line
+    # message on every run). The INT8 pipeline depends on that API; moving to
+    # its replacement is noted under Known limitations in README.md. Other
+    # warnings show.
+    env = {**os.environ,
+           "PYTHONWARNINGS": "ignore:torch.ao.quantization is deprecated:DeprecationWarning"}
     rc = subprocess.call(cmd, cwd=str(work / "code"), env=env)
     duration = round(time.time() - start, 1)
 

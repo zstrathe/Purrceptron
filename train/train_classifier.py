@@ -23,6 +23,7 @@ import json
 import sys
 from pathlib import Path
 
+import cv2
 import numpy as np
 import torch
 import torch.nn as nn
@@ -93,9 +94,13 @@ def _make_train_transform(aug_cfg: dict | None = None):
             brightness_limit=aug_cfg.get("brightness_limit", 0.3),
             contrast_limit=aug_cfg.get("contrast_limit", 0.3), p=0.5))
     if aug_cfg.get("shift_scale_rotate", True):
-        transforms.append(A.ShiftScaleRotate(
-            shift_limit=0.05, scale_limit=0.05,
-            rotate_limit=aug_cfg.get("rotate_limit", 10), p=0.5))
+        # Same transform as the former A.ShiftScaleRotate(shift_limit=0.05,
+        # scale_limit=0.05, rotate_limit=r), which Albumentations 2 implements
+        # as exactly this Affine and deprecates.
+        r = aug_cfg.get("rotate_limit", 10)
+        transforms.append(A.Affine(
+            scale=(0.95, 1.05), translate_percent={"x": (-0.05, 0.05), "y": (-0.05, 0.05)},
+            rotate=(-r, r), shear=0, border_mode=cv2.BORDER_CONSTANT, fill=0, p=0.5))
     if aug_cfg.get("gaussian_blur", True):
         transforms.append(A.GaussianBlur(p=0.1))
     if aug_cfg.get("coarse_dropout", True):

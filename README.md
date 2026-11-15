@@ -826,6 +826,13 @@ firewall for port 5003, and use the IP address if `.local` names do not resolve.
   deploy a model. Run it on a trusted network only. Tokens are never sent back to
   the browser.
 - The feeding tracker only works with a custom HEF that outputs the configured cat names.
+- INT8 quantization uses PyTorch's eager-mode `torch.ao.quantization` (QAT, then a
+  TorchScript export run with the QNNPACK engine on the Pi). PyTorch has deprecated
+  that API in favor of `torchao`'s PT2E flow, whose models run fast on ARM through
+  ExecuTorch with XNNPACK. It still works in torch 2.10, which both the Pi and the
+  training side use; moving over means changing the export and the Pi's classifier
+  runtime together and re-measuring accuracy and latency. Jobs hide only this one
+  deprecation warning.
 - Prepare produces train and validation splits only. There is no held-out test set.
 - Run from the command line, `train_classifier.py` overwrites the local
   `models/cat_classifier.pt` as well as the version's copy.
