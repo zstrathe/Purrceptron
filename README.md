@@ -504,7 +504,8 @@ The job uploads the bundle to a private bucket (`<namespace>/cat-training` by
 default), mounts the job's folder in the container, installs the few extra
 packages training needs, and writes the results back to the bucket. The Pi
 downloads them and deletes the job's files from the bucket. The tab links to the
-job's page on huggingface.co while it runs.
+job's page on huggingface.co while it runs. If the bucket exists but is public,
+the job stops before uploading anything.
 
 ### Adding a backend
 
@@ -585,7 +586,7 @@ until it succeeds. "Back up now" runs one immediately.
 - **Hugging Face:** a private bucket, `<namespace>/cat-backups` by default. Private
   storage counts toward your account's quota (100 GB on a free account; the Pi's
   data is about 1 GB). Leave the token blank to use the Training tab's Hugging Face
-  token.
+  token. A bucket that exists but is public is refused; nothing is uploaded to it.
 
 **Restoring** never touches the live project: `scripts/restore_backup.py` restores
 a snapshot into a new or empty folder, checks every file's SHA-256, and keeps the

@@ -44,6 +44,18 @@ DEFAULT_EXECUTORCH = "1.1.0"
 _DOCKER_TAGS_URL = "https://hub.docker.com/v2/repositories/pytorch/pytorch/tags"
 
 
+def open_private_bucket(api, bucket: str) -> None:
+    """Create the bucket as private if it doesn't exist, then make sure it IS
+    private. create_bucket(exist_ok=True) returns an existing bucket as it is,
+    so a bucket that was made public on the website would otherwise still get
+    uploads. Raises ValueError if the bucket is not private."""
+    api.create_bucket(bucket, private=True, exist_ok=True)
+    if not api.bucket_info(bucket).private:
+        raise ValueError(
+            f"Bucket {bucket} is public. Nothing was uploaded. Make it private in its "
+            f"settings on huggingface.co, or choose another bucket name.")
+
+
 def job_script(mount: str = "/bucket", executorch_version: str = "") -> str:
     """Shell command the Job runs. The job's bucket folder is mounted at
     ``mount`` and holds bundle.tar.gz; results.tar.gz is written back there."""
@@ -93,9 +105,11 @@ class HFJobsBackend(TrainingBackend):
     def _api(self):
         try:
             from huggingface_hub import HfApi
+            from huggingface_hub.utils import disable_progress_bars
         except ImportError:
             raise BackendError("huggingface_hub is not installed on the Pi. "
                                "Run: pip install -r requirements-pi.txt") from None
+        disable_progress_bars()     # they would only fill the dashboard's log file
         return HfApi(token=self.setting("token"))
 
     def _namespace(self, api) -> str:
@@ -178,7 +192,7 @@ class HFJobsBackend(TrainingBackend):
         prefix = f"jobs/{job_id}"
         image = self.resolve_image()
         try:
-            api.create_bucket(bucket, private=True, exist_ok=True)
+            open_private_bucket(api, bucket)
             api.batch_bucket_files(bucket, add=[(str(bundle_tar), f"{prefix}/bundle.tar.gz")])
         except Exception as exc:
             raise BackendError(f"Upload to bucket {bucket} failed: {exc}") from exc

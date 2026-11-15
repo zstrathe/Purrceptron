@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from remote_training.backends.base import CheckResult, Field
+from remote_training.backends.hf_jobs import open_private_bucket
 from remote_training.backup.format import (
     SNAPSHOT_ID_RE, blob_path, decode_manifest, encode_manifest, manifest_hashes,
     manifest_path, select_expired, snapshot_time,
@@ -210,12 +211,14 @@ class HFDestination(BackupDestination):
         if self._api_obj is None:
             try:
                 from huggingface_hub import HfApi
+                from huggingface_hub.utils import disable_progress_bars
             except ImportError:
                 raise BackupError("huggingface_hub is not installed on the Pi. "
                                   "Run: pip install -r requirements-pi.txt") from None
             token = self.setting("token")
             if not token:
                 raise BackupError("Set a Hugging Face token (here or on the Training tab).")
+            disable_progress_bars()     # they would only fill the backup log
             self._api_obj = HfApi(token=token)
         return self._api_obj
 
@@ -230,7 +233,7 @@ class HFDestination(BackupDestination):
                     raise BackupError(f"Hugging Face rejected the token: {exc}") from exc
             bucket = (self.setting("bucket") or "").strip() or f"{ns}/cat-backups"
             try:
-                api.create_bucket(bucket, private=True, exist_ok=True)
+                open_private_bucket(api, bucket)
             except Exception as exc:
                 raise BackupError(f"Could not create or open bucket {bucket}: {exc}") from exc
             self._bucket_id = bucket
