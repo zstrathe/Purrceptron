@@ -55,6 +55,8 @@ _REMOTE_STAGES = {"uploading", "queued", "training", "downloading", "validating"
 
 DEFAULT_MIN_IMAGES = 30
 _MAX_POLL_FAILURES = 40     # consecutive poll errors (network blips) before giving up
+_STATE_SAVE_INTERVAL = 60   # seconds between state.json saves while polling (stage
+                            # changes save right away); bounds SD card writes
 
 
 def _now() -> str:
@@ -328,6 +330,7 @@ class TrainingJobManager:
         job = self._job
         job_dir = self._job_dir(job["job_id"])
         backend = None
+        bundle_tar = None
         try:
             backend = self.make_backend(job["backend"])
             if not resume:
@@ -392,6 +395,8 @@ class TrainingJobManager:
         finally:
             shutil.rmtree(job_dir / "cropped", ignore_errors=True)
             shutil.rmtree(job_dir / "dataset", ignore_errors=True)
+            if bundle_tar is not None:
+                bundle_tar.unlink(missing_ok=True)
             (job_dir / "bundle.tar.gz").unlink(missing_ok=True)
             self._close_log()
 
@@ -400,6 +405,7 @@ class TrainingJobManager:
         job = self._job
         failures = 0
         cancel_sent = False
+        last_save = 0.0
         while True:
             if self._cancel.is_set() and not cancel_sent:
                 try:
@@ -428,9 +434,14 @@ class TrainingJobManager:
             for line in st.new_log_lines:
                 self._logline(line)
             with self._lock:
+                url_changed = bool(st.url) and st.url != job.get("url")
                 if st.url:
                     job["url"] = st.url
-                self._save()    # persists the handle's log offset too
+                # Persists the handle's log offset too. After a dashboard restart
+                # at most _STATE_SAVE_INTERVAL seconds of log lines can repeat.
+                if url_changed or time.monotonic() - last_save >= _STATE_SAVE_INTERVAL:
+                    self._save()
+                    last_save = time.monotonic()
 
             if st.stage == B.SUCCEEDED:
                 return True

@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Callable
 
 from utils.config import resolve_path
+from utils.runtime_paths import ram_dir_with_room
 from utils.sidecars import has_bbox
 
 _IMG_EXT = {".jpg", ".jpeg"}
@@ -112,6 +113,14 @@ def _git_commit(project_root: Path) -> str:
         return ""
 
 
+def _tree_bytes(path: Path) -> int:
+    """Bytes of a file, or of all files under a folder (following links, as
+    the tar does)."""
+    if path.is_file():
+        return path.stat().st_size
+    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+
+
 def _count_split(dataset_dir: Path, cats: list[str]) -> dict:
     return {split: {cat: len(_images(dataset_dir / split / cat)) for cat in cats}
             for split in ("train", "val")}
@@ -130,7 +139,11 @@ def build_bundle(
     task: str = "train",
     cv_folds: int | None = None,
 ) -> tuple[Path, dict]:
-    """Prepare the task's input and pack it. Returns (bundle_tar, manifest)."""
+    """Prepare the task's input and pack it. Returns (bundle_tar, manifest).
+
+    The bundle is written to RAM (/dev/shm) when it fits, so it never touches
+    the SD card; the caller deletes it after uploading.
+    """
     if task not in TASKS:
         raise PackagingError(f"Unknown task {task!r}")
     cats: list[str] = config["cats"]
@@ -159,7 +172,8 @@ def build_bundle(
         log(f"Cropping labeled images from {raw_dir} (padding {padding})")
         _run("crop_images.py", prefix + [python_exe, "-u", "train/crop_images.py",
                        "--input-dir", str(raw_dir), "--output-dir", str(crop_dir),
-                       "--padding", str(padding), "--config", str(config_path)],
+                       "--padding", str(padding), "--config", str(config_path),
+                       "--cache-dir", str(project_root / "data" / "crop_cache")],
              project_root, log, should_stop)
 
     if task == "train":
@@ -198,22 +212,35 @@ def build_bundle(
 
     (job_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
-    bundle_tar = job_dir / "bundle.tar.gz"
-    log("Packing bundle")
+    payload_bytes = sum(_tree_bytes(path) for _, path in payload)
+    ram_dir = ram_dir_with_room(payload_bytes + 50_000_000)    # + code and tar overhead
+    bundle_tar = (ram_dir / f"bundle-{job_id}.tar.gz") if ram_dir else job_dir / "bundle.tar.gz"
+    log(f"Packing bundle ({'in RAM' if ram_dir else 'on disk'})")
     t0 = time.time()
 
     def _skip_cache(ti: tarfile.TarInfo):
         return None if "__pycache__" in ti.name else ti
 
-    # dereference: the split script symlinks crops instead of copying them
-    with tarfile.open(bundle_tar, "w:gz", dereference=True) as tar:
-        tar.add(job_dir / "manifest.json", arcname="manifest.json")
-        for arcname, path in payload:
-            if should_stop():
-                raise PackagingError("Cancelled")
-            tar.add(path, arcname=arcname)
-        for pkg in ("train", "utils"):
-            tar.add(project_root / pkg, arcname=f"code/{pkg}", filter=_skip_cache)
+    if ram_dir:
+        # Only one job runs at a time, so other bundles here are leftovers of a
+        # run that was killed before cleaning up; they would only hold RAM.
+        for stale in ram_dir.glob("bundle-*.tar.gz"):
+            stale.unlink(missing_ok=True)
+    try:
+        # dereference: the split script symlinks crops instead of copying them.
+        # compresslevel 1: JPEGs don't compress further, so a higher level only
+        # costs Pi CPU time; any gzip reader (tar xzf, tarfile "r:*") reads it.
+        with tarfile.open(bundle_tar, "w:gz", compresslevel=1, dereference=True) as tar:
+            tar.add(job_dir / "manifest.json", arcname="manifest.json")
+            for arcname, path in payload:
+                if should_stop():
+                    raise PackagingError("Cancelled")
+                tar.add(path, arcname=arcname)
+            for pkg in ("train", "utils"):
+                tar.add(project_root / pkg, arcname=f"code/{pkg}", filter=_skip_cache)
+    except BaseException:
+        bundle_tar.unlink(missing_ok=True)
+        raise
     shutil.rmtree(crop_dir, ignore_errors=True)
     shutil.rmtree(dataset_dir, ignore_errors=True)
 

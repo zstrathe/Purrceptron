@@ -68,17 +68,42 @@ def load_config(config_path: Path) -> dict:
 # Dataset
 # ═══════════════════════════════════════════════════════════════════════════
 
-class _AlbumentationsWrapper(torchvision.datasets.ImageFolder):
-    """ImageFolder with an Albumentations transform pipeline."""
+def _decode(path) -> np.ndarray:
+    """One image file as an RGB uint8 array (H, W, 3)."""
+    from PIL import Image
+    with Image.open(path) as im:
+        return np.array(im.convert("RGB"))
 
-    def __init__(self, root, transform_alb):
+
+def _decode_all(paths) -> list[np.ndarray]:
+    """Decode many images in parallel (Pillow releases the GIL while decoding)."""
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=min(16, os.cpu_count() or 4)) as pool:
+        return list(pool.map(_decode, paths))
+
+
+class _AlbumentationsWrapper(torchvision.datasets.ImageFolder):
+    """ImageFolder with an Albumentations transform pipeline.
+
+    With cache=True every image is decoded once up front and kept in memory,
+    instead of being decoded again each time it is used (every epoch, and
+    several times per epoch for oversampled cats). DataLoader workers started
+    with fork share the decoded images with this process, copy-on-write.
+    """
+
+    def __init__(self, root, transform_alb, cache: bool = False):
         super().__init__(root, transform=None)
         self._transform_alb = transform_alb
+        self._images = _decode_all([p for p, _ in self.samples]) if cache else None
+
+    def decoded_images(self) -> list[np.ndarray]:
+        """All images, decoded (from the cache when there is one)."""
+        return self._images if self._images is not None else _decode_all(
+            [p for p, _ in self.samples])
 
     def __getitem__(self, idx):
         path, target = self.samples[idx]
-        from PIL import Image
-        img = np.array(Image.open(path).convert("RGB"))
+        img = self._images[idx].copy() if self._images is not None else _decode(path)
         augmented = self._transform_alb(image=img)
         return augmented["image"], target
 
@@ -130,6 +155,79 @@ def _make_val_transform():
         A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ToTensorV2(),
     ])
+
+
+def _val_transform_lut() -> torch.Tensor:
+    """_make_val_transform() as a (3, 256) table: the float value it gives
+    each possible uint8 value of each channel. Albumentations normalizes
+    uint8 images through the same kind of table, so looking values up here
+    reproduces its output exactly. Checked against the real transform, so a
+    future change to _make_val_transform that isn't per-pixel fails loudly.
+    """
+    transform = _make_val_transform()
+    ramp = np.repeat(np.arange(256, dtype=np.uint8)[:, None, None], 3, axis=2)  # (256,1,3)
+    lut = transform(image=ramp)["image"][:, :, 0].clone()                       # (3,256)
+    probe = np.random.default_rng(0).integers(0, 256, (224, 224, 3), dtype=np.uint8)
+    looked_up = lut[torch.arange(3), torch.from_numpy(probe).long()].permute(2, 0, 1)
+    if not torch.equal(looked_up, transform(image=probe)["image"]):
+        raise RuntimeError("_make_val_transform is no longer a per-pixel normalization; "
+                           "update DeviceBatches")
+    return lut
+
+
+class DeviceBatches:
+    """Batches of fixed, unaugmented 224x224 crops held on one device (the GPU
+    when there is one), normalized exactly as _make_val_transform() would.
+
+    Used instead of a DataLoader for the validation set and for QAT training,
+    whose inputs are the same every epoch: they are decoded once and never
+    touch the CPU again, so the GPU isn't left waiting for data. Yields
+    (images float32 NCHW, labels int64) like the DataLoaders it replaces.
+    """
+
+    def __init__(self, images: list[np.ndarray], labels, batch_size: int, device,
+                 sampler=None, shuffle: bool = False, drop_last: bool = False):
+        shapes = {im.shape for im in images}
+        if not images or shapes != {(224, 224, 3)}:
+            raise ValueError(f"expected 224x224 RGB crops, got {len(images)} images "
+                             f"with shapes {sorted(shapes)}")
+        self.device = torch.device(device)
+        self._x = torch.from_numpy(np.stack(images)).to(self.device)      # (N,224,224,3) uint8
+        self._y = torch.as_tensor(list(labels), dtype=torch.long).to(self.device)
+        self._lut = _val_transform_lut().to(self.device)
+        self.batch_size = batch_size
+        self.sampler = sampler
+        self.shuffle = shuffle
+        self.drop_last = drop_last
+        self.num_samples = len(self._y)
+
+    def on(self, device) -> "DeviceBatches":
+        """The same images and labels on another device (in order, no sampler)."""
+        other = copy.copy(self)
+        other.device = torch.device(device)
+        other._x, other._y, other._lut = (t.to(other.device) for t in (self._x, self._y, self._lut))
+        other.sampler, other.shuffle, other.drop_last = None, False, False
+        return other
+
+    def __len__(self) -> int:
+        n = len(self.sampler) if self.sampler is not None else self.num_samples
+        return n // self.batch_size if self.drop_last else math.ceil(n / self.batch_size)
+
+    def __iter__(self):
+        if self.sampler is not None:
+            order = torch.as_tensor(list(self.sampler), dtype=torch.long)
+        elif self.shuffle:
+            order = torch.randperm(self.num_samples)
+        else:
+            order = torch.arange(self.num_samples)
+        order = order.to(self.device)
+        n = len(order)
+        stop = n - n % self.batch_size if self.drop_last else n
+        channels = torch.arange(3, device=self.device)
+        for start in range(0, stop, self.batch_size):
+            idx = order[start:start + self.batch_size]
+            x = self._lut[channels, self._x[idx].long()]                  # (B,224,224,3) float32
+            yield x.permute(0, 3, 1, 2).contiguous(), self._y[idx]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -205,19 +303,91 @@ def _make_criterion(train_ds, method: str, device, label_smoothing: float = 0.0)
     return nn.CrossEntropyLoss(label_smoothing=label_smoothing)
 
 
+def _loader_workers() -> int:
+    """DataLoader workers for the augmented training set: most of the CPUs this
+    process may use, leaving two for the training loop itself, at most 8."""
+    try:
+        n = len(os.sched_getaffinity(0))
+    except AttributeError:          # not on Linux
+        n = os.cpu_count() or 2
+    return min(8, max(1, n - 2))
+
+
+def _reseed_augmentation(transform, seed: int) -> None:
+    """Give an Albumentations pipeline, and each transform in it, its own
+    random stream derived from seed.
+
+    Albumentations 2 creates its random generators once, when the pipeline is
+    built. DataLoader workers forked from the training process all inherit
+    copies of those generators in the same state, so without reseeding every
+    worker draws the same augmentation sequence (and, with workers re-forked
+    each epoch, the same sequence every epoch). Compose.set_random_seed isn't
+    used because it gives every transform the same seed, which would tie their
+    random decisions together (e.g. flip whenever brightness changes).
+    """
+    import random as _random
+    children = list(getattr(transform, "transforms", []))
+    seeds = np.random.SeedSequence(seed).generate_state(len(children) + 1)
+    own = int(seeds[0])
+    transform.seed = own
+    transform.random_generator = np.random.default_rng(own)
+    transform.py_random = _random.Random(own)
+    for child, s in zip(children, seeds[1:]):
+        if hasattr(child, "transforms"):
+            _reseed_augmentation(child, int(s))
+        else:
+            child.set_random_seed(int(s))
+
+
+def _worker_init(_worker_id: int) -> None:
+    # One OpenCV thread per worker: Albumentations runs on OpenCV, which would
+    # otherwise start a thread per core in every worker and oversubscribe the CPU.
+    cv2.setNumThreads(1)
+    # Independent augmentation per worker (see _reseed_augmentation). The
+    # worker's seed differs per worker and per DataLoader, as PyTorch sets it.
+    info = torch.utils.data.get_worker_info()
+    transform = getattr(info.dataset, "_transform_alb", None) if info else None
+    if transform is not None:
+        _reseed_augmentation(transform, info.seed)
+
+
 def _build_loaders(dataset_dir: Path, batch_size: int, aug_cfg: dict | None = None,
-                   oversample: bool = False):
-    train_ds = _AlbumentationsWrapper(str(dataset_dir / "train"), _make_train_transform(aug_cfg))
-    val_ds   = _AlbumentationsWrapper(str(dataset_dir / "val"),   _make_val_transform())
-    num_workers = min(4, torch.get_num_threads())
+                   oversample: bool = False, device="cpu"):
+    """(augmented train DataLoader, val DeviceBatches, class names).
+
+    Images are decoded once into memory when DataLoader workers start with
+    fork (Linux), which lets them share the decoded images; otherwise each
+    worker decodes from disk as before.
+    """
+    import torch.multiprocessing as tmp
+    cache = tmp.get_context().get_start_method() == "fork"
+    train_ds = _AlbumentationsWrapper(str(dataset_dir / "train"), _make_train_transform(aug_cfg),
+                                      cache=cache)
+    val_ds = torchvision.datasets.ImageFolder(str(dataset_dir / "val"))
+    # Label val images by cat name with the train set's numbering, in case a
+    # split lacks a cat folder (ImageFolder numbers the folders it finds).
+    val_labels = [train_ds.class_to_idx[val_ds.classes[t]] for t in val_ds.targets]
     sampler = (BalancedEpochSampler([label for _, label in train_ds.samples])
                if oversample else None)
+    workers = _loader_workers()
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=sampler is None,
-                              sampler=sampler, num_workers=num_workers, pin_memory=True,
-                              drop_last=True)
-    val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,
-                              num_workers=num_workers, pin_memory=True)
-    return train_loader, val_loader, train_ds.classes
+                              sampler=sampler, num_workers=workers,
+                              pin_memory=torch.cuda.is_available(), drop_last=True,
+                              persistent_workers=True, prefetch_factor=4,
+                              worker_init_fn=_worker_init)
+    val_batches = DeviceBatches(_decode_all([p for p, _ in val_ds.samples]), val_labels,
+                                batch_size, device)
+    return train_loader, val_batches, train_ds.classes
+
+
+def _qat_train_batches(train_loader: DataLoader, batch_size: int, device,
+                       oversample: bool) -> DeviceBatches:
+    """Phase 3 training data: the training images without augmentation (as
+    _make_val_transform), balanced the same way as phases 1-2, on the device."""
+    ds = train_loader.dataset
+    sampler = BalancedEpochSampler(ds.targets) if oversample else None
+    return DeviceBatches(ds.decoded_images(), ds.targets, batch_size, device,
+                         sampler=sampler, shuffle=sampler is None, drop_last=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -376,7 +546,8 @@ def _train_epoch(model, loader, optimizer, criterion, device,
     correct = 0
     total = 0
     for images, labels in loader:
-        images, labels = images.to(device), labels.to(device)
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
 
         if mixup_alpha > 0:
             lam = float(np.random.beta(mixup_alpha, mixup_alpha))
@@ -413,7 +584,8 @@ def _eval_epoch(model, loader, criterion, device,
     per_class_total   = [0] * num_classes
 
     for images, labels in loader:
-        images, labels = images.to(device), labels.to(device)
+        images = images.to(device, non_blocking=True)
+        labels = labels.to(device, non_blocking=True)
         logits = model(images)
         loss = criterion(logits, labels)
         total_loss += loss.item() * images.size(0)
@@ -525,8 +697,10 @@ def main() -> None:
         print(f"Augmentation params: {strength_keys}")
 
     train_loader, val_loader, class_names = _build_loaders(
-        dataset_dir, batch_size, aug_cfg, oversample=balance_method == "oversample")
-    print(f"Train batches: {len(train_loader)}  Val batches: {len(val_loader)}")
+        dataset_dir, batch_size, aug_cfg, oversample=balance_method == "oversample",
+        device=device)
+    print(f"Train batches: {len(train_loader)}  Val batches: {len(val_loader)}  "
+          f"(loader workers: {train_loader.num_workers})")
     print(f"Classes (dataset order): {class_names}")
 
     csv_logger = _CSVLogger(ckpt_dir / "results.csv", class_names)
@@ -720,19 +894,11 @@ def main() -> None:
             qat_model.parameters(), lr=qat_lr, weight_decay=weight_decay
         )
 
-        # QAT uses val transforms for training (no augmentation)
-        qat_train_ds = _AlbumentationsWrapper(str(dataset_dir / "train"), _make_val_transform())
-        # Same balancing as phases 1-2 (no augmentation here, so repeats are copies)
-        qat_sampler = (BalancedEpochSampler([label for _, label in qat_train_ds.samples])
-                       if balance_method == "oversample" else None)
-        qat_train_loader = DataLoader(
-            qat_train_ds, batch_size=batch_size, shuffle=qat_sampler is None,
-            sampler=qat_sampler, num_workers=0, drop_last=True
-        )
-        qat_val_loader = DataLoader(
-            _AlbumentationsWrapper(str(dataset_dir / "val"), _make_val_transform()),
-            batch_size=batch_size, shuffle=False, num_workers=0,
-        )
+        # QAT trains on the training images without augmentation, balanced like
+        # phases 1-2 (repeats are plain copies here); both sets stay on the device.
+        qat_train_loader = _qat_train_batches(train_loader, batch_size, device,
+                                              oversample=balance_method == "oversample")
+        qat_val_loader = val_loader
 
         best_val_acc = -1.0
         best_state = None
@@ -788,7 +954,8 @@ def main() -> None:
         print("\n  Calibrating energy threshold on val set...")
         calib_bytes = lower_to_pte(quantized)
         calib_program, calib_forward = load_pte(calib_bytes)
-        _, _, all_energies = eval_pte(calib_forward, qat_val_loader, num_cats)
+        val_cpu = val_loader.on("cpu")      # the ExecuTorch runtime runs on the CPU
+        _, _, all_energies = eval_pte(calib_forward, val_cpu, num_cats)
         energy_threshold = float(torch.quantile(all_energies, energy_ood_pct).item())
         energy_p95 = float(torch.quantile(all_energies, 0.95).item())
         energy_p99 = float(torch.quantile(all_energies, 0.99).item())
@@ -838,7 +1005,7 @@ def main() -> None:
 
         # Final per-class accuracy summary, measured with the exported file
         print("\n=== Final Val Accuracy (INT8 model) ===")
-        va_final, per_cls_final, _ = eval_pte(forward, qat_val_loader, num_cats)
+        va_final, per_cls_final, _ = eval_pte(forward, val_cpu, num_cats)
         print(f"  Overall: {va_final:.1%}")
         for cat, acc in zip(class_names, per_cls_final):
             flag = "" if acc >= 0.85 else "  ← below 85% threshold"
@@ -852,7 +1019,7 @@ def main() -> None:
             "classes": class_names,
             "energy_threshold": energy_threshold_data,
             "train_images": len(train_loader.dataset),
-            "val_images": len(val_loader.dataset),
+            "val_images": val_loader.num_samples,
             "torch_version": torch.__version__,
             "executorch_version": metadata.version("executorch"),
             "model_file": "cat_classifier.pte",

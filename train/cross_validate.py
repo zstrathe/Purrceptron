@@ -37,15 +37,12 @@ except ImportError:
 # Reuse building blocks from existing modules
 from prepare_classifier_dataset import infer_sessions, link_or_copy
 from train_classifier import (
-    BalancedEpochSampler,
-    _AlbumentationsWrapper,
     _balance_method,
     _build_loaders,
     _eval_epoch,
     _freeze_bn,
     _make_criterion,
-    _make_train_transform,
-    _make_val_transform,
+    _qat_train_batches,
     _train_epoch,
     convert_to_int8,
     eval_pte,
@@ -102,8 +99,6 @@ def train_fold(
     device: torch.device,
 ) -> dict:
     """Train all 3 phases for a single fold. Returns fold metrics dict."""
-    from torch.utils.data import DataLoader
-
     phase1_epochs = tc.get("phase1_epochs", 20)
     phase2_epochs = tc.get("phase2_epochs", 40)
     phase3_epochs = tc.get("phase3_epochs", 10)
@@ -121,9 +116,10 @@ def train_fold(
 
     # Build loaders
     train_loader, val_loader, class_names = _build_loaders(
-        fold_dir, batch_size, aug_cfg, oversample=balance_method == "oversample")
+        fold_dir, batch_size, aug_cfg, oversample=balance_method == "oversample",
+        device=device)
     print(f"{prefix} Train: {len(train_loader.dataset)} imgs, "
-          f"Val: {len(val_loader.dataset)} imgs")
+          f"Val: {val_loader.num_samples} imgs")
 
     # Weighted loss or oversampling, as in train_classifier.py (no label smoothing here)
     criterion = _make_criterion(train_loader.dataset, balance_method, device)
@@ -235,15 +231,10 @@ def train_fold(
     best_p3_acc = -1.0
     best_p3_state = None
 
-    qat_train_ds = _AlbumentationsWrapper(str(fold_dir / "train"), _make_val_transform())
-    qat_sampler = (BalancedEpochSampler([label for _, label in qat_train_ds.samples])
-                   if balance_method == "oversample" else None)
-    qat_train_loader = DataLoader(qat_train_ds, batch_size=batch_size,
-                                  shuffle=qat_sampler is None, sampler=qat_sampler,
-                                  num_workers=0, drop_last=True)
-    qat_val_ds = _AlbumentationsWrapper(str(fold_dir / "val"), _make_val_transform())
-    qat_val_loader = DataLoader(qat_val_ds, batch_size=batch_size, shuffle=False,
-                                num_workers=0)
+    # Training images without augmentation, balanced like phases 1-2, on the device
+    qat_train_loader = _qat_train_batches(train_loader, batch_size, device,
+                                          oversample=balance_method == "oversample")
+    qat_val_loader = val_loader
 
     no_improve = 0
     for epoch in range(1, phase3_epochs + 1):
@@ -285,7 +276,7 @@ def train_fold(
     # check of a training job. This is the fold's result.
     qat_model.load_state_dict(best_p3_state)
     program, forward = load_pte(lower_to_pte(convert_to_int8(qat_model)))
-    int8_acc, int8_per_class, _ = eval_pte(forward, qat_val_loader, num_cats)
+    int8_acc, int8_per_class, _ = eval_pte(forward, val_loader.on("cpu"), num_cats)
     print(f"  {prefix} INT8 model (ExecuTorch): {int8_acc:.1%}  "
           + "  ".join(f"{c} {a:.1%}" for c, a in zip(class_names, int8_per_class)))
     print(f"  {prefix} Best epoch during training (any phase): {best_overall_acc:.1%}")
