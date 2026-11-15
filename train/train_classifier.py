@@ -42,7 +42,7 @@ except ImportError:
 
 # Torchvision
 import torchvision.datasets
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Sampler
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -132,12 +132,89 @@ def _make_val_transform():
     ])
 
 
-def _build_loaders(dataset_dir: Path, batch_size: int, aug_cfg: dict | None = None):
+# ═══════════════════════════════════════════════════════════════════════════
+# Class balance
+# ═══════════════════════════════════════════════════════════════════════════
+
+BALANCE_METHODS = ("loss_weights", "oversample", "off")
+
+
+def _balance_method(tc: dict) -> str:
+    """classifier_training.balance_method (default oversample). Older configs
+    without it use balance_classes: false means off, anything else oversample."""
+    method = tc.get("balance_method")
+    if method is None:
+        return "off" if tc.get("balance_classes") is False else "oversample"
+    if method not in BALANCE_METHODS:
+        raise ValueError(f"balance_method must be one of {', '.join(BALANCE_METHODS)}, "
+                         f"not {method!r}")
+    return method
+
+
+class BalancedEpochSampler(Sampler):
+    """Each epoch: every real image once, plus repeats of the smaller classes'
+    images until every class has as many samples as the largest one.
+
+    With random augmentation each repeat is a new variant of the image, so a
+    small class gets extra, different training examples every epoch. Repeats
+    are spread evenly (whole extra passes first, then a random subset without
+    replacement), and the epoch is shuffled. Works for any number of classes.
+    """
+
+    def __init__(self, labels, generator: torch.Generator | None = None):
+        by_class: dict[int, list[int]] = {}
+        for i, label in enumerate(labels):
+            by_class.setdefault(int(label), []).append(i)
+        self._by_class = {c: torch.tensor(idx) for c, idx in sorted(by_class.items())}
+        self.per_class = max((len(v) for v in self._by_class.values()), default=0)
+        self.generator = generator
+
+    def __len__(self) -> int:
+        return self.per_class * len(self._by_class)
+
+    def __iter__(self):
+        parts = []
+        for idx in self._by_class.values():
+            repeats, rest = divmod(self.per_class, len(idx))
+            parts.append(idx.repeat(repeats))
+            if rest:
+                parts.append(idx[torch.randperm(len(idx), generator=self.generator)[:rest]])
+        epoch = torch.cat(parts)
+        return iter(epoch[torch.randperm(len(epoch), generator=self.generator)].tolist())
+
+
+def _make_criterion(train_ds, method: str, device, label_smoothing: float = 0.0):
+    """Loss for the chosen balance method, with a log line describing it."""
+    from collections import Counter
+    counts = Counter(label for _, label in train_ds.samples)
+    names = train_ds.classes
+    largest = max(counts.values())
+    if method == "loss_weights":
+        weights = torch.tensor([largest / counts.get(i, 1) for i in range(len(names))],
+                               dtype=torch.float32, device=device)
+        print(f"Class balance: loss weights  "
+              f"{dict(zip(names, [f'{w:.2f}' for w in weights.tolist()]))}")
+        return nn.CrossEntropyLoss(weight=weights, label_smoothing=label_smoothing)
+    if method == "oversample":
+        extra = [f"{names[i]} {counts[i]} real + {largest - counts[i]} repeats"
+                 for i in range(len(names)) if counts.get(i, 0) < largest]
+        print(f"Class balance: oversample, {largest} per cat per epoch "
+              f"({', '.join(extra) if extra else 'already balanced'})")
+    else:
+        print("Class balance: OFF (uniform loss)")
+    return nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+
+
+def _build_loaders(dataset_dir: Path, batch_size: int, aug_cfg: dict | None = None,
+                   oversample: bool = False):
     train_ds = _AlbumentationsWrapper(str(dataset_dir / "train"), _make_train_transform(aug_cfg))
     val_ds   = _AlbumentationsWrapper(str(dataset_dir / "val"),   _make_val_transform())
     num_workers = min(4, torch.get_num_threads())
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                              num_workers=num_workers, pin_memory=True, drop_last=True)
+    sampler = (BalancedEpochSampler([label for _, label in train_ds.samples])
+               if oversample else None)
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=sampler is None,
+                              sampler=sampler, num_workers=num_workers, pin_memory=True,
+                              drop_last=True)
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False,
                               num_workers=num_workers, pin_memory=True)
     return train_loader, val_loader, train_ds.classes
@@ -414,7 +491,7 @@ def main() -> None:
     batch_size      = tc.get("batch_size", 32)
     patience        = tc.get("patience", 15)
     mixup_alpha     = tc.get("mixup_alpha", 0.2)
-    balance_classes = tc.get("balance_classes", True)
+    balance_method  = _balance_method(tc)
     energy_ood_pct  = tc.get("energy_ood_percentile", 0.99)
     label_smoothing = tc.get("label_smoothing", 0.1)
     grad_clip_norm  = tc.get("gradient_clip_norm", 1.0)
@@ -447,26 +524,15 @@ def main() -> None:
     if strength_keys:
         print(f"Augmentation params: {strength_keys}")
 
-    train_loader, val_loader, class_names = _build_loaders(dataset_dir, batch_size, aug_cfg)
+    train_loader, val_loader, class_names = _build_loaders(
+        dataset_dir, batch_size, aug_cfg, oversample=balance_method == "oversample")
     print(f"Train batches: {len(train_loader)}  Val batches: {len(val_loader)}")
     print(f"Classes (dataset order): {class_names}")
 
     csv_logger = _CSVLogger(ckpt_dir / "results.csv", class_names)
 
-    # Class-weighted loss for imbalanced datasets
-    if balance_classes:
-        from collections import Counter
-        class_counts = Counter(label for _, label in train_loader.dataset.samples)
-        max_count = max(class_counts.values())
-        weights = torch.tensor(
-            [max_count / class_counts.get(i, 1) for i in range(num_cats)],
-            dtype=torch.float32, device=device,
-        )
-        print(f"Class balance: ON  weights={dict(zip(class_names, [f'{w:.2f}' for w in weights.tolist()]))}")
-        criterion = nn.CrossEntropyLoss(weight=weights, label_smoothing=label_smoothing)
-    else:
-        print("Class balance: OFF (uniform loss)")
-        criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+    # Imbalanced classes: weighted loss, or oversampling of the smaller classes
+    criterion = _make_criterion(train_loader.dataset, balance_method, device, label_smoothing)
     if label_smoothing > 0:
         print(f"Label smoothing: {label_smoothing}")
 
@@ -656,9 +722,12 @@ def main() -> None:
 
         # QAT uses val transforms for training (no augmentation)
         qat_train_ds = _AlbumentationsWrapper(str(dataset_dir / "train"), _make_val_transform())
+        # Same balancing as phases 1-2 (no augmentation here, so repeats are copies)
+        qat_sampler = (BalancedEpochSampler([label for _, label in qat_train_ds.samples])
+                       if balance_method == "oversample" else None)
         qat_train_loader = DataLoader(
-            qat_train_ds, batch_size=batch_size, shuffle=True,
-            num_workers=0, drop_last=True
+            qat_train_ds, batch_size=batch_size, shuffle=qat_sampler is None,
+            sampler=qat_sampler, num_workers=0, drop_last=True
         )
         qat_val_loader = DataLoader(
             _AlbumentationsWrapper(str(dataset_dir / "val"), _make_val_transform()),

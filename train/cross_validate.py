@@ -15,10 +15,11 @@ Use train_classifier.py for the actual training run.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
+import math
 import shutil
 import sys
-from collections import Counter
 from pathlib import Path
 
 import numpy as np
@@ -36,13 +37,21 @@ except ImportError:
 # Reuse building blocks from existing modules
 from prepare_classifier_dataset import infer_sessions, link_or_copy
 from train_classifier import (
+    BalancedEpochSampler,
     _AlbumentationsWrapper,
+    _balance_method,
     _build_loaders,
     _eval_epoch,
     _freeze_bn,
+    _make_criterion,
     _make_train_transform,
     _make_val_transform,
     _train_epoch,
+    convert_to_int8,
+    eval_pte,
+    freeze_observers,
+    load_pte,
+    lower_to_pte,
     prepare_qat_model,
 )
 
@@ -105,27 +114,19 @@ def train_fold(
     batch_size    = tc.get("batch_size", 32)
     patience      = tc.get("patience", 15)
     mixup_alpha   = tc.get("mixup_alpha", 0.2)
-    balance_classes = tc.get("balance_classes", True)
+    balance_method = _balance_method(tc)
     aug_cfg       = tc.get("augmentation", {})
 
     prefix = f"[CV Fold {fold_idx + 1}/{n_folds}]"
 
     # Build loaders
-    train_loader, val_loader, class_names = _build_loaders(fold_dir, batch_size, aug_cfg)
+    train_loader, val_loader, class_names = _build_loaders(
+        fold_dir, batch_size, aug_cfg, oversample=balance_method == "oversample")
     print(f"{prefix} Train: {len(train_loader.dataset)} imgs, "
           f"Val: {len(val_loader.dataset)} imgs")
 
-    # Class-weighted loss
-    if balance_classes:
-        class_counts = Counter(label for _, label in train_loader.dataset.samples)
-        max_count = max(class_counts.values())
-        weights = torch.tensor(
-            [max_count / class_counts.get(i, 1) for i in range(num_cats)],
-            dtype=torch.float32, device=device,
-        )
-        criterion = nn.CrossEntropyLoss(weight=weights)
-    else:
-        criterion = nn.CrossEntropyLoss()
+    # Weighted loss or oversampling, as in train_classifier.py (no label smoothing here)
+    criterion = _make_criterion(train_loader.dataset, balance_method, device)
 
     best_overall_acc = 0.0
     best_per_class = [0.0] * num_cats
@@ -223,14 +224,22 @@ def train_fold(
     if src_state:
         qat_model.load_state_dict(src_state)
 
-    # Same PT2E fake-quantize preparation as train_classifier.py; it trains on
-    # the fold's device (GPU included), so the criterion is used as is.
+    # Same phase 3 as train_classifier.py: PT2E fake-quantize on the fold's
+    # device, lr 1e-6, observers and BatchNorm frozen for the last 20%.
     qat_model = prepare_qat_model(qat_model).to(device)
     qat_criterion = criterion
-    optimizer = torch.optim.AdamW(qat_model.parameters(), lr=1e-5, weight_decay=weight_decay)
+    optimizer = torch.optim.AdamW(qat_model.parameters(), lr=1e-6, weight_decay=weight_decay)
+    grad_clip_norm = tc.get("gradient_clip_norm", 1.0)
+    freeze_epoch = max(1, int(math.ceil(phase3_epochs * 0.8)))
+    observers_frozen = False
+    best_p3_acc = -1.0
+    best_p3_state = None
 
     qat_train_ds = _AlbumentationsWrapper(str(fold_dir / "train"), _make_val_transform())
-    qat_train_loader = DataLoader(qat_train_ds, batch_size=batch_size, shuffle=True,
+    qat_sampler = (BalancedEpochSampler([label for _, label in qat_train_ds.samples])
+                   if balance_method == "oversample" else None)
+    qat_train_loader = DataLoader(qat_train_ds, batch_size=batch_size,
+                                  shuffle=qat_sampler is None, sampler=qat_sampler,
                                   num_workers=0, drop_last=True)
     qat_val_ds = _AlbumentationsWrapper(str(fold_dir / "val"), _make_val_transform())
     qat_val_loader = DataLoader(qat_val_ds, batch_size=batch_size, shuffle=False,
@@ -238,8 +247,15 @@ def train_fold(
 
     no_improve = 0
     for epoch in range(1, phase3_epochs + 1):
-        tl, ta = _train_epoch(qat_model, qat_train_loader, optimizer, qat_criterion, device)
+        if epoch >= freeze_epoch and not observers_frozen:
+            freeze_observers(qat_model)
+            observers_frozen = True
+        tl, ta = _train_epoch(qat_model, qat_train_loader, optimizer, qat_criterion, device,
+                              grad_clip_norm=grad_clip_norm, eval_mode=observers_frozen)
         vl, va, per_cls = _eval_epoch(qat_model, qat_val_loader, qat_criterion, device, num_cats)
+        if va > best_p3_acc:
+            best_p3_acc = va
+            best_p3_state = copy.deepcopy(qat_model.state_dict())
         print(f"  {prefix} [P3 {epoch:3d}/{phase3_epochs}] "
               f"loss {tl:.3f}/{vl:.3f}  acc {ta:.1%}/{va:.1%}")
         print(f"[CV PROGRESS] fold={fold_idx + 1}/{n_folds} phase=3 epoch={epoch}/{phase3_epochs}")
@@ -263,17 +279,30 @@ def train_fold(
         _, _, best_per_class = _eval_epoch(model, val_loader, criterion, device, num_cats)
         del model
 
-    print(f"  {prefix} Best val acc: {best_overall_acc:.1%}")
+    # ── Phase 4: the model the Pi would run ───────────────────────────
+    # Convert the best QAT epoch to INT8, export it as an ExecuTorch program and
+    # score that program on the fold's validation images, exactly like the final
+    # check of a training job. This is the fold's result.
+    qat_model.load_state_dict(best_p3_state)
+    program, forward = load_pte(lower_to_pte(convert_to_int8(qat_model)))
+    int8_acc, int8_per_class, _ = eval_pte(forward, qat_val_loader, num_cats)
+    print(f"  {prefix} INT8 model (ExecuTorch): {int8_acc:.1%}  "
+          + "  ".join(f"{c} {a:.1%}" for c, a in zip(class_names, int8_per_class)))
+    print(f"  {prefix} Best epoch during training (any phase): {best_overall_acc:.1%}")
 
     # Clean up GPU memory
-    del qat_model
+    del qat_model, forward, program
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
+    # Per-class lists follow the dataset's class order (class_names, alphabetical),
+    # not the config's order of cats.
     return {
         "fold": fold_idx,
-        "best_val_acc": round(best_overall_acc, 4),
-        "per_class": {cat: round(acc, 4) for cat, acc in zip(cats, best_per_class)},
+        "best_val_acc": round(int8_acc, 4),
+        "per_class": {c: round(a, 4) for c, a in zip(class_names, int8_per_class)},
+        "best_epoch_val_acc": round(best_overall_acc, 4),
+        "best_epoch_per_class": {c: round(a, 4) for c, a in zip(class_names, best_per_class)},
     }
 
 
@@ -400,7 +429,7 @@ def main() -> None:
         per_class_std[cat] = round(float(np.std(cat_accs)), 4)
 
     print(f"\n{'=' * 60}")
-    print(f"  Cross-Validation Summary ({n_folds}-fold)")
+    print(f"  Cross-Validation Summary ({n_folds}-fold), exported INT8 model per fold")
     print(f"{'=' * 60}")
     print(f"  Overall: {mean_acc:.1%} \u00b1 {std_acc:.1%}")
     for cat in cats:
@@ -436,6 +465,10 @@ def main() -> None:
         "std_acc": round(std_acc, 4),
         "per_class_mean": per_class_mean,
         "per_class_std": per_class_std,
+        # What the folds scored at their best training epoch (any phase, chosen on
+        # the fold's own validation images); optimistic, kept for reference.
+        "best_epoch_mean_acc": round(float(np.mean([r["best_epoch_val_acc"] for r in fold_results])), 4),
+        "measure": "exported INT8 ExecuTorch model, per fold",
     }
     summary_path = args.output_dir / "cv_summary.json"
     with open(summary_path, "w") as f:

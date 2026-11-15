@@ -83,7 +83,7 @@ classifier_training:
   optimizer: AdamW
   session_gap_minutes: 5
   mixup_alpha: 0.2
-  balance_classes: true
+  balance_method: oversample     # oversample | loss_weights | off
   cv_folds: 5
   augmentation:
     horizontal_flip: true

@@ -2241,9 +2241,15 @@ async function loadTrainingSettings(force) {
     `<fieldset><legend>${trEsc(g)}</legend>` + fs.map(f => {
       const id = trSettingId(f.key);
       const v = d.values[f.key];
-      const input = f.type === 'bool'
-        ? `<input type="checkbox" id="${id}"${v ? ' checked' : ''}>`
-        : `<input type="number" id="${id}" value="${trEsc(v)}" min="${f.min}" max="${f.max}" step="${f.type === 'int' ? 1 : 'any'}">`;
+      let input;
+      if (f.type === 'bool') {
+        input = `<input type="checkbox" id="${id}"${v ? ' checked' : ''}>`;
+      } else if (f.type === 'select') {
+        input = `<select id="${id}">` + (f.options || []).map(o =>
+          `<option value="${trEsc(o)}"${o === v ? ' selected' : ''}>${trEsc(o)}</option>`).join('') + '</select>';
+      } else {
+        input = `<input type="number" id="${id}" value="${trEsc(v)}" min="${f.min}" max="${f.max}" step="${f.type === 'int' ? 1 : 'any'}">`;
+      }
       return `<div class="inference-row"${f.help ? ` title="${trEsc(f.help)}"` : ''}><label for="${id}">${trEsc(f.label)}</label>${input}</div>`;
     }).join('') + '</fieldset>').join('');
   if (d.values.cv_folds) trEl('tr-cv-folds').value = d.values.cv_folds;

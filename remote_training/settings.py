@@ -13,11 +13,16 @@ train/train_classifier.py uses when a key is missing.
 from __future__ import annotations
 
 # (key, label, type, default, min, max, group, help)
+# type is "int", "float", "bool" or "select" (choices in _OPTIONS).
 # key "augmentation.x" lives in classifier_training.augmentation;
 # key "crop_padding" lives in classifier.
+_OPTIONS = {
+    "balance_method": ["oversample", "loss_weights", "off"],
+}
+
 SETTINGS: list[dict] = [
     {"key": k, "label": lbl, "type": t, "default": d, "min": lo, "max": hi,
-     "group": g, "help": h}
+     "group": g, "help": h, "options": _OPTIONS.get(k)}
     for k, lbl, t, d, lo, hi, g, h in [
         ("phase1_epochs", "Head warmup epochs", "int", 20, 0, 500, "Phases",
          "Phase 1: only the new classifier head trains."),
@@ -40,8 +45,12 @@ SETTINGS: list[dict] = [
         ("gradient_clip_norm", "Gradient clip norm", "float", 1.0, 0.0, 100.0, "Optimizer", ""),
         ("mixup_alpha", "Mixup alpha", "float", 0.2, 0.0, 2.0, "Data",
          "Phase 2 only; 0 turns mixup off."),
-        ("balance_classes", "Balance classes", "bool", True, None, None, "Data",
-         "Oversample cats with fewer images."),
+        ("balance_method", "Class balancing", "select", "oversample", None, None, "Data",
+         "How cats with fewer images are kept from being outweighed. loss_weights: "
+         "each of their images counts more in the loss. oversample: their images are "
+         "repeated each epoch until every cat matches the largest, and each repeat "
+         "gets new random distortions, so they act as extra synthetic examples. "
+         "off: no balancing."),
         ("session_gap_minutes", "Session gap (min)", "float", 5, 0.0, 1440.0, "Data",
          "Captures closer than this belong to one session; a session is never "
          "split between train and val."),
@@ -86,6 +95,9 @@ def current_values(config: dict) -> dict:
         k = s["key"]
         if k == "crop_padding":
             val = (config.get("classifier") or {}).get("crop_padding")
+        elif k == "balance_method" and tc.get(k) is None and "balance_classes" in tc:
+            # Older configs: balance_classes (same mapping as training)
+            val = "off" if tc["balance_classes"] is False else "oversample"
         elif k.startswith("augmentation."):
             val = aug.get(k.split(".", 1)[1])
         else:
@@ -106,6 +118,11 @@ def parse(values: dict) -> dict:
             if isinstance(raw, str):
                 raw = raw.lower() in ("1", "true", "on", "yes")
             out[key] = bool(raw)
+            continue
+        if s["type"] == "select":
+            if raw not in s["options"]:
+                raise ValueError(f"{s['label']} must be one of {', '.join(s['options'])}")
+            out[key] = raw
             continue
         try:
             num = float(raw)
@@ -134,5 +151,7 @@ def apply(config: dict, values: dict) -> tuple[dict, float | None]:
             aug[key.split(".", 1)[1]] = val
         else:
             tc[key] = val
+    if "balance_method" in values:
+        tc.pop("balance_classes", None)   # replaced by balance_method
     tc["augmentation"] = aug
     return tc, crop_padding

@@ -76,17 +76,17 @@ flowchart TB
         MODEL -- "not yet: save unlabeled images<br/>to build the first dataset" --> CAP["Training image saved<br/>frame + bounding-box JSON<br/>(at most one every 15 s)"]
         MODEL -- yes --> CLS["Stage 2<br/>Run the trained model (INT8 MobileNetV2, Pi CPU)<br/>on the bounding-box crop resized to 224x224.<br/>Output: a probability for each cat name, and an<br/>energy score (-logsumexp of the raw outputs: low when<br/>one output dominates, high when the model is unsure)"]
         CLS --> KNOWN{"Is the calculated energy<br/>score low enough to be<br/>a known cat?"}
-        KNOWN -- "no: score above the threshold set at training<br/>(99% of validation images fall below it),<br/>skipped, not counted as a vote" --> UNK["Reported as Unknown<br/>(after 5 rejections in a row),<br/>image saved unlabeled,<br/>never auto-labeled"]
+        KNOWN -- "no: score above the threshold set at training<br/>(99% of validation images fall below it),<br/>skipped, not counted as a vote" --> UNK["Reported as Unknown<br/>(after 5 rejections in a row)"]
         KNOWN -- yes --> TALLY["Add the guess to the last 10 votes.<br/>Confirmed when one cat has 6+ votes<br/>and their average confidence<br/>is above the threshold"]
         TALLY --> VOTE{"Identity confirmed?"}
-        VOTE -- "not yet" --> WAIT["Not confirmed yet:<br/>image saved unlabeled for now,<br/>classify the next crop"]
+        VOTE -- "not yet" --> WAIT["Not confirmed yet:<br/>classify the next crop"]
         WAIT --> CLS
         WAIT --> REFINE
-        VOTE -- yes --> ID["Cat identified:<br/>log the visit, save the image<br/>labeled with its name, and label<br/>this visit's earlier unlabeled images"]
+        VOTE -- yes --> ID["Cat identified:<br/>log the visit"]
         ID --> LOG[("Visit log: cat name,<br/>arrival = first frame at the bowl,<br/>departure = last frame at the bowl")]
         ID --> REFINE
         UNK --> REFINE
-        REFINE["Optional: keep capturing<br/>to refine the next model"] --> CAP
+        REFINE["Optional: keep capturing to refine the next model.<br/>Images are saved under the cat's name once the visit<br/>is confirmed; earlier images from the visit are renamed then.<br/>Images taken while crops are rejected<br/>stay unlabeled for review"] --> CAP
     end
     CAP --> LABEL["Pi dashboard: label cats (Review tab),<br/>add or fix bounding boxes (Annotate tab;<br/>auto-detect fills in missing ones)"]
     LABEL --> PREP["Pi: crop each bounding box, resize to 224x224,<br/>split train/val by capture session<br/>so near-duplicate frames stay on one side"]
@@ -555,14 +555,26 @@ top. Training requires at least two cats and runs in four phases.
 
 All phases use AdamW with `weight_decay` 0.005, batch size 32, label smoothing 0.1,
 gradient clipping at norm 1.0, and early stopping after `patience` (default 15)
-epochs without an improvement in validation accuracy. Class imbalance is handled
-with class-weighted cross-entropy (`balance_classes`) rather than oversampling. The
-best checkpoint of each phase is selected by validation accuracy.
+epochs without an improvement in validation accuracy. The best checkpoint of each
+phase is selected by validation accuracy.
 
-Augmentation uses Albumentations: a random resized crop (scale 0.8 to 1.0) is always
-applied, and horizontal flip, brightness/contrast, shift-scale-rotate, Gaussian blur,
-coarse dropout and Gaussian noise are on by default. Hue/saturation and CLAHE are
-available and enabled in the shipped template. Validation applies normalization only.
+Cats with fewer images are balanced in one of three ways (`balance_method`):
+
+- `oversample` (default): each epoch uses every real image once, then repeats the
+  smaller classes' images until every cat has as many samples as the largest.
+  Because augmentation is random, each repeat is a new variant of the photo, so a
+  small class effectively gets extra synthetic examples every epoch. Nothing is
+  written to disk and validation uses real photos only. Epochs get longer (number
+  of cats times the largest class).
+- `loss_weights`: each image of a smaller class counts more in the loss, in
+  proportion to how much smaller the class is.
+- `off`: no balancing.
+
+Augmentation uses Albumentations, applied fresh each time an image is used: a
+random resized crop (scale 0.8 to 1.0) is always applied, and horizontal flip,
+brightness/contrast, shift-scale-rotate, Gaussian blur, coarse dropout and Gaussian
+noise are on by default. Hue/saturation and CLAHE are available and enabled in the
+shipped template. Validation applies normalization only.
 
 After export, the ExecuTorch program itself (run with the ExecuTorch runtime, as on
 the Pi) scores every validation image, and the `energy_ood_percentile` quantile
@@ -640,6 +652,8 @@ the bowl to the last.
   still counts. With `save_labeled_only`, they are deleted instead if the visit is
   not confirmed within 30 s of its last frame at the bowl, or when capture is
   switched off or detect.py stops.
+
+While detection capture is off, nothing is saved, renamed or deleted.
 
 If the classifier misses a departure (its queue was full), the first crop of the
 next visit closes the previous one, so votes and names never carry over.
@@ -730,7 +744,7 @@ a key is omitted, it is noted.
 | `classifier_training.label_smoothing` | 0.1 | Cross-entropy label smoothing. |
 | `classifier_training.gradient_clip_norm` | 1.0 | Gradient-norm clipping. |
 | `classifier_training.mixup_alpha` | 0.2 | Mixup strength (phase 2). |
-| `classifier_training.balance_classes` | true | Class-weighted loss for imbalanced data. |
+| `classifier_training.balance_method` | `oversample` | `oversample`, `loss_weights` or `off` (see How training works). Older configs without it use `balance_classes`: `false` means `off`, anything else `oversample`. |
 | `classifier_training.patience` | 15 | Early-stopping patience, per phase. |
 | `classifier_training.session_gap_minutes` | 5 | Gap that starts a new session for the train/val split and CV folds. |
 | `classifier_training.cv_folds` | 5 | Default folds for the Training tab's cross-validation. |
