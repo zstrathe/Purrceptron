@@ -9,12 +9,12 @@ Served by train_worker.py under /api/worker. Every request needs
 ``Authorization: Bearer <WORKER_TOKEN>``; with no WORKER_TOKEN set (in the
 environment or the project's .env) the API is disabled.
 
-Each job gets a folder:
+Each job gets a folder in the jobs folder (see default_jobs_dir):
 
-    data/worker_jobs/<job_id>/job/             extracted bundle (manifest, input, code)
-    data/worker_jobs/<job_id>/output/          everything run_job.py writes
-    data/worker_jobs/<job_id>/results.tar.gz   what the Pi downloads
-    data/worker_jobs/<job_id>/worker.log
+    <jobs>/<job_id>/job/             extracted bundle (manifest, input, code)
+    <jobs>/<job_id>/output/          everything run_job.py writes
+    <jobs>/<job_id>/results.tar.gz   what the Pi downloads
+    <jobs>/<job_id>/worker.log
 
 Routes:
     GET  /health                  torch version, GPU, busy state
@@ -31,6 +31,7 @@ import hmac
 import importlib.util
 import json
 import os
+import platform
 import re
 import shutil
 import signal
@@ -51,6 +52,30 @@ NO_QNNPACK = ("This PyTorch build has no QNNPACK quantization engine, so it can'
               "INT8 models the Pi runs. Official Windows builds never include it; run "
               "the worker in WSL or Linux.")
 _MAX_DETECT_BYTES = 30 * 1024 * 1024
+
+
+def default_jobs_dir(project_root: Path) -> Path:
+    """data/worker_jobs in the project, except for a project on a Windows drive
+    under WSL (/mnt/c/...): there thousands of small files unpack and load
+    slowly, so jobs go to the Linux disk instead."""
+    on_windows_drive = (re.match(r"^/mnt/[a-z]/", str(project_root.resolve())) is not None
+                        and "microsoft" in platform.release().lower())
+    if on_windows_drive:
+        return Path.home() / ".local" / "share" / "cat_detection" / "worker_jobs"
+    return project_root / "data" / "worker_jobs"
+
+
+def prune_jobs(jobs_dir: Path, keep: int) -> list[str]:
+    """Delete all but the `keep` most recent job folders. Returns removed ids."""
+    if keep <= 0 or not jobs_dir.is_dir():
+        return []
+    dirs = sorted((d for d in jobs_dir.iterdir() if d.is_dir()),
+                  key=lambda d: d.stat().st_mtime, reverse=True)
+    removed = []
+    for d in dirs[keep:]:
+        shutil.rmtree(d, ignore_errors=True)
+        removed.append(d.name)
+    return removed
 
 
 def load_worker_token(project_root: Path) -> str:
@@ -83,16 +108,17 @@ class WorkerJob:
 
 
 class WorkerJobs:
-    def __init__(self, project_root: Path, python_exe: str):
+    def __init__(self, project_root: Path, python_exe: str, jobs_dir: Path | None = None):
         self.project_root = project_root
         self.python_exe = python_exe
+        self.jobs_dir = jobs_dir or default_jobs_dir(project_root)
         self.jobs: dict[str, WorkerJob] = {}
         self._lock = threading.Lock()
         self._health_cache: dict | None = None
         self._detector = None
 
     def job_dir(self, job_id: str) -> Path:
-        return self.project_root / "data" / "worker_jobs" / job_id
+        return self.jobs_dir / job_id
 
     def active_job(self) -> str | None:
         with self._lock:
@@ -153,6 +179,7 @@ class WorkerJobs:
                                     stderr=subprocess.STDOUT, text=True, encoding="utf-8",
                                     errors="replace", bufsize=1, env=env, **group)
         job.stage = "running"
+        print(f"[{job_id}] === job received from the Pi, starting", flush=True)
         threading.Thread(target=self._watch, args=(job,), daemon=True).start()
         return job
 
@@ -166,6 +193,7 @@ class WorkerJobs:
                     job.lines.append(line)
                 log.write(line + "\n")
                 log.flush()
+                print(f"[{job.job_id}] {line}", flush=True)   # live in the worker's terminal
             rc = job.proc.wait()
         finally:
             log.close()
@@ -176,6 +204,7 @@ class WorkerJobs:
                 job.stage, job.message = "succeeded", f"Finished in {self._elapsed(job)}"
             else:
                 job.stage, job.message = "failed", f"run_job.py exited with code {rc}"
+        print(f"[{job.job_id}] === {job.stage}: {job.message}", flush=True)
 
     @staticmethod
     def _elapsed(job: WorkerJob) -> str:
@@ -237,10 +266,10 @@ class WorkerJobs:
         return self._detector.detect_best(image_path)
 
 
-def create_worker_blueprint(project_root: Path, python_exe: str
-                            ) -> tuple[Blueprint, WorkerJobs]:
+def create_worker_blueprint(project_root: Path, python_exe: str,
+                            jobs_dir: Path | None = None) -> tuple[Blueprint, WorkerJobs]:
     bp = Blueprint("worker", __name__, url_prefix="/api/worker")
-    jobs = WorkerJobs(project_root, python_exe)
+    jobs = WorkerJobs(project_root, python_exe, jobs_dir)
 
     @bp.before_request
     def _auth():

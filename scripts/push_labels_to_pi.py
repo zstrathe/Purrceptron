@@ -122,6 +122,8 @@ def main() -> None:
                         help="Resolve conflicts with the PC's label")
     parser.add_argument("--include-missing", action="store_true",
                         help="Copy images the Pi doesn't have (and hasn't trashed)")
+    parser.add_argument("--pi", default=None,
+                        help="user@host of the Pi (default: PI_USER@PI_HOST from .env)")
     parser.add_argument("--local-pi-dir", type=Path, default=None,
                         help="Use a local folder as the Pi project (testing)")
     args = parser.parse_args()
@@ -136,9 +138,12 @@ def main() -> None:
         where = str(args.local_pi_dir)
     else:
         env = read_env()
-        if not env.get("PI_HOST") or not env.get("PI_USER"):
-            sys.exit("Set PI_USER and PI_HOST in .env, or pass --local-pi-dir")
-        target = f"{env['PI_USER']}@{env['PI_HOST']}"
+        if args.pi:
+            target = args.pi
+        elif env.get("PI_HOST") and env.get("PI_USER"):
+            target = f"{env['PI_USER']}@{env['PI_HOST']}"
+        else:
+            sys.exit("Set PI_USER and PI_HOST in .env, or pass --pi user@host")
         remote = env.get("PI_REMOTE_DIR") or "~/Repos/cat_detection"
         remote = pi_home(target, remote)
         pi = Pi(target, remote)

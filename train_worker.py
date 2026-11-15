@@ -19,6 +19,7 @@ Usage (WORKER_TOKEN=<long random string> in .env first):
 from __future__ import annotations
 
 import argparse
+import logging
 import signal
 import sys
 from pathlib import Path
@@ -27,7 +28,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from flask import Flask
 
-from remote_training.worker import NO_QNNPACK, create_worker_blueprint, load_worker_token
+from remote_training.worker import (
+    NO_QNNPACK, create_worker_blueprint, default_jobs_dir, load_worker_token, prune_jobs,
+)
 from utils import PROJECT_ROOT
 from utils.display import print_error, print_info, print_success, print_warning
 
@@ -36,7 +39,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Training worker for the Pi dashboard")
     parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=5004, help="Port (default: 5004)")
+    parser.add_argument("--jobs-dir", type=Path, default=None,
+                        help="Where job folders go (default: data/worker_jobs, or "
+                             "~/.local/share/cat_detection/worker_jobs for a project "
+                             "on a Windows drive under WSL)")
+    parser.add_argument("--keep-jobs", type=int, default=10,
+                        help="Keep this many recent job folders, delete older ones at "
+                             "startup (0 = keep all; default 10)")
     args = parser.parse_args()
+    jobs_dir = (args.jobs_dir or default_jobs_dir(PROJECT_ROOT)).expanduser().resolve()
 
     if not load_worker_token(PROJECT_ROOT):
         print_error("WORKER_TOKEN is not set. Add a line WORKER_TOKEN=<any long random "
@@ -45,7 +56,7 @@ def main() -> None:
         sys.exit(1)
 
     app = Flask(__name__)
-    worker_bp, jobs = create_worker_blueprint(PROJECT_ROOT, sys.executable)
+    worker_bp, jobs = create_worker_blueprint(PROJECT_ROOT, sys.executable, jobs_dir)
     app.register_blueprint(worker_bp)
 
     health = jobs.health()
@@ -57,6 +68,10 @@ def main() -> None:
         sys.exit(1)
     gpu = health.get("gpu")
     print_info(f"Python: {sys.executable}")
+    print_info(f"Jobs folder: {jobs_dir}")
+    removed = prune_jobs(jobs_dir, args.keep_jobs)
+    if removed:
+        print_info(f"Deleted {len(removed)} old job folder(s), keeping the {args.keep_jobs} newest")
     print_info(f"torch {health.get('torch_version')}")
     if gpu:
         print_success(f"GPU: {gpu}")
@@ -77,7 +92,10 @@ def main() -> None:
     if hasattr(signal, "SIGBREAK"):          # Windows Ctrl+Break
         signal.signal(signal.SIGBREAK, shutdown)
 
+    # The Pi checks job status every few seconds; don't print a line per request.
+    logging.getLogger("werkzeug").setLevel(logging.WARNING)
     print_success(f"Worker listening on http://{args.host}:{args.port}/api/worker")
+    print_info("Job output from the Pi's jobs is shown here as it runs.")
     app.run(host=args.host, port=args.port, threaded=True, use_reloader=False)
 
 

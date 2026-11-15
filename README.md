@@ -427,8 +427,13 @@ about 12 times slower on the Pi.
    when the torch version differs from the Pi's. Reserving the PC's address in your
    router keeps this setting valid.
 
-Job files stay on the PC in `data/worker_jobs/<job_id>/` (the extracted bundle,
-everything the job wrote, and `worker.log`); delete old ones when you like.
+Job files stay on the PC: the extracted bundle, everything the job wrote, and
+`worker.log`. They go in `data/worker_jobs/<job_id>/`, or in
+`~/.local/share/cat_detection/worker_jobs/` when the project is on a Windows drive
+under WSL (`/mnt/c/...`), where thousands of small files unpack and load slowly.
+`--jobs-dir` picks another folder. At startup the worker keeps the 10 newest job
+folders and deletes older ones (`--keep-jobs`, 0 keeps all). Each job's output is
+also shown in the worker's terminal as it runs.
 
 **Hugging Face Jobs.**
 

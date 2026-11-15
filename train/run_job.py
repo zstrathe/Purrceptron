@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -141,7 +142,11 @@ def main() -> int:
                "--output", str(output_dir / "detections.json")]
     print(f"[run_job] stage=training task={task}", flush=True)
     start = time.time()
-    rc = subprocess.call(cmd, cwd=str(work / "code"))
+    # Hide known, harmless deprecation notices (torch.ao.quantization; Albumentations'
+    # ShiftScaleRotate) so the job log shows training progress. Filters only.
+    env = {**os.environ, "PYTHONWARNINGS": "ignore::DeprecationWarning,"
+           "ignore:ShiftScaleRotate is a special case:UserWarning"}
+    rc = subprocess.call(cmd, cwd=str(work / "code"), env=env)
     duration = round(time.time() - start, 1)
 
     proof_ok = (output_dir / proof).is_file()

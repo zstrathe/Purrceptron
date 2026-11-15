@@ -83,8 +83,11 @@ def process_cat(
     """
     dst_dir.mkdir(parents=True, exist_ok=True)
     cropped = skipped = 0
+    jpgs = sorted(src_dir.glob("*.jpg"))
 
-    for jpg in sorted(src_dir.glob("*.jpg")):
+    for i, jpg in enumerate(jpgs, 1):
+        if i % 250 == 0 and i < len(jpgs):
+            print(f"  {src_dir.name}: {i} / {len(jpgs)} done", flush=True)
         sidecar = jpg.with_suffix(".json")
         if not sidecar.exists():
             print(f"  [SKIP] no sidecar: {jpg.name}")

@@ -148,14 +148,14 @@ def build_bundle(
 
     if task in ("train", "crossval"):
         log(f"Cropping labeled images from {raw_dir} (padding {padding})")
-        _run("crop_images.py", prefix + [python_exe, "train/crop_images.py",
+        _run("crop_images.py", prefix + [python_exe, "-u", "train/crop_images.py",
                        "--input-dir", str(raw_dir), "--output-dir", str(crop_dir),
                        "--padding", str(padding), "--config", str(config_path)],
              project_root, log, should_stop)
 
     if task == "train":
         log("Splitting into train/val by capture session")
-        _run("prepare_classifier_dataset.py", prefix + [python_exe, "train/prepare_classifier_dataset.py",
+        _run("prepare_classifier_dataset.py", prefix + [python_exe, "-u", "train/prepare_classifier_dataset.py",
                        "--source-dir", str(crop_dir), "--output-dir", str(dataset_dir),
                        "--config", str(config_path)],
              project_root, log, should_stop)
