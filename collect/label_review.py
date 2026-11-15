@@ -11,10 +11,12 @@ Includes review state tracking and thumbnail caching.
 """
 from __future__ import annotations
 
+import functools
 import json as json_module
 import os
 import sys
 import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -45,6 +47,8 @@ class ReviewStateTracker:
         self.state_path = data_dir / ".review_state.json"
         self._state: dict[str, bool] = {}
         self._lock = threading.Lock()
+        self._defer = 0         # open deferred_save() blocks
+        self._dirty = False     # changes not yet saved
         self._load()
 
     def _load(self) -> None:
@@ -55,7 +59,32 @@ class ReviewStateTracker:
             except (json_module.JSONDecodeError, IOError):
                 self._state = {}
 
+    def _changed(self) -> None:
+        """Record a change (call with the lock held): save now, or at the end
+        of the outermost deferred_save() block."""
+        self._dirty = True
+        if self._defer == 0:
+            self._save()
+
+    @contextmanager
+    def deferred_save(self):
+        """Save once at the end of the block instead of after every change.
+
+        The whole file is rewritten on each save, so a relabel (up to three
+        changes) or a batch of N images would otherwise rewrite it many times.
+        """
+        with self._lock:
+            self._defer += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._defer -= 1
+                if self._defer == 0 and self._dirty:
+                    self._save()
+
     def _save(self) -> None:
+        self._dirty = False
         try:
             tmp_path = str(self.state_path) + ".tmp"
             with open(tmp_path, "w") as f:
@@ -73,13 +102,13 @@ class ReviewStateTracker:
         rel = str(path.relative_to(self.data_dir))
         with self._lock:
             self._state[rel] = True
-            self._save()
+            self._changed()
 
     def remove_entry(self, path: Path) -> None:
         rel = str(path.relative_to(self.data_dir))
         with self._lock:
             self._state.pop(rel, None)
-            self._save()
+            self._changed()
 
     def rename_entry(self, old_path: Path, new_path: Path) -> None:
         old_rel = str(old_path.relative_to(self.data_dir))
@@ -87,12 +116,21 @@ class ReviewStateTracker:
         with self._lock:
             if old_rel in self._state:
                 self._state[new_rel] = self._state.pop(old_rel)
-                self._save()
+                self._changed()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Label Review App
 # ═══════════════════════════════════════════════════════════════════════════
+
+def _one_state_save(method):
+    """Run a LabelReviewApp method with the review state saved once, at the end."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._review_state.deferred_save():
+            return method(self, *args, **kwargs)
+    return wrapper
+
 
 class LabelReviewApp:
     """Manages image iteration and label assignment."""
@@ -198,6 +236,7 @@ class LabelReviewApp:
             "all_index": all_index,
         }
 
+    @_one_state_save
     def assign_label(self, new_label: str) -> dict:
         """Move current image to the new label directory."""
         if self.index >= len(self.images):
@@ -263,6 +302,7 @@ class LabelReviewApp:
         return {"status": "ok", "action": "labeled", "new_label": new_label,
                 "filename": dest_name}
 
+    @_one_state_save
     def delete_current(self) -> dict:
         """Move current image to trash."""
         if self.index >= len(self.images):
@@ -318,6 +358,7 @@ class LabelReviewApp:
 
     # ── Batch operations ──
 
+    @_one_state_save
     def _label_by_path(self, path: Path, new_label: str) -> dict:
         """Label a specific image by its path. Used by batch operations."""
         if not path.exists():
@@ -373,6 +414,7 @@ class LabelReviewApp:
 
         return {"status": "ok", "action": "labeled", "new_label": new_label}
 
+    @_one_state_save
     def _delete_by_path(self, path: Path) -> dict:
         """Delete a specific image by its path. Used by batch operations."""
         if not path.exists():
@@ -408,6 +450,7 @@ class LabelReviewApp:
 
         return {"status": "ok", "action": "deleted"}
 
+    @_one_state_save
     def batch_label(self, indices: list[int], label: str) -> dict:
         """Label multiple images by their all_images indices."""
         paths = []
@@ -429,6 +472,7 @@ class LabelReviewApp:
 
         return {"status": "ok", "labeled": labeled, "errors": errors}
 
+    @_one_state_save
     def batch_delete(self, indices: list[int]) -> dict:
         """Delete multiple images by their all_images indices."""
         paths = []

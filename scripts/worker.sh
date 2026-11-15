@@ -71,6 +71,19 @@ try:
 except Exception as exc:
     print(f"Worker:    not answering yet ({exc})")
 
+req = urllib.request.Request("http://127.0.0.1:5004/api/worker/backup/snapshots",
+                             headers={"Authorization": "Bearer " + os.environ.get("WORKER_TOKEN", "")})
+try:
+    st = json.load(urllib.request.urlopen(req, timeout=60)).get("stats", {})
+    newest = st.get("newest")
+    if newest:
+        when = datetime.strptime(newest, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc).astimezone(local_tz)
+        newest = when.strftime("%Y-%m-%d %H:%M")
+    print(f"Backups:   {st.get('snapshots', 0)} snapshot(s) from the Pi, newest {newest or '-'}, "
+          f"{st.get('stored_bytes', 0) / 1e6:.0f} MB in data/backups")
+except Exception as exc:
+    print(f"Backups:   unknown ({exc})")
+
 jobs = sorted((d for d in Path("/jobs").iterdir() if d.is_dir()),
               key=lambda d: d.stat().st_mtime, reverse=True)[:5]
 print("Recent jobs:" if jobs else "Recent jobs: none yet")

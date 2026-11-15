@@ -24,6 +24,15 @@ Routes:
     GET  /jobs/ID/results         results.tar.gz
     POST /detect                  body: one JPEG; returns {"bbox": {cx, cy, w, h,
                                   confidence} | null} (Annotate tab's Auto-detect)
+
+Backups from the Pi (remote_training/backup/), kept in the backup folder
+(--backup-dir; see remote_training/backup/store.py for the layout):
+    GET  /backup/snapshots        {"snapshots": [...], "stats": {...}}
+    GET  /backup/snapshots/ID     the snapshot's manifest (.json.gz)
+    PUT  /backup/snapshots/ID     body: manifest (.json.gz); 409 if files are missing
+    POST /backup/blobs/missing    {"hashes": [...]} -> {"missing": [...]}
+    PUT  /backup/blobs/SHA256     body: file content; rejected unless it matches
+    POST /backup/prune            {"keep_days": N} -> what was deleted
 """
 from __future__ import annotations
 
@@ -43,6 +52,8 @@ from pathlib import Path
 
 from flask import Blueprint, jsonify, request, send_file
 
+from remote_training.backup.format import SNAPSHOT_ID_RE, decode_manifest
+from remote_training.backup.store import LocalStore, StoreError
 from remote_training.bundle import safe_extract
 
 _JOB_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -52,6 +63,8 @@ NO_EXECUTORCH = ("This Python environment can't quantize and export ExecuTorch m
                  "(it needs the executorch and torchao packages). Install them with: "
                  "pip install -r requirements-training.txt")
 _MAX_DETECT_BYTES = 30 * 1024 * 1024
+_MAX_BACKUP_BLOB_BYTES = 4 * 1024 ** 3
+_MAX_BACKUP_HASHES = 50000
 
 
 def default_jobs_dir(project_root: Path) -> Path:
@@ -283,10 +296,18 @@ class WorkerJobs:
         return self._detector.detect_best(image_path)
 
 
+def default_backup_dir(project_root: Path) -> Path:
+    """data/backups in the project (on a Windows drive under WSL too, so the
+    backups are easy to find and copy from Windows)."""
+    return project_root / "data" / "backups"
+
+
 def create_worker_blueprint(project_root: Path, python_exe: str,
-                            jobs_dir: Path | None = None) -> tuple[Blueprint, WorkerJobs]:
+                            jobs_dir: Path | None = None,
+                            backup_dir: Path | None = None) -> tuple[Blueprint, WorkerJobs]:
     bp = Blueprint("worker", __name__, url_prefix="/api/worker")
     jobs = WorkerJobs(project_root, python_exe, jobs_dir)
+    store = LocalStore(backup_dir) if backup_dir is not None else None
 
     @bp.before_request
     def _auth():
@@ -366,5 +387,78 @@ def create_worker_blueprint(project_root: Path, python_exe: str,
         finally:
             Path(tmp).unlink(missing_ok=True)
         return jsonify({"status": "ok", "bbox": bbox})
+
+    # ── Backups ──────────────────────────────────────────────────
+    def _store_error(exc: Exception, code: int = 400):
+        return jsonify({"status": "error", "message": str(exc)}), code
+
+    @bp.get("/backup/snapshots")
+    def backup_snapshots():
+        if store is None:
+            return _store_error("Backups are not enabled on this worker", 404)
+        try:
+            return jsonify({"snapshots": store.list_snapshots(), "stats": store.stats()})
+        except (StoreError, ValueError, OSError) as exc:
+            return _store_error(exc, 500)
+
+    @bp.get("/backup/snapshots/<snapshot_id>")
+    def backup_manifest(snapshot_id):
+        if store is None:
+            return _store_error("Backups are not enabled on this worker", 404)
+        if not SNAPSHOT_ID_RE.match(snapshot_id):
+            return _store_error("Bad snapshot id")
+        path = store.root / "snapshots" / f"{snapshot_id}.json.gz"
+        if not path.is_file():
+            return _store_error(f"No snapshot {snapshot_id}", 404)
+        return send_file(str(path), mimetype="application/gzip")
+
+    @bp.put("/backup/snapshots/<snapshot_id>")
+    def backup_put_manifest(snapshot_id):
+        if store is None:
+            return _store_error("Backups are not enabled on this worker", 404)
+        try:
+            manifest = decode_manifest(request.get_data(cache=False))
+            if manifest["id"] != snapshot_id:
+                return _store_error("Snapshot id doesn't match the manifest")
+            store.put_manifest(manifest)
+        except StoreError as exc:
+            return _store_error(exc, 409)
+        except (ValueError, OSError) as exc:
+            return _store_error(exc)
+        return jsonify({"status": "ok"})
+
+    @bp.post("/backup/blobs/missing")
+    def backup_missing():
+        if store is None:
+            return _store_error("Backups are not enabled on this worker", 404)
+        hashes = (request.get_json(silent=True) or {}).get("hashes")
+        if not isinstance(hashes, list) or len(hashes) > _MAX_BACKUP_HASHES:
+            return _store_error(f"Send at most {_MAX_BACKUP_HASHES} hashes")
+        try:
+            return jsonify({"missing": store.missing([str(h) for h in hashes])})
+        except StoreError as exc:
+            return _store_error(exc)
+
+    @bp.put("/backup/blobs/<sha>")
+    def backup_put_blob(sha):
+        if store is None:
+            return _store_error("Backups are not enabled on this worker", 404)
+        try:
+            size = store.put_blob(sha, request.stream, _MAX_BACKUP_BLOB_BYTES)
+        except StoreError as exc:
+            return _store_error(exc)
+        return jsonify({"status": "ok", "size": size})
+
+    @bp.post("/backup/prune")
+    def backup_prune():
+        if store is None:
+            return _store_error("Backups are not enabled on this worker", 404)
+        keep_days = (request.get_json(silent=True) or {}).get("keep_days")
+        if not isinstance(keep_days, (int, float)) or keep_days < 0:
+            return _store_error("keep_days must be a number of days, 0 or more")
+        try:
+            return jsonify(store.prune(float(keep_days)))
+        except (StoreError, ValueError, OSError) as exc:
+            return _store_error(exc, 500)
 
     return bp, jobs

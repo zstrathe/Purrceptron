@@ -43,6 +43,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils import PROJECT_ROOT, get_config_with_args, load_config, resolve_path, add_common_args, get_cat_colors_bgr
 from utils.display import print_info, print_error, print_success, print_warning
+from utils.runtime_paths import PREVIEW_DETECTIONS_JSON, PREVIEW_JPG, runtime_dir
 
 # Hailo imports — only available on the Raspberry Pi
 try:
@@ -71,12 +72,12 @@ class PreviewFrameWriter:
     the dashboard from reading a partially-written file.
     """
 
-    def __init__(self, preview_path: str, preview_fps: int,
+    def __init__(self, preview_path: str, detections_path: str, preview_fps: int,
                  preview_width: int, preview_height: int,
                  jpeg_quality: int):
         self.preview_path = preview_path
         self.tmp_path = preview_path + ".tmp"
-        self.detections_path = preview_path.replace(".jpg", "_detections.json")
+        self.detections_path = detections_path
         self.target_interval = 1.0 / preview_fps
         self.preview_size = (preview_width, preview_height)
         self.jpeg_quality = jpeg_quality
@@ -1054,10 +1055,13 @@ def main():
 
     # Setup preview writer
     if args.enable_preview:
-        preview_path = deploy_cfg.get("preview_path", "/tmp/cat_detection_preview.jpg")
+        # In RAM (utils/runtime_paths.py): rewritten preview_fps times a second
+        runtime_dir()
+        preview_path = str(PREVIEW_JPG)
         preview_fps = deploy_cfg.get("preview_fps", 10)
         user_data.preview_writer = PreviewFrameWriter(
             preview_path=preview_path,
+            detections_path=str(PREVIEW_DETECTIONS_JSON),
             preview_fps=preview_fps,
             preview_width=web_cfg.get("preview_width", 960),
             preview_height=web_cfg.get("preview_height", 540),

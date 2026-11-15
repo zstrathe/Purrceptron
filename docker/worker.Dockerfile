@@ -23,4 +23,5 @@ RUN python -m pip install -r /tmp/requirements-training.txt \
 
 WORKDIR /app
 EXPOSE 5004
-CMD ["python", "train_worker.py", "--host", "0.0.0.0", "--port", "5004", "--jobs-dir", "/jobs"]
+CMD ["python", "train_worker.py", "--host", "0.0.0.0", "--port", "5004", "--jobs-dir", "/jobs", \
+     "--backup-dir", "/backups"]

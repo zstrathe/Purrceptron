@@ -19,7 +19,9 @@ from __future__ import annotations
 import argparse
 import collections
 import json
+import logging
 import os
+import re
 import signal
 import sqlite3
 import subprocess
@@ -43,9 +45,13 @@ from utils.display import print_info, print_success, print_error, print_warning,
 from collect.label_review import LabelReviewApp
 from remote_training import settings as training_settings
 from remote_training.backends import BackendError
+from remote_training.backup.destinations import BackupError
+from remote_training.backup.manager import BackupManager
+from remote_training.bundle import _low_priority_prefix
 from remote_training.manager import TrainingJobManager
 from utils import sidecars
 from utils.secrets import SecretsStore
+from utils.runtime_paths import CLASSIFIER_STATUS_JSON, PREVIEW_DETECTIONS_JSON, PREVIEW_JPG
 
 import yaml
 
@@ -151,7 +157,7 @@ def _auto_capture_loop(state: AutoCaptureState, pipeline_mgr: 'DetectionPipeline
 class DetectionPipelineManager:
     """Manages the always-running detect.py subprocess in default/COCO mode."""
 
-    PREVIEW_PATH = "/tmp/cat_detection_preview.jpg"
+    PREVIEW_PATH = PREVIEW_JPG          # written by detect.py, in RAM
 
     def __init__(self, project_root: Path, config_path: Path | None = None,
                  hailo_apps_dir: Path | None = None):
@@ -238,6 +244,7 @@ class DetectionPipelineManager:
         # Open a log file for full output persistence
         self._close_log_file()
         self._log_dir.mkdir(parents=True, exist_ok=True)
+        self._prune_old_logs()
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         self._log_file = open(self._log_dir / f"default_{ts}.log", "w")
 
@@ -339,6 +346,21 @@ class DetectionPipelineManager:
             except Exception:
                 pass
         self._log_file = None
+
+    def _prune_old_logs(self) -> None:
+        """Delete detection logs older than logging.keep_days (default 90;
+        0 keeps them all). A new log starts with every pipeline start, so
+        without this they would pile up forever."""
+        keep_days = ((self._config or {}).get("logging") or {}).get("keep_days", 90)
+        if not keep_days or keep_days <= 0:
+            return
+        cutoff = time.time() - keep_days * 86400
+        for f in self._log_dir.glob("*.log"):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except OSError:
+                pass
 
     def get_log_files(self) -> list[dict]:
         """List available log files, newest first."""
@@ -525,6 +547,15 @@ class ConfigManager:
             with open(self.runtime_path, "w") as f:
                 yaml.dump(runtime, f, default_flow_style=False, sort_keys=False)
 
+    def update_backup(self, block: dict) -> None:
+        """Save the complete backup settings block to runtime.yaml."""
+        with self._lock:
+            runtime = self._read_runtime()
+            runtime["backup"] = block
+            self.runtime_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.runtime_path, "w") as f:
+                yaml.dump(runtime, f, default_flow_style=False, sort_keys=False)
+
     def update_training_settings(self, values: dict) -> None:
         """Save classifier training settings (already validated by
         remote_training.settings.parse) to runtime.yaml. classifier_training
@@ -545,6 +576,21 @@ class ConfigManager:
 # Flask application factory
 # ═══════════════════════════════════════════════════════════════════════════
 
+# Endpoints the dashboard page polls continuously (preview every 67 ms, the
+# rest every 0.2-30 s). Logging every successful poll would add a line to
+# logs/pi_dashboard.out many times a second; errors and all other requests
+# are still logged.
+_QUIET_POLL_RE = re.compile(
+    r'"(?:\x1b\[[0-9;]*m)*GET /api/(?:preview|detections|status|classifier/current|'
+    r'classifier/events|training/status|backup/status)(?:\?\S*)? HTTP/[0-9.]+(?:\x1b\[[0-9;]*m)*" '
+    r'(?:200|204|304) ')
+
+
+class _QuietPollingFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not _QUIET_POLL_RE.search(record.getMessage())
+
+
 def create_app(
     reviewer: LabelReviewApp,
     pipeline_mgr: DetectionPipelineManager,
@@ -554,9 +600,11 @@ def create_app(
     min_images: int,
     training_mgr: TrainingJobManager,
     secrets: SecretsStore,
+    backup_mgr: BackupManager,
 ) -> Flask:
     template_dir = Path(__file__).resolve().parent / "templates"
     flask_app = Flask(__name__, template_folder=str(template_dir))
+    logging.getLogger("werkzeug").addFilter(_QuietPollingFilter())
 
     # ── Page ──────────────────────────────────────────────────────
     @flask_app.route("/")
@@ -594,7 +642,7 @@ def create_app(
     @flask_app.route("/api/detections")
     def api_detections():
         """Return current detection labels from the sidecar JSON."""
-        det_path = DetectionPipelineManager.PREVIEW_PATH.replace(".jpg", "_detections.json")
+        det_path = PREVIEW_DETECTIONS_JSON
         try:
             with open(det_path) as f:
                 return Response(f.read(), mimetype="application/json",
@@ -828,7 +876,7 @@ def create_app(
     @flask_app.route("/api/classifier/current")
     def api_classifier_current():
         """Return live classifier status from the status file."""
-        status_path = Path("/tmp/cat_classifier_status.json")
+        status_path = CLASSIFIER_STATUS_JSON
         if not status_path.is_file():
             return jsonify({"prediction": None})
         try:
@@ -864,6 +912,46 @@ def create_app(
         except ValueError:
             return "Forbidden", 403
         return send_file(str(log_path), mimetype="text/plain")
+
+    # ── Backups ────────────────────────────────────────────────────
+    @flask_app.route("/api/backup/config", methods=["GET"])
+    def api_backup_config_get():
+        return jsonify(backup_mgr.describe())
+
+    @flask_app.route("/api/backup/config", methods=["POST"])
+    def api_backup_config_post():
+        try:
+            return jsonify({"status": "ok", **backup_mgr.save(request.get_json() or {})})
+        except BackupError as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 400
+
+    @flask_app.route("/api/backup/test", methods=["POST"])
+    def api_backup_test():
+        """Test the settings currently in the form (saved or not)."""
+        try:
+            return jsonify(backup_mgr.test(request.get_json() or {}))
+        except BackupError as exc:
+            return jsonify({"ok": False, "message": str(exc)})
+        except Exception as exc:
+            return jsonify({"ok": False, "message": f"{type(exc).__name__}: {exc}"})
+
+    @flask_app.route("/api/backup/run", methods=["POST"])
+    def api_backup_run():
+        res = backup_mgr.run_now()
+        return jsonify(res), (200 if res.get("status") == "ok" else 409)
+
+    @flask_app.route("/api/backup/status")
+    def api_backup_status():
+        return jsonify(backup_mgr.status())
+
+    @flask_app.route("/api/backup/snapshots")
+    def api_backup_snapshots():
+        try:
+            return jsonify({"status": "ok", "snapshots": backup_mgr.snapshots()})
+        except BackupError as exc:
+            return jsonify({"status": "error", "message": str(exc)})
+        except Exception as exc:
+            return jsonify({"status": "error", "message": f"{type(exc).__name__}: {exc}"})
 
     # ── Training (remote backends) ─────────────────────────────────
     @flask_app.route("/api/training/config", methods=["GET"])
@@ -1161,6 +1249,10 @@ def main() -> None:
 
     training_mgr = TrainingJobManager(PROJECT_ROOT, yaml_path, config_mgr.read, secrets,
                                       on_model_installed=_on_model_installed)
+    backup_mgr = BackupManager(PROJECT_ROOT, yaml_path, config_mgr.read,
+                               config_mgr.update_backup, secrets, sys.executable,
+                               command_prefix=_low_priority_prefix)
+    backup_mgr.start()
 
     # Auto-capture state + timer
     auto_interval = collection_cfg.get("auto_capture_interval_sec", 3.0)
@@ -1212,6 +1304,7 @@ def main() -> None:
         min_images=min_images,
         training_mgr=training_mgr,
         secrets=secrets,
+        backup_mgr=backup_mgr,
     )
     flask_app.run(host=host, port=port, threaded=True, use_reloader=False)
 

@@ -28,7 +28,6 @@ deployment:
   hw_arch: hailo10h
   track_all: true
   filter_classes: []
-  preview_path: /tmp/cat_detection_preview.jpg
   preview_fps: 15
 feeding:
   enabled: false
@@ -111,3 +110,16 @@ training_backend:
     timeout: 2h
     image: ''                # blank: pytorch/pytorch image matching the Pi's torch
     bucket: ''               # blank: <namespace>/cat-training
+# Nightly backups (Backup tab). The tab saves changes to configs/runtime.yaml.
+backup:
+  destination: "off"         # off | local_pc | hf
+  time: "03:00"              # local time
+  keep_days: 30              # snapshots older than this are deleted (newest always kept)
+  local_pc:                  # blank: the Training tab's local_pc address
+    host: ''
+    port: ''
+  hf:                        # blank: the token's user, bucket <namespace>/cat-backups
+    namespace: ''
+    bucket: ''
+logging:
+  keep_days: 90              # detection logs (logs/detection/) older than this are deleted; 0 keeps all

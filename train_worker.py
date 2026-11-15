@@ -29,7 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from flask import Flask
 
 from remote_training.worker import (
-    NO_EXECUTORCH, create_worker_blueprint, default_jobs_dir, load_worker_token, prune_jobs,
+    NO_EXECUTORCH, create_worker_blueprint, default_backup_dir, default_jobs_dir,
+    load_worker_token, prune_jobs,
 )
 from utils import PROJECT_ROOT
 from utils.display import print_error, print_info, print_success, print_warning
@@ -43,11 +44,14 @@ def main() -> None:
                         help="Where job folders go (default: data/worker_jobs, or "
                              "~/.local/share/cat_detection/worker_jobs for a project "
                              "on a Windows drive under WSL)")
+    parser.add_argument("--backup-dir", type=Path, default=None,
+                        help="Where the Pi's backups are kept (default: data/backups)")
     parser.add_argument("--keep-jobs", type=int, default=10,
                         help="Keep this many recent job folders, delete older ones at "
                              "startup (0 = keep all; default 10)")
     args = parser.parse_args()
     jobs_dir = (args.jobs_dir or default_jobs_dir(PROJECT_ROOT)).expanduser().resolve()
+    backup_dir = (args.backup_dir or default_backup_dir(PROJECT_ROOT)).expanduser().resolve()
 
     if not load_worker_token(PROJECT_ROOT):
         print_error("WORKER_TOKEN is not set. Add a line WORKER_TOKEN=<any long random "
@@ -56,7 +60,8 @@ def main() -> None:
         sys.exit(1)
 
     app = Flask(__name__)
-    worker_bp, jobs = create_worker_blueprint(PROJECT_ROOT, sys.executable, jobs_dir)
+    worker_bp, jobs = create_worker_blueprint(PROJECT_ROOT, sys.executable, jobs_dir,
+                                              backup_dir)
     app.register_blueprint(worker_bp)
 
     health = jobs.health()
@@ -69,6 +74,7 @@ def main() -> None:
     gpu = health.get("gpu")
     print_info(f"Python: {sys.executable}")
     print_info(f"Jobs folder: {jobs_dir}")
+    print_info(f"Backup folder: {backup_dir}")
     removed = prune_jobs(jobs_dir, args.keep_jobs)
     if removed:
         print_info(f"Deleted {len(removed)} old job folder(s), keeping the {args.keep_jobs} newest")

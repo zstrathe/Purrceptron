@@ -27,6 +27,8 @@ from queue import Empty
 
 import numpy as np
 
+from utils.runtime_paths import CLASSIFIER_STATUS_JSON
+
 
 # ── ImageNet normalisation constants ────────────────────────────────────────
 _IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
@@ -217,12 +219,14 @@ class FeedingEventLogger:
 # Classifier Worker (multiprocessing target)
 # ═══════════════════════════════════════════════════════════════════════════
 
-STATUS_PATH = Path("/tmp/cat_classifier_status.json")
+# In RAM (utils/runtime_paths.py): rewritten for every classified crop.
+STATUS_PATH = CLASSIFIER_STATUS_JSON
 
 
 def _write_status(status: dict) -> None:
     """Atomically write classifier status JSON for the dashboard and detect.py."""
     try:
+        STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
         tmp = STATUS_PATH.with_name(STATUS_PATH.name + ".tmp")
         tmp.write_text(json.dumps(status))
         os.replace(str(tmp), str(STATUS_PATH))

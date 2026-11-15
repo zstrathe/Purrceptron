@@ -144,6 +144,34 @@ Cost: Hailo's toolchain, a second HEF to deploy, and changes to the GStreamer
 pipeline. Worth doing only after items 2 and 4 have shown that the model, not the
 data, is the limit.
 
+Measured on the Pi 5 on 2026-11-15 (HailoRT 5.1.1, `hailortcli run2`, stock Model Zoo
+HEFs), the NPU has room for it:
+
+| Test | Result |
+| --- | --- |
+| yolov8m alone, as fast as possible | 78 fps |
+| Stock `mobilenet_v2_1.0` HEF, one crop | 2.9 ms (ExecuTorch on one CPU core: about 10 ms) |
+| yolov8m at 30 fps + MobileNetV2 at 5 crops/s | detector stays at 29.8 fps |
+| yolov8m at 30 fps + MobileNetV2 as fast as possible | detector 29.8 fps, classifier 1,313 crops/s |
+| CPU used by HailoRT during these runs | about 3% of one core |
+
+So the 2026-03 concern that two networks on the Hailo would choke the CPU does not
+hold for the inference itself. The toolchain is the real cost:
+
+- The Dataflow Compiler is proprietary, needs a Hailo Developer Zone account, and
+  must match the Pi's HailoRT version (5.1.1 from the Raspberry Pi apt repo).
+- Hailo does not support its GPU optimization under WSL2, where the training
+  worker runs; without a GPU it falls back to its lowest optimization level.
+- Its license allows internal use only, so putting it in the Hugging Face job image
+  is a grey area.
+- Hailo always quantizes from the float model, so the PT2E quantization-aware
+  training is not reused.
+- The energy check needs 16-bit logit outputs, and a threshold re-fit on HEF
+  outputs.
+
+At one crop per second the CPU path costs about 1% of a core, so this only pays off
+for a much larger model or for classifying every frame.
+
 ### 6. Smaller inference-side changes
 
 - Weight each vote by how far its energy is below the threshold, so confident
@@ -176,3 +204,47 @@ Whatever is tried, two measurements are missing today and should come first:
 3. Letterbox + `input_size` 288 or 320 (small code change, measure Pi latency).
 4. Metric-learning head (larger change, only if 1 to 3 are not enough).
 5. NPU offload (largest change, only if the model size is the limit).
+
+# Future work: CLIP on the Hailo
+
+hailo-apps ships a precompiled CLIP ViT-B/32 image encoder for the Hailo-10H
+(`/usr/local/hailo/resources/models/hailo10h/clip_vit_b_32_image_encoder.hef`). It
+turns a 224x224 crop into a 512-number embedding, and needs no Hailo compiler on our
+side. It was considered on 2026-11-15 and left out for now, to keep the processing
+load down. None of it is implemented.
+
+Measured on the Pi 5 (HailoRT 5.1.1, `hailortcli run2`):
+
+| Test | Result |
+| --- | --- |
+| CLIP image encoder, one crop | 14.7 ms |
+| yolov8m at 30 fps + CLIP at 5 crops/s | detector stays at 29.8 fps, CLIP 4.9 crops/s |
+| Model size on the chip | 15 contexts (swapped in and out per inference) |
+
+A forum user on HailoRT 5.3.0 saw a YOLO detector's latency rise about 1.6x while
+sharing the chip with CLIP running continuously, so CLIP on every frame is not
+affordable. A few crops per visit is.
+
+## Uses, roughly in order of value
+
+1. **Reject false detections.** After the detector reports a cat, compare the crop's
+   embedding with text prompts ("a photo of a cat" against "a dog", "a blanket",
+   "an empty bowl") and drop poor matches. This is hailo-apps' `clip` pipeline
+   (detection, crop, CLIP). Worth it only if false detections get past the bowl ROI
+   and stability checks often enough to matter; count them in the trashed captures
+   first.
+2. **Labeling help** (no live-pipeline cost). Embed all captures to group
+   near-duplicates in the Annotate tab, pre-suggest which cat a crop is, and search
+   captures by text ("Cat1 at night").
+3. **Bowl state and behaviour** without bounding boxes: classify the bowl ROI as "a cat
+   eating from a bowl" against "a cat sitting next to a bowl", or "an empty bowl"
+   against "a bowl of food". Untested on this camera.
+4. **Animals COCO lacks** (raccoon, opossum, fox), flagged from text prompts alone,
+   if the bowl is somewhere they can reach.
+5. **Stage 2 replacement.** Keep CLIP frozen and train only a small classifier on the
+   embeddings: seconds to train, and a new cat needs photos but no retraining job.
+   CLIP was never trained to tell individual cats apart, so it may lose to the
+   fine-tuned MobileNetV2 (99.3% in 5-fold cross-validation on 2026-11-15, Cat1
+   99.0%). Test it on the PC first: float CLIP ViT-B/32 embeddings plus logistic
+   regression on the same folds. Only if it is close, repeat with embeddings from the
+   Hailo, since its 8-bit encoder gives slightly different numbers.

@@ -50,8 +50,86 @@ deactivate 2>/dev/null || true
 PROJECT_ROOT="$SAVE_PROJECT_ROOT"
 cd "$PROJECT_ROOT"
 
+# ── Fewer SD card writes ───────────────────────────────────────────────
+# SD cards wear out from writes. The app keeps its frequently rewritten files
+# in RAM (/dev/shm); these system settings cover swap, logs and /tmp. Each
+# file is only written when its content changes, so re-running is safe.
+write_if_changed() {    # write_if_changed PATH CONTENT -> 0 if written, 1 if unchanged
+    local path="$1" content="$2"
+    if sudo test -f "$path" && [ "$(sudo cat "$path")" = "$content" ]; then
+        return 1
+    fi
+    sudo mkdir -p "$(dirname "$path")"
+    printf '%s\n' "$content" | sudo tee "$path" > /dev/null
+    return 0
+}
+NEED_REBOOT=0
+
+# Swap: Raspberry Pi OS (trixie) defaults to compressed RAM swap plus a swap
+# file on the card that idle memory is written out to. Keep only the RAM part.
+if dpkg -s rpi-swap >/dev/null 2>&1; then
+    if write_if_changed /etc/rpi/swap.conf.d/80-cat-detection.conf \
+"# cat-detection: compressed RAM swap only, no swap file on the SD card
+[Main]
+Mechanism=zram"; then
+        echo "[INFO] Swap set to RAM only (zram); takes effect after a reboot"
+        NEED_REBOOT=1
+    else
+        echo "[OK] Swap already set to RAM only (zram)"
+    fi
+    # Remove the old swap file once nothing uses it: not active swap, and not
+    # the backing file of a zram device (the zram+file mode).
+    if [ -f /var/swap ] && ! grep -q "^/var/swap " /proc/swaps \
+            && ! grep -qs "/var/swap" /sys/block/zram*/backing_dev; then
+        sudo rm -f /var/swap
+        echo "[INFO] Removed the unused swap file /var/swap"
+    fi
+else
+    echo "[WARN] rpi-swap is not installed; check swap with: swapon --show"
+fi
+
+# System journal: kept across reboots for reference, capped at 200 MB.
+if write_if_changed /etc/systemd/journald.conf.d/80-cat-detection.conf \
+"# cat-detection: keep system logs across reboots, capped
+[Journal]
+Storage=persistent
+SystemMaxUse=200M"; then
+    sudo systemctl restart systemd-journald
+    echo "[INFO] System journal: persistent, at most 200 MB"
+else
+    echo "[OK] System journal already persistent, at most 200 MB"
+fi
+
+# /tmp should be a RAM disk (trixie's default).
+if [ "$(findmnt -n -o FSTYPE /tmp 2>/dev/null)" = "tmpfs" ]; then
+    echo "[OK] /tmp is in RAM (tmpfs)"
+else
+    echo "[WARN] /tmp is on the SD card. Enable the RAM disk with:"
+    echo "       sudo systemctl enable tmp.mount && sudo reboot"
+fi
+
+# Dashboard output log (when started with: ... > logs/pi_dashboard.out):
+# rotated at 10 MB, 5 compressed copies kept. copytruncate lets the running
+# dashboard keep writing to the same open file.
+if write_if_changed /etc/logrotate.d/cat-detection \
+"$PROJECT_ROOT/logs/pi_dashboard.out {
+    su $(id -un) $(id -gn)
+    size 10M
+    rotate 5
+    compress
+    copytruncate
+    missingok
+    notifempty
+}"; then
+    echo "[INFO] Installed log rotation for logs/pi_dashboard.out"
+else
+    echo "[OK] Log rotation for logs/pi_dashboard.out already installed"
+fi
+sudo logrotate --debug /etc/logrotate.d/cat-detection > /dev/null 2>&1 \
+    || echo "[WARN] logrotate rejected /etc/logrotate.d/cat-detection; check it with: sudo logrotate --debug /etc/logrotate.d/cat-detection"
+
 echo "[INFO] Creating data directories..."
-mkdir -p data/raw data/trash data/export models
+mkdir -p data/raw data/trash data/export models logs
 
 echo "[INFO] Testing camera..."
 python3 -c "
@@ -80,3 +158,8 @@ echo "  source hailo-apps/setup_env.sh"
 echo "  python pi_dashboard.py"
 echo ""
 echo "Use --no-camera for review-only mode without the detection pipeline."
+if [ "$NEED_REBOOT" = 1 ]; then
+    echo ""
+    echo "[INFO] Reboot once to apply the swap setting: sudo reboot"
+    echo "       Then run this script again to remove the old swap file."
+fi

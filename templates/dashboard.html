@@ -206,7 +206,7 @@
   .tracked-total { display: flex; justify-content: space-between; padding: 3px 0; font-size: 13px; }
 
   /* ── Training tab ── */
-  body[data-tab="training"] .sidebar { display: none; }
+  body[data-tab="training"] .sidebar, body[data-tab="backup"] .sidebar { display: none; }
   .tr-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
   @media (max-width: 900px) { .tr-grid { grid-template-columns: 1fr; } }
   .tr-grid .card h3 {
@@ -296,6 +296,7 @@
       <button class="tab-btn" data-tab="review" onclick="switchTab('review')">Review</button>
       <button class="tab-btn" data-tab="annotate" onclick="switchTab('annotate')">Annotate<span class="badge attn" id="badge-annotate"></span></button>
       <button class="tab-btn" data-tab="training" onclick="switchTab('training')">Training</button>
+      <button class="tab-btn" data-tab="backup" onclick="switchTab('backup')">Backup</button>
     </nav>
     <div class="top-counts" id="top-counts"></div>
   </div>
@@ -594,6 +595,55 @@
       </div>
     </div>
 
+    <!-- ════ BACKUP TAB ════ -->
+    <div class="tab-content" id="tab-backup">
+      <div class="tr-grid">
+        <div class="card" id="bk-setup">
+          <h3>Backup</h3>
+          <div class="tr-desc">Each run saves a snapshot: a complete copy of the Pi's captures,
+            labels, bounding boxes, models, configs, logs and the classifier database as they
+            were at that moment. Files that didn't change are stored only once. Snapshots older
+            than the number of days below are deleted; the newest is always kept.</div>
+          <div class="inference-row">
+            <label for="bk-dest">Back up to:</label>
+            <select id="bk-dest" onchange="renderBackupForm()"></select>
+          </div>
+          <div class="tr-desc" id="bk-desc"></div>
+          <div id="bk-fields"></div>
+          <div class="inference-row">
+            <label for="bk-time" title="Local time. If the Pi or the destination is off then, the backup runs as soon as it can, retrying hourly.">Every night at:</label>
+            <input type="time" id="bk-time">
+          </div>
+          <div class="inference-row">
+            <label for="bk-keep">Keep snapshots (days):</label>
+            <input type="number" id="bk-keep" min="1" max="3650" step="1">
+          </div>
+          <div class="actionrow" style="margin-top:12px">
+            <button class="btn btn-sm btn-primary" onclick="saveBackupConfig()">Save</button>
+            <button class="btn btn-sm" id="bk-test-btn" onclick="testBackupConnection()">Test connection</button>
+          </div>
+          <div class="tr-result" id="bk-test-result"></div>
+        </div>
+
+        <div class="card" id="bk-run">
+          <h3>Status</h3>
+          <table class="tr-metrics tr-jobs" id="bk-status"></table>
+          <div class="actionrow">
+            <button class="btn btn-sm btn-primary" id="bk-now-btn" onclick="backupNow()">Back up now</button>
+          </div>
+          <div class="tr-result" id="bk-run-result"></div>
+          <div class="tr-log" id="bk-log" style="height:180px; margin-top:10px"></div>
+        </div>
+
+        <div class="card" id="bk-snapshots-card">
+          <h3>Snapshots</h3>
+          <div class="hint" style="margin-bottom:8px">To restore one, run <span class="mono">scripts/restore_backup.py</span>
+            on the PC (see the README). It restores into a new folder and never overwrites anything.</div>
+          <table class="tr-metrics tr-jobs" id="bk-snapshots"></table>
+        </div>
+      </div>
+    </div>
+
     <!-- ════ REVIEW TAB ════ -->
     <div class="tab-content" id="tab-review">
       <div class="workspace" id="review-workspace">
@@ -760,6 +810,7 @@ function switchTab(tab) {
   }
 
   if (tab === 'training') loadTrainingTab();
+  if (tab === 'backup') loadBackupTab();
   if (tab === 'annotate') loadAnnotateTab();
 
   // Load thumbnails + rescan when entering review
@@ -2877,6 +2928,112 @@ document.querySelectorAll('#ann-status-seg button').forEach(b => b.addEventListe
 })();
 
 
+// ── Backup tab ──────────────────────────────────────────────────
+let bkCfg = null;
+let bkPollTimer = null;
+async function loadBackupTab() {
+  bkCfg = await trJson('/api/backup/config');
+  if (!bkCfg.destinations) { trShow('bk-test-result', 'err', bkCfg.message || 'Could not load backup settings'); return; }
+  trEl('bk-dest').innerHTML = '<option value="off">Off</option>' + ['local_pc', 'hf']
+    .filter(n => bkCfg.destinations[n]).map(n => bkCfg.destinations[n])
+    .map(d => `<option value="${trEsc(d.name)}">${trEsc(d.label)}</option>`).join('');
+  trEl('bk-dest').value = bkCfg.destination;
+  trEl('bk-time').value = bkCfg.time;
+  trEl('bk-keep').value = bkCfg.keep_days;
+  renderBackupForm();
+  pollBackup();
+  loadBackupSnapshots();
+  if (!bkPollTimer) bkPollTimer = setInterval(() => { if (activeTab === 'backup') pollBackup(); }, 3000);
+}
+function renderBackupForm() {
+  const d = bkCfg && bkCfg.destinations[trEl('bk-dest').value];
+  trEl('bk-desc').textContent = d ? d.description : 'No backups are made.';
+  trEl('bk-fields').innerHTML = d ? d.fields.map(f => {
+    const id = 'bkf-' + f.key;
+    const saved = d.values[f.key];
+    const val = (saved === undefined || saved === null) ? '' : saved;
+    let input;
+    if (f.secret) {
+      input = `<input type="password" id="${id}" autocomplete="new-password" ` +
+              `placeholder="${d.secrets_set[f.key] ? 'saved (type to replace)' : 'not set'}">`;
+    } else {
+      input = `<input type="${f.type === 'number' ? 'number' : 'text'}" id="${id}" ` +
+              `value="${trEsc(val)}" placeholder="${trEsc(f.placeholder)}">`;
+    }
+    return `<div class="inference-row"><label for="${id}">${trEsc(f.label)}:</label>${input}</div>` +
+           (f.help ? `<div class="tr-help">${trEsc(f.help)}</div>` : '');
+  }).join('') : '';
+  trShow('bk-test-result');
+}
+function collectBackupForm() {
+  const name = trEl('bk-dest').value;
+  const d = bkCfg && bkCfg.destinations[name];
+  const values = {};
+  if (d) d.fields.forEach(f => { values[f.key] = trEl('bkf-' + f.key).value; });
+  return {destination: name, time: trEl('bk-time').value, keep_days: trEl('bk-keep').value, values};
+}
+async function saveBackupConfig() {
+  const res = await trPost('/api/backup/config', collectBackupForm());
+  if (res.status !== 'ok') { trShow('bk-test-result', 'err', res.message); return; }
+  bkCfg = res;
+  renderBackupForm();
+  trShow('bk-test-result', 'ok', 'Saved.');
+  pollBackup();
+  loadBackupSnapshots();
+}
+async function testBackupConnection() {
+  const btn = trEl('bk-test-btn');
+  btn.disabled = true;
+  trShow('bk-test-result', 'info', 'Testing...');
+  try {
+    const res = await trPost('/api/backup/test', collectBackupForm());
+    trShow('bk-test-result', res.ok ? 'ok' : 'err', res.message);
+  } finally { btn.disabled = false; }
+}
+async function backupNow() {
+  const res = await trPost('/api/backup/run');
+  trShow('bk-run-result', res.status === 'ok' ? 'info' : 'err',
+         res.status === 'ok' ? 'Backup started.' : res.message);
+  pollBackup();
+}
+function bkTime(iso) { return iso ? new Date(iso).toLocaleString() : '--'; }
+function bkMB(bytes) { return (bytes / 1e6).toFixed(1) + ' MB'; }
+let bkWasRunning = false;
+async function pollBackup() {
+  const st = await trJson('/api/backup/status');
+  if (st.destination === undefined) return;
+  const dest = st.destination === 'off' ? 'Off' :
+    ((bkCfg && bkCfg.destinations[st.destination]) || {label: st.destination}).label;
+  const r = st.last_result;
+  const rows = [
+    ['Destination', trEsc(dest)],
+    ['Now', st.running ? 'Backing up...' : 'Idle'],
+    ['Last success', st.last_success ? bkTime(st.last_success) +
+      (r ? ` (${r.file_count.toLocaleString()} files, ${bkMB(r.total_bytes)}; ${r.uploaded_files.toLocaleString()} new or changed)` : '') : 'never'],
+    ['Next run', st.destination === 'off' ? '--' : (st.next_run === 'now' ? 'now' : bkTime(st.next_run))],
+  ];
+  if (st.last_error && !st.running) rows.push(['Last error', `<span class="down">${trEsc(st.last_error)}</span>`]);
+  trEl('bk-status').innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
+  trEl('bk-now-btn').disabled = st.running || st.destination === 'off';
+  const log = trEl('bk-log');
+  const atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+  log.textContent = (st.log || []).join('\n');
+  if (atEnd) log.scrollTop = log.scrollHeight;
+  if (bkWasRunning && !st.running) loadBackupSnapshots();
+  bkWasRunning = st.running;
+}
+async function loadBackupSnapshots() {
+  const t = trEl('bk-snapshots');
+  const res = await trJson('/api/backup/snapshots');
+  if (res.status !== 'ok') { t.innerHTML = `<tr><td>${trEsc(res.message)}</td></tr>`; return; }
+  const snaps = (res.snapshots || []).slice().reverse();
+  if (!snaps.length) { t.innerHTML = '<tr><td>No snapshots yet.</td></tr>'; return; }
+  const sized = snaps.some(s => s.total_bytes !== undefined);
+  t.innerHTML = '<tr><th>Snapshot</th><th>Taken</th>' + (sized ? '<th>Files</th><th>Size</th>' : '') + '</tr>' +
+    snaps.map(s => `<tr><td class="mono">${trEsc(s.id)}</td><td>${bkTime(s.created)}</td>` +
+      (sized ? `<td>${(s.file_count ?? 0).toLocaleString()}</td><td>${s.total_bytes !== undefined ? bkMB(s.total_bytes) : ''}</td>` : '') +
+      '</tr>').join('');
+}
 </script>
 </body>
 </html>

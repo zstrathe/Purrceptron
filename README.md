@@ -52,6 +52,7 @@ cats only.
 - [Quick start](#quick-start)
 - [Pi dashboard](#pi-dashboard)
 - [Training from the Pi](#training-from-the-pi)
+- [Backups](#backups)
 - [How training works](#how-training-works)
 - [Inference details](#inference-details)
 - [Configuration reference](#configuration-reference)
@@ -145,6 +146,20 @@ flowchart TB
   [Arducam B0205 1080P Day & Night Vision USB Camera](https://www.amazon.com/dp/B0829HZ3Q7)
   (2MP, IR LEDs, automatic IR-cut switching), which lets detection run in the dark.
   Other USB cameras should work.
+
+**SD card wear.** The Pi writes continuously, and an SD card wears out from
+writes (an endurance-rated card failed after about two years). The project keeps
+writes low:
+
+- The live preview frame, its detections and the classifier status, rewritten
+  many times a second, live in RAM (`/dev/shm/cat_detection/`).
+- The dashboard doesn't log its polling requests; `logs/pi_dashboard.out` is
+  rotated at 10 MB, and detection logs older than `logging.keep_days` (90) are
+  deleted. All other logs are kept.
+- Training jobs reuse cached crops and build their bundle in RAM.
+- `scripts/setup_pi.sh` turns off the swap file on the card (compressed RAM swap
+  only), keeps the system journal across reboots but capped at 200 MB, and checks
+  that `/tmp` is in RAM.
 
 **Training side**
 
@@ -327,6 +342,11 @@ training settings, runs cross-validation, and charts each job's loss and accurac
 curves, optionally against an earlier job. See
 [Training from the Pi](#training-from-the-pi).
 
+### Backup tab
+
+Sets up nightly backups of the Pi's data to the PC or Hugging Face, shows the last
+result and the snapshots, and runs a backup on demand. See [Backups](#backups).
+
 ### Sidebar
 
 Shown on the Capture tab: image counts per cat against
@@ -355,7 +375,10 @@ flowchart LR
    kept off the classifier's CPU core. Only images with a bounding-box sidecar
    count. The 224x224 crops, a copy of `train/` and `utils/`, and a manifest (cats,
    `classifier_training` settings, the Pi's torch and ExecuTorch versions) are
-   packed into one tarball, typically a few MB to a few tens of MB.
+   packed into one tarball, typically a few MB to a few tens of MB. Crops are kept
+   in `data/crop_cache/` and reused by later jobs while the image, its bounding box
+   and the padding are unchanged, so only new or edited images are cropped again.
+   The tarball is built in RAM (`/dev/shm`) when it fits and deleted after upload.
 2. **Train (on the backend).** Every backend runs the same `train/run_job.py`
    from the bundle, which runs the bundled `train_classifier.py`. The bundled copy
    writes only inside the job's folder, so a job never overwrites the PC's own
@@ -528,6 +551,55 @@ bash scripts/transfer_model.sh $V/cat_classifier.pte # scp the model to the Pi
 `train_classifier.py --skip-phase N` skips a phase (1 to 3). Skipping phase 3 also
 skips the INT8 export.
 
+## Backups
+
+The Pi dashboard's Backup tab backs up the Pi's data every night, to the PC worker
+(Local PC) or a private Hugging Face Storage Bucket.
+
+**What is backed up:** captures and their bounding box sidecars (`data/raw/`,
+including `unlabeled/`), `data/trash/`, the classifier and feeding databases,
+`models/` (deployed, previous and candidate models), `configs/project.yaml` and
+`runtime.yaml`, `logs/`, and training job records. `configs/secrets.yaml` and `.env`
+are included only for the Local PC, never for the cloud. Thumbnails and the crop
+cache are skipped; they are rebuilt automatically.
+
+**How it works:** each run saves a snapshot, a complete copy of those files as they
+were at that moment. Deleted files are absent from later snapshots but stay in older
+ones until those expire. File contents are stored once by their SHA-256, so files
+that didn't change cost nothing in later snapshots. Snapshots older than the
+retention period (default 30 days) are deleted, the newest is always kept, and
+stored files that no remaining snapshot uses are removed. Databases are copied with
+SQLite's backup API, so the copy is consistent even while the classifier writes.
+Runs happen in a low-priority process off the classifier's CPU core.
+
+**Schedule:** every night at the set time (default 03:00). If the Pi or the
+destination was off then, the backup runs as soon as it can and retries hourly
+until it succeeds. "Back up now" runs one immediately.
+
+**Destinations:**
+
+- **Local PC:** the worker keeps the backups in `data/backups/` in the project on
+  the PC (set `BACKUP_DIR` in `.env` to use another folder; the Docker worker mounts
+  it). Leave the address and token blank to use the Training tab's Local PC
+  settings. `scripts/worker.sh status` shows the number and size of snapshots.
+- **Hugging Face:** a private bucket, `<namespace>/cat-backups` by default. Private
+  storage counts toward your account's quota (100 GB on a free account; the Pi's
+  data is about 1 GB). Leave the token blank to use the Training tab's Hugging Face
+  token.
+
+**Restoring** never touches the live project: `scripts/restore_backup.py` restores
+a snapshot into a new or empty folder, checks every file's SHA-256, and keeps the
+original modification times. Copy what you need back to the Pi from there.
+
+```bash
+# Local PC backups
+python scripts/restore_backup.py --source pc --dir data/backups --list
+python scripts/restore_backup.py --source pc --dir data/backups --dest ~/restored
+# Hugging Face backups (--snapshot ID for an older one; default latest)
+HF_TOKEN=hf_... python scripts/restore_backup.py --source hf --bucket you/cat-backups --dest ~/restored
+rsync -a ~/restored/data/ pi:~/Repos/cat_detection/data/
+```
+
 ## How training works
 
 The classifier is torchvision's MobileNetV2 with ImageNet weights. The
@@ -552,6 +624,11 @@ top. Training requires at least two cats and runs in four phases.
    ranges and the batch-norm statistics are frozen.
 4. INT8 export. The best QAT epoch is converted to INT8 and lowered to an
    ExecuTorch program (`.pte`) that runs on XNNPACK, the CPU backend the Pi uses.
+
+Data loading keeps the GPU busy: the crops are decoded once into memory instead
+of every epoch, eight loader workers (fewer on small machines) apply the
+augmentation, and the unaugmented sets (validation, and QAT training) are kept on
+the GPU and normalized there, with the same values Albumentations produces.
 
 All phases use AdamW with `weight_decay` 0.005, batch size 32, label smoothing 0.1,
 gradient clipping at norm 1.0, and early stopping after `patience` (default 15)
@@ -611,7 +688,7 @@ threshold embedded in it (a
 ImageNet normalization. Crops arrive on a bounded queue and are dropped when the
 CPU falls behind. Each crop gets one forward pass; the energy score and the softmax
 probabilities are both read from its logits, and the energy check runs first so a
-rejected crop never reaches the vote window. The worker's state is written to `/tmp/cat_classifier_status.json`,
+rejected crop never reaches the vote window. The worker's state is written to `/dev/shm/cat_detection/classifier_status.json` (in RAM),
 which the dashboard polls twice a second.
 
 Vote window: a prediction is confirmed when one class holds more than half of
@@ -696,8 +773,7 @@ a key is omitted, it is noted.
 | `deployment.labels_json` | `""` | Label file for a custom HEF (hailo-apps format; see `deploy/coco_labels.json`). |
 | `deployment.track_all` | true | Track every class, not only class 0. |
 | `deployment.tracking_objects` | not in template; code default `[cat]` | Detector labels to keep. Everything else is dropped before the gate. |
-| `deployment.preview_path` | `/tmp/cat_detection_preview.jpg` | Preview frame location. The dashboard reads this exact path, so leave it. |
-| `deployment.preview_fps` | 15 (code fallback 10) | Preview write rate. |
+| `deployment.preview_fps` | 15 (code fallback 10) | Preview write rate. Frames go to `/dev/shm/cat_detection/` (RAM), not the SD card. |
 | `deployment.preview_jpeg_quality` | not in template; code default 70 | Preview JPEG quality. |
 | **Classifier (Stage 2)** | | |
 | `classifier.enabled` | false | Run the identity classifier. |
@@ -759,6 +835,14 @@ a key is omitted, it is noted.
 | `training_backend.hf_jobs.timeout` | `2h` | Job time limit. |
 | `training_backend.hf_jobs.image` | `''` | Docker image; blank picks `pytorch/pytorch` with the Pi's torch version. Jobs install the Pi's ExecuTorch version into it. |
 | `training_backend.hf_jobs.bucket` | `''` | Private bucket for moving files; blank uses `<namespace>/cat-training`. |
+| **Backups** | | Set from the Pi dashboard's Backup tab, which writes `runtime.yaml`. Tokens are kept in `configs/secrets.yaml`. |
+| `backup.destination` | `off` | `off`, `local_pc` or `hf`. |
+| `backup.time` | `03:00` | Local time of the nightly backup. |
+| `backup.keep_days` | 30 | Snapshots older than this are deleted (the newest is always kept). |
+| `backup.local_pc.host` / `port` | `''` | The PC worker; blank uses `training_backend.local_pc`. |
+| `backup.hf.namespace` / `bucket` | `''` | Blank uses the token's user and `<namespace>/cat-backups`. |
+| **Logging** | | |
+| `logging.keep_days` | 90 | Detection logs (`logs/detection/`) older than this are deleted when the pipeline starts. 0 keeps them all. |
 
 Keys in the template that nothing reads: `camera.fps`, `camera.format`,
 `collection.images_per_session`, `collection.capture_interval_ms`,
@@ -781,6 +865,7 @@ Purrceptron/
 │   └── js/chart.umd.min.js         # Chart.js, served locally for the training charts
 ├── configs/
 │   └── project.yaml.example        # Configuration template (copy to project.yaml)
+├── docs/                           # future_work.md (look-alike cats, Hailo, CLIP); frigate.md
 ├── deploy/                         # Runs on the Pi
 │   ├── detect.py                   # hailo-apps GStreamer pipeline, gate, capture, stdin commands
 │   ├── cat_classifier.py           # Classifier worker process: INT8 MobileNetV2, energy check, voting, event log
@@ -797,8 +882,9 @@ Purrceptron/
 │   ├── settings.py                 # Training settings the Training tab edits
 │   ├── metrics.py                  # results.csv to chart data
 │   ├── validate_model.py           # Load-test a returned model with the Pi's ExecuTorch runtime
-│   ├── worker.py                   # Job API served by train_worker.py for the local_pc backend
-│   └── backends/                   # base.py interface, local_pc.py, hf_jobs.py
+│   ├── worker.py                   # Job and backup API served by train_worker.py
+│   ├── backends/                   # base.py interface, local_pc.py, hf_jobs.py
+│   └── backup/                     # Nightly snapshots: format, store, core, destinations, manager
 ├── train/                          # Runs on the training machine
 │   ├── run_job.py                  # Entry point every backend runs from a job bundle
 │   ├── auto_detect.py              # Cat bounding boxes for images without one (Faster R-CNN)
@@ -808,7 +894,8 @@ Purrceptron/
 │   ├── train_classifier.py         # Four-phase MobileNetV2 training and ExecuTorch INT8 export
 │   └── cross_validate.py           # Session-aware stratified k-fold
 ├── scripts/
-│   ├── setup_pi.sh                 # Pi setup: hailo-apps, Python deps, data dirs
+│   ├── setup_pi.sh                 # Pi setup: hailo-apps, Python deps, SD card write settings
+│   ├── restore_backup.py           # Restore a backup snapshot into a new folder
 │   ├── setup_training.sh           # Training venv and GPU check (Linux / WSL2)
 │   ├── windows_port_forward.ps1    # One-time: let the Pi reach a worker inside WSL
 │   ├── worker.sh                   # Start, watch and stop the Docker worker
@@ -822,6 +909,7 @@ Purrceptron/
 │   ├── secrets.py                  # configs/secrets.yaml store for backend tokens
 │   ├── sidecars.py                 # Bounding-box sidecar read/write, edit backup and restore
 │   ├── display.py                  # Colored console output
+│   ├── runtime_paths.py            # Often-rewritten files kept in RAM (/dev/shm)
 │   └── thumbnails.py               # Cached thumbnails for the dashboard's image browsers
 ├── requirements-pi.txt
 ├── requirements-training.txt
@@ -885,8 +973,10 @@ firewall for port 5003, and use the IP address if `.local` names do not resolve.
 - The feeding tracker only works with a custom HEF that outputs the configured cat names.
 - The Pi's ExecuTorch runtime and the training side's ExecuTorch must be the same
   version (pinned in `requirements-training.txt` and `scripts/setup_pi.sh`); Test
-  connection warns when they differ. ExecuTorch 1.6 and later need torch 2.15,
-  whose CUDA build needs a newer NVIDIA driver (CUDA 13.2) than some PCs have.
+  connection warns when they differ. The project stays on ExecuTorch 1.1.0:
+  ExecuTorch 1.6 needs torch 2.15, whose CUDA 13.2/13.4 runtime crashes under WSL2
+  (an open NVIDIA bug, also with current drivers), and in a 5-fold comparison on
+  the same data 1.5.1 and 1.6 gave the same accuracy and training time as 1.1.0.
 - Prepare produces train and validation splits only. There is no held-out test set.
 - Run from the command line, `train_classifier.py` overwrites the local
   `models/cat_classifier.pte` as well as the version's copy.

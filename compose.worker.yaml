@@ -26,6 +26,9 @@ services:
       - .:/app:ro                   # project code and .env
       - worker-jobs:/jobs           # job folders, on Docker's Linux disk (fast)
       - worker-cache:/cache         # downloaded model weights (auto-detect)
+      # The Pi's backups, in a normal folder (default data/backups in the
+      # project) so they are easy to find and copy from Windows too.
+      - ${BACKUP_DIR:-./data/backups}:/backups
 volumes:
   worker-jobs:
   worker-cache:
