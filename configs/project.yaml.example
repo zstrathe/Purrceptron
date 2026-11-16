@@ -106,7 +106,7 @@ training_backend:
     port: 5004
   hf_jobs:                   # Hugging Face Jobs (prepaid credits)
     namespace: ''
-    flavor: t4-small
+    flavor: l4x1              # about 12 min and $0.16 per full training
     timeout: 2h
     image: ''                # blank: pytorch/pytorch image matching the Pi's torch
     bucket: ''               # blank: <namespace>/cat-training

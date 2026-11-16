@@ -420,7 +420,7 @@ Pi dashboard while a job runs resumes watching it. Logs go to
 | Backend | Cost | Where your images go | Setup |
 |---|---|---|---|
 | Local PC | Free | Your network only | `WORKER_TOKEN` in the PC's `.env`; PC reachable from the Pi |
-| Hugging Face Jobs | T4 about $0.40/h, billed per minute from prepaid credits; a typical round is cents | A private HF bucket, deleted after the model is downloaded | HF account with credits; a write token |
+| Hugging Face Jobs | Billed per minute from prepaid credits; a full training is about $0.15 (12 min on the default L4) | A private HF bucket, deleted after the model is downloaded | HF account with credits; a write token |
 
 Pick the backend, fill in its settings, and press **Test connection** on the
 Training tab, then **Save**. Tokens are stored in `configs/secrets.yaml`
@@ -496,7 +496,11 @@ also shown in the worker's terminal as it runs.
    Billing, and create an access token with write permission.
 2. On the Training tab choose Hugging Face Jobs and paste the token. Leave
    Namespace blank to bill your own account, or enter an organization.
-3. Hardware `t4-small` is plenty for MobileNetV2. Docker image blank picks the
+3. Hardware: the default `l4x1` ($0.80/h, 8 CPUs) trained a full model in 12 min
+   for $0.16 (measured 2026-11-15). What limits speed is mostly the CPUs, which
+   prepare the training images: `t4-small` ($0.40/h, 4 CPUs) took 22 min for about
+   the same cost, `t4-medium` 15 min, `a10g-large` 10 min for $0.25, and
+   `a10g-small` (4 CPUs) 19 min for $0.31. Docker image blank picks the
    `pytorch/pytorch` CUDA runtime image with the Pi's torch version, and the job
    installs the Pi's ExecuTorch version into it, so the model loads on the Pi; set
    the image explicitly if Test connection reports that no matching image exists.
@@ -852,7 +856,7 @@ a key is omitted, it is noted.
 | `training_backend.min_images_per_cat` | 30 | Labeled images with bounding boxes each cat needs before a job can start. |
 | `training_backend.local_pc.host` / `port` | `''` / 5004 | Address of the PC running `train_worker.py`. |
 | `training_backend.hf_jobs.namespace` | `''` | HF user or organization that runs and pays for jobs; blank uses the token's user. |
-| `training_backend.hf_jobs.flavor` | `t4-small` | HF Jobs hardware. |
+| `training_backend.hf_jobs.flavor` | `l4x1` | HF Jobs hardware. |
 | `training_backend.hf_jobs.timeout` | `2h` | Job time limit. |
 | `training_backend.hf_jobs.image` | `''` | Docker image; blank picks `pytorch/pytorch` with the Pi's torch version. Jobs install the Pi's ExecuTorch version into it. |
 | `training_backend.hf_jobs.bucket` | `''` | Private bucket for moving files; blank uses `<namespace>/cat-training`. |

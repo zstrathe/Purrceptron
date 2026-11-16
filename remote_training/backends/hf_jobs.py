@@ -76,7 +76,7 @@ class HFJobsBackend(TrainingBackend):
     name = "hf_jobs"
     label = "Hugging Face Jobs"
     description = ("Cloud GPU billed per minute from prepaid HF credits "
-                   "(T4 about $0.40/h). Cropped images are uploaded to a private "
+                   "(a full training is about $0.15). Cropped images are uploaded to a private "
                    "HF bucket and deleted after the model is downloaded.")
     poll_interval = 15.0
 
@@ -89,8 +89,11 @@ class HFJobsBackend(TrainingBackend):
             Field("namespace", "Namespace", placeholder="(your username)",
                   help="User or organization that runs and pays for the job. "
                        "Blank uses the token's user."),
-            Field("flavor", "Hardware", type="select", default="t4-small", options=_FLAVORS,
-                  help="t4-small ($0.40/h) is plenty for MobileNetV2."),
+            Field("flavor", "Hardware", type="select", default="l4x1", options=_FLAVORS,
+                  help="l4x1 ($0.80/h) trains a full model in about 12 min for about "
+                       "$0.16. CPUs matter more than the GPU here: t4-small costs "
+                       "the same per model but takes twice as long, and a10g-small "
+                       "is slow and costs twice as much (both have 4 CPUs)."),
             Field("timeout", "Timeout", default="2h",
                   help="The job is stopped after this long, e.g. 90m or 2h."),
             Field("image", "Docker image", placeholder="(auto: matches the Pi's torch)",
@@ -170,7 +173,14 @@ class HFJobsBackend(TrainingBackend):
                 return CheckResult(False, f"Unknown hardware '{flavor}'. "
                                           f"Available: {', '.join(sorted(hw))}")
             h = hw[flavor]
-            price = f"${h.unit_cost_usd:.2f}/{h.unit_label}" if h.unit_cost_usd else "price n/a"
+            # HF prices per minute (t4-small: $0.006667), which rounds to a
+            # misleading $0.01; show the hourly price like HF's pricing page.
+            if not h.unit_cost_usd:
+                price = "price n/a"
+            elif h.unit_label == "minute":
+                price = f"${h.unit_cost_usd * 60:.2f}/hour"
+            else:
+                price = f"${h.unit_cost_usd:.4f}/{h.unit_label}"
             image = self.resolve_image()
         except BackendError as exc:
             return CheckResult(False, str(exc))
