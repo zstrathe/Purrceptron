@@ -22,9 +22,14 @@ sudo apt-get install -y python3-opencv python3-yaml python3-pip python3-venv
 # Prerequisites: hailort driver + packages must already be installed.
 # See: https://github.com/hailo-ai/hailo-apps#prerequisites
 HAILO_APPS_DIR="$PROJECT_ROOT/hailo-apps"
+# The hailo-apps commit this project runs on, with HailoRT 5.1.1 (hailo-h10-all
+# from the Raspberry Pi apt repository). Newer commits may expect a newer
+# HailoRT; override with HAILO_APPS_COMMIT=<commit> if you upgrade both.
+HAILO_APPS_COMMIT="${HAILO_APPS_COMMIT:-29acd11a8e641b2b61c3df45c95c97a775878e9f}"
 if [ ! -d "$HAILO_APPS_DIR" ]; then
-    echo "[INFO] Installing hailo-apps..."
+    echo "[INFO] Installing hailo-apps (commit ${HAILO_APPS_COMMIT:0:7})..."
     git clone https://github.com/hailo-ai/hailo-apps.git "$HAILO_APPS_DIR"
+    git -C "$HAILO_APPS_DIR" checkout -q "$HAILO_APPS_COMMIT"
     cd "$HAILO_APPS_DIR"
     sudo ./install.sh
     cd "$PROJECT_ROOT"

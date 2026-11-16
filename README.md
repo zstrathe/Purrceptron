@@ -176,8 +176,9 @@ writes low:
   (`sudo apt install hailo-h10-all`) as described in the Raspberry Pi documentation.
   `scripts/setup_pi.sh` does not install the Hailo runtime; it expects it to be there.
 - [hailo-apps](https://github.com/hailo-ai/hailo-apps). `setup_pi.sh` clones it into
-  `hailo-apps/` inside the project and runs its installer. This project was developed
-  against the early-2026 releases.
+  `hailo-apps/` inside the project, checks out the commit this project runs on
+  (29acd11, with HailoRT 5.1.1), and runs its installer. To use a newer hailo-apps
+  with a newer HailoRT, set `HAILO_APPS_COMMIT` when running `setup_pi.sh`.
 - Everything runs in the single Python virtual environment that hailo-apps creates
   (`hailo-apps/venv_hailo_apps`), activated with `source hailo-apps/setup_env.sh`.
   `setup_pi.sh` installs `requirements-pi.txt` (Flask, OpenCV, NumPy, PyTorch, PyYAML)
@@ -598,8 +599,22 @@ python scripts/restore_backup.py --source pc --dir data/backups --list
 python scripts/restore_backup.py --source pc --dir data/backups --dest ~/restored
 # Hugging Face backups (--snapshot ID for an older one; default latest)
 HF_TOKEN=hf_... python scripts/restore_backup.py --source hf --bucket you/cat-backups --dest ~/restored
-rsync -a ~/restored/data/ pi:~/Repos/cat_detection/data/
 ```
+
+**Rebuilding the Pi** (a new SD card): flash 64-bit Raspberry Pi OS with Raspberry
+Pi Imager, using the old hostname and user name, SSH with public-key login (paste
+the training machine's public key) and Wi-Fi. Then, on the training machine:
+
+```bash
+./scripts/restore_pi.sh --from ~/restored     # or a manual copy with repo/, home/, snapshots/
+```
+
+It checks the Pi, updates the OS and installs the Hailo runtime, copies the code
+from this machine and the data, models, logs and Pi-only settings from the backup,
+runs `setup_pi.sh`, reboots when needed, and finally compares every restored file
+with the backup. It never deletes data on the Pi and refuses to mix a backup into
+a Pi that already has new images. `--steps` runs only some steps (see
+`--help`). Tokens aren't in cloud backups; enter them again on the dashboard.
 
 ## How training works
 
@@ -902,6 +917,7 @@ Purrceptron/
 ├── scripts/
 │   ├── setup_pi.sh                 # Pi setup: hailo-apps, Python deps, SD card write settings
 │   ├── restore_backup.py           # Restore a backup snapshot into a new folder
+│   ├── restore_pi.sh               # Rebuild a Pi on a new card from a backup (runs on the PC)
 │   ├── setup_training.sh           # Training venv and GPU check (Linux / WSL2)
 │   ├── windows_port_forward.ps1    # One-time: let the Pi reach a worker inside WSL
 │   ├── worker.sh                   # Start, watch and stop the Docker worker

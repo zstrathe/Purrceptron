@@ -40,12 +40,16 @@ scripts/windows_port_forward.ps1
 scripts/worker.sh
 scripts/transfer_model.sh
 scripts/sync_to_pi.sh
+scripts/restore_pi.sh
 scripts/pull_dataset.sh
 scripts/push_labels_to_pi.py
 
 # Pi-only runtime state (written by dashboard, not synced)
 configs/runtime.yaml
 configs/secrets.yaml
+# The Pi's logs: listed here so the --delete in sync_to_pi.sh can't remove
+# them (the PC has no copy of pi_dashboard.out or its rotated files).
+/logs/
 
 # Log files
 *.log
