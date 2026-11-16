@@ -87,7 +87,7 @@ flowchart TB
         ID --> LOG[("Visit log: cat name,<br/>arrival = first frame at the bowl,<br/>departure = last frame at the bowl")]
         ID --> REFINE
         UNK --> REFINE
-        REFINE["Optional: keep capturing to refine the next model.<br/>Images are saved under the cat's name once the visit<br/>is confirmed; earlier images from the visit are renamed then.<br/>Images taken while crops are rejected<br/>stay unlabeled for review"] --> CAP
+        REFINE["Optional: keep saving training images<br/>to refine the next model.<br/>Images are saved under the cat's name once the visit<br/>is confirmed; earlier images from the visit are renamed then.<br/>Images taken while crops are rejected<br/>stay unlabeled for review"] --> CAP
     end
     CAP --> LABEL["Pi dashboard: label cats (Review tab),<br/>add or fix bounding boxes (Annotate tab;<br/>auto-detect fills in missing ones)"]
     LABEL --> PREP["Pi: crop each bounding box, resize to 224x224,<br/>split train/val by capture session<br/>so near-duplicate frames stay on one side"]
