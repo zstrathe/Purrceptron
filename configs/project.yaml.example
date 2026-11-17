@@ -15,7 +15,7 @@ collection:
   output_dir: data/raw
   images_per_session: 200
   capture_interval_ms: 500
-  auto_capture_interval_sec: 3
+  auto_capture_interval_sec: 3      # seconds between images while a visit is named
   min_images_per_cat: 300
   jpeg_quality: 95
 web_ui:

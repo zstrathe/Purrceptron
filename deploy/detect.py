@@ -144,7 +144,7 @@ class PreviewFrameWriter:
                 with open(det_tmp, "w") as f:
                     json.dump([
                         {"label": d["label"], "confidence": d["confidence"],
-                         "track_id": d.get("track_id")}
+                         "track_id": d.get("track_id"), "in_roi": d.get("in_roi", True)}
                         for d in detections
                     ], f)
                 os.replace(det_tmp, self.detections_path)
@@ -667,6 +667,10 @@ if HAILO_AVAILABLE:
 
         # Write preview frame with bounding boxes (async — non-blocking)
         if frame is not None and needs_preview:
+            # The dashboard uses in_roi to see when a visit starts and ends.
+            for d in frame_detections:
+                d["in_roi"] = _detection_in_roi(d, user_data.bowl_roi, user_data.frame_w,
+                                                user_data.frame_h, user_data.roi_overlap_threshold)
             user_data.preview_writer.enqueue_frame(frame, frame_detections)
 
         # Classifier crop (using shared frame)

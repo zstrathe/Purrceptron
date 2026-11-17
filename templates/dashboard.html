@@ -92,6 +92,18 @@
   #sec-detection .fhint { font-size: 12px; color: var(--muted); margin-top: 8px; }
   .settings-group.sec-flash { animation: sec-flash 1s ease-out; }
   @keyframes sec-flash { from { border-color: var(--info); box-shadow: 0 0 0 3px var(--info-soft); } to { border-color: var(--border); box-shadow: none; } }
+  .visit-names { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+  .visit-names[hidden] { display: none; }
+  .vname {
+    display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px; border-radius: var(--radius);
+    background: color-mix(in srgb, var(--c) 10%, var(--surface)); border: 1px solid color-mix(in srgb, var(--c) 45%, transparent);
+    color: var(--text); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  .vname:hover { background: color-mix(in srgb, var(--c) 22%, var(--surface)); }
+  .vname .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
+  .vname kbd { margin-left: 2px; }
+  .vname[aria-pressed="true"] { background: color-mix(in srgb, var(--c) 30%, var(--surface)); border-color: var(--c); box-shadow: 0 0 0 2px color-mix(in srgb, var(--c) 35%, transparent); }
+  .cap-note { font-size: 12.5px; line-height: 1.5; color: var(--muted); margin: 0 0 4px; }
   .log-tail-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
   .modal.modal-wide { max-width: 760px; }
   .inference-panel h3, .settings-group h4 {
@@ -179,7 +191,7 @@
   #tab-annotate .fileinfo { flex: 1 1 320px; flex-wrap: wrap; row-gap: 4px; }
   #tab-annotate .fileinfo .tag { flex-shrink: 0; }
   #tab-annotate .tag.unchecked { background: var(--warn-soft); color: var(--warn); }
-  .identity-votes { font: 12px var(--font-mono); color: var(--muted); }
+  .identity-votes { font-size: 12.5px; color: var(--muted); }
   .identity-conf { font: 13px var(--font-mono); color: var(--muted); margin-left: auto; }
 
   /* Detector labels, over the top-left corner of the live view */
@@ -424,6 +436,14 @@
           <span class="identity-votes" id="identity-votes" title="Identified from the most recent frames of the {{ w.animal }} in the region of interest"></span>
           <span class="identity-conf" id="identity-conf"></span>
           <button class="btn btn-sm" id="identity-action" hidden onclick="switchTab('training')">Go to Training</button>
+          <!-- Naming the visit: who is in view (before a model can tell, or when it is unsure) -->
+          <span class="visit-names" id="visit-names" hidden role="group" aria-label="Who is this?">
+            {% for i, cat in cats %}
+            <button class="vname" data-cat="{{ cat }}" style="--c: {{ cat_colors[cat] }}" onclick="nameVisit('{{ cat }}')"
+              title="Save images of this visit as {{ cat }} (key {{ i }})"><span class="dot"></span>{{ cat }}<kbd>{{ i }}</kbd></button>
+            {% endfor %}
+            <button class="btn btn-sm" id="visit-stop" hidden onclick="stopVisit()" title="Stop saving images for this visit now">Stop</button>
+          </span>
         </div>
       </div>
 
@@ -469,19 +489,11 @@
             </div>
             <div class="fhint">Off: {{ w.animals }} it couldn't name are saved as Unlabeled.</div>
           </div>
-          <div class="cap-row">
-            <label for="auto-target">Auto-capture</label>
-            <div class="ctl">
-              <button class="btn btn-sm btn-toggle" id="btn-auto" onclick="toggleAutoCapture()">Off</button>
-              <span class="unit">as</span>
-              <select id="auto-target" onchange="setAutoTarget(this.value)">
-                {% for i, cat in cats %}
-                <option value="{{ cat }}">{{ cat }}</option>
-                {% endfor %}
-              </select>
-            </div>
-            <div class="fhint" id="auto-hint"></div>
-          </div>
+          <div class="cap-sub">Naming visits</div>
+          <p class="cap-note">Before a model can tell your {{ w.animals }} apart (or when it is unsure), the live view
+            asks who is in view. Tap the name, or press 1&ndash;{{ cats|length }}: an image is saved under that name every
+            <span id="visit-every">3</span> s, and the visit's Unlabeled images move to it. It stops by itself when the
+            {{ w.animal }} leaves, so nothing is saved under the wrong name later.</p>
           <div class="cap-sub">Images per {{ w.animal }} <span class="faint">(target {{ min_images }})</span></div>
           {% for i, cat in cats %}
           <div class="cat-stat">
@@ -971,7 +983,19 @@ async function pollClassifierIdentity() {
         el.style.display = 'flex';
       };
       confEl.textContent = ''; votesEl.textContent = ''; action.hidden = true;
-      if (lastStatus && lastStatus.pipeline && !lastStatus.pipeline.running) {
+      const v = lastStatus && lastStatus.visit;
+      modelNamesIt = !!(clfEnabled && clf && clf.model_exists && !data.error && data.prediction && data.confirmed);
+      if (v && v.named && lastStatus.pipeline && lastStatus.pipeline.running) {
+        // A person named this visit: that name wins over the model.
+        show(v.named, DET_COLORS[v.named] || DET_DEFAULT_COLOR, false, true);
+        const n = v.saved + v.moved;
+        votesEl.textContent = `named by you · ${n} image${n === 1 ? '' : 's'} saved · ` +
+          (v.in_view ? `stops when the ${W.animal} leaves` : `stopping (no ${W.animal} in view)`);
+      } else if (v && v.in_view && !modelNamesIt && lastStatus.pipeline && lastStatus.pipeline.running) {
+        show(data.prediction && clfEnabled ? `Who is this? The model thinks ${data.prediction}.` : 'Who is this?',
+             cssVar('--info'), false);
+        votesEl.textContent = `Tap the name to save this visit's images under it.`;
+      } else if (lastStatus && lastStatus.pipeline && !lastStatus.pipeline.running) {
         show('Detection is not running.', cssVar('--muted'), true);
       } else if (!clfEnabled) {
         show('Identification is off.', cssVar('--muted'), true);
@@ -1000,6 +1024,7 @@ async function pollClassifierIdentity() {
         show(`Waiting for ${W.an_animal}...`, cssVar('--muted'), true);
       }
     }
+    renderVisit();
   } catch(e) {}
   setTimeout(pollClassifierIdentity, 500);
 }
@@ -1405,7 +1430,7 @@ function renderStatusChips(d) {
       (c.model.val_acc != null ? `, ${trPct(c.model.val_acc)}` : '') + '</span>' : ''));
 
   const saving = document.getElementById('cap-enabled').checked;
-  if (d.capture_mode === 'auto') setChip('chip-saving', 'warn', `Auto-capture on: <b>${trEsc(d.auto_target)}</b>`);
+  if (d.visit && d.visit.named) setChip('chip-saving', 'warn', `Saving this visit as <b>${trEsc(d.visit.named)}</b>`);
   else if (saving) setChip('chip-saving', 'on', 'Saving images automatically');
   else setChip('chip-saving', '', 'Not saving images');
 
@@ -1436,35 +1461,54 @@ function setControlsOpen(open, section, isDefault) {
 if (controlsOpen !== null) setControlsOpen(controlsOpen, null, true);
 
 // ── Auto-Capture ──────────────────────────────────────────
-async function toggleAutoCapture() {
+// ── Naming visits ─────────────────────────────────────────
+async function nameVisit(cat) {
   try {
-    const r = await fetch('/api/mode', {method:'POST'});
+    const r = await fetch('/api/visit/name', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                               body: JSON.stringify({cat})});
     const d = await r.json();
-    updateAutoUI(d.mode, d.auto_target);
-  } catch(e) { toast('Could not switch auto-capture.', true); }
+    if (d.status !== 'ok') { toast(d.message || 'Could not name the visit.', true); return; }
+    if (lastStatus) { lastStatus.visit = d; renderStatusChips(lastStatus); }
+    renderVisit();
+    toast(`Saving this visit as ${cat} until the ${W.animal} leaves.`);
+  } catch(e) { toast('Could not name the visit.', true); }
 }
 
-async function setAutoTarget(cat) {
+async function stopVisit() {
   try {
-    await fetch('/api/auto_target', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({cat})
-    });
-  } catch(e) { console.error(e); }
+    const r = await fetch('/api/visit/stop', {method: 'POST'});
+    const d = await r.json();
+    if (lastStatus) { lastStatus.visit = d; renderStatusChips(lastStatus); }
+    renderVisit();
+  } catch(e) { toast('Could not stop.', true); }
 }
 
-function updateAutoUI(mode, target) {
-  const btn = document.getElementById('btn-auto');
-  const every = lastStatus && lastStatus.auto_interval ? lastStatus.auto_interval : 3;
-  btn.textContent = mode === 'auto' ? 'On' : 'Off';
-  btn.classList.toggle('auto-on', mode === 'auto');
-  btn.setAttribute('aria-pressed', mode === 'auto');
-  document.getElementById('auto-hint').textContent = mode === 'auto'
-    ? `Saving an image every ${every} s as ${target} while ${W.an_animal} is in the region of interest. Turn it off when ${target} leaves.`
-    : `Saves an image every ${every} s under the chosen name while ${W.an_animal} is in the region of interest. For when you know who is there.`;
-  // Sync dropdown
-  const sel = document.getElementById('auto-target');
-  if (sel && target) sel.value = target;
+// The name buttons under the live view: shown while an animal is in view and
+// nothing names it (no model yet, identification off, or the model is unsure),
+// and while a visit is named (the current name stays highlighted; tapping
+// another one corrects it).
+let modelNamesIt = false;           // set by pollClassifierIdentity
+function renderVisit() {
+  const v = lastStatus && lastStatus.visit;
+  const box = document.getElementById('visit-names');
+  const running = lastStatus && lastStatus.pipeline && lastStatus.pipeline.running;
+  const show = !!(running && v && (v.named || (v.in_view && !modelNamesIt)));
+  box.hidden = !show;
+  box.querySelectorAll('.vname').forEach(b => b.setAttribute('aria-pressed', !!(v && v.named === b.dataset.cat)));
+  document.getElementById('visit-stop').hidden = !(v && v.named);
+  if (v && v.interval) document.getElementById('visit-every').textContent = v.interval;
+}
+
+// Say once when a named visit has ended.
+let lastVisitEnd = null;
+function noteVisitEnd(v) {
+  const end = v && v.last ? v.last.ended_at : null;
+  if (lastVisitEnd === null) { lastVisitEnd = end || 0; return; }   // not on page load
+  if (end && end !== lastVisitEnd) {
+    lastVisitEnd = end;
+    const n = v.last.saved + v.last.moved;
+    toast(`Visit ended: ${n} image${n === 1 ? '' : 's'} saved as ${v.last.cat}.`);
+  }
 }
 
 // ── Detection Capture Settings ─────────────────────────────
@@ -1664,11 +1708,9 @@ async function pollStatus() {
       }
     }
 
-    // Auto-capture state
-    if (d.capture_mode !== undefined) {
-      updateAutoUI(d.capture_mode, d.auto_target);
-    }
     renderStatusChips(d);
+    renderVisit();
+    noteVisitEnd(d.visit);
   } catch(e) {}
 }
 
@@ -1678,6 +1720,11 @@ document.addEventListener('keydown', (e) => {
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === 'Escape') { closeLogBrowser(); return; }
 
+  if (activeTab === 'capture') {
+    const n = parseInt(e.key);
+    if (n >= 1 && n <= CATS.length && !document.getElementById('visit-names').hidden) nameVisit(CATS[n - 1]);
+    return;
+  }
   if (activeTab !== 'annotate') return;
   const num = parseInt(e.key);
   if (num >= 1 && num <= CATS.length) { annLabel(CATS[num - 1]); return; }

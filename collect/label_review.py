@@ -506,6 +506,13 @@ class LabelReviewApp:
         return [self._label_by_path(p, label) for p in paths]
 
     @_one_state_save
+    def mark_reviewed_paths(self, paths: list[Path]) -> None:
+        """Mark images as checked without moving them (a person named them)."""
+        for p in paths:
+            if p.exists():
+                self._review_state.mark_reviewed(p)
+
+    @_one_state_save
     def trash_paths(self, paths: list[Path]) -> list[dict]:
         """Move images (and their sidecars) to the trash folder."""
         return [self._delete_by_path(p) for p in paths]

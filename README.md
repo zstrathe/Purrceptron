@@ -230,9 +230,10 @@ cp configs/project.yaml.example configs/project.yaml
 # add it to the Pi, and save the Pi's address in .env for the other scripts.
 # Then open http://<pi-hostname>:5003
 
-# In the browser: turn on "Save images automatically" on the Capture tab, or use
-# Auto-capture to save a chosen cat every few seconds. Aim for 300+ images
-# per cat. On the Label tab, check the cat's name on the images ("Label not checked") and
+# In the browser: while a cat eats, the Capture tab asks "Who is this?"; tap
+# its name (or press 1-3) and images are saved under that name until it leaves.
+# Turn on "Save images automatically" to also keep unnamed visits. Aim for 300+
+# images per cat. On the Label tab, check the cat's name on the images ("Label not checked") and
 # give images without a bounding box one.
 
 # ── Back on the training machine (for the Local PC backend) ─────────────
@@ -311,9 +312,19 @@ Built for watching, with everything you set up one click away.
   "Cat1?" while it is still unsure, "Unknown cat" when the model rejects the crop,
   or "Waiting for a cat...". When detection isn't running, the view
   says so instead of showing the last frame.
+- **"Who is this?"** While a cat is in the region of interest and nothing names it
+  (no model yet, identification off, or the model is unsure), the footer shows a
+  button per cat. Tapping one (or pressing `1` to `9`) names the visit: an image is
+  saved under that name every `collection.auto_capture_interval_sec` seconds
+  (default 3) while a cat is in the region, images saved as Unlabeled earlier in
+  the visit move to that name, and they all count as checked on the Label tab. It
+  stops by itself once no cat has been in the region for 10 seconds, so the name is
+  never left on for the next cat. Tapping another name corrects it (the visit's
+  images move along); Stop ends it early. This is the quickest way to collect
+  labeled images before the first model, without labeling them afterwards.
 - **Three status chips:** Detection (with a Restart button when it has stopped),
   Identification (and which model is deployed), and Saving (whether images are
-  being saved; Auto-capture shows here so it isn't left on by accident). Clicking a
+  being saved, and "Saving this visit as Cat1" while a visit is named). Clicking a
   chip opens its section of the controls.
 - **Today** (sidebar): each cat's time in view and the day's visits from
   `classifier_log.db`. The arrows step through earlier days.
@@ -325,9 +336,7 @@ left it open, and starts closed once a model is deployed):
   cat is in the region of interest, at most one image per cat every N seconds ("Time
   between images"). With cat identification on they are saved under
   the identified cat's name, or as Unlabeled when unsure ("Only identified cats"
-  skips those). **Auto-capture** saves an image under a chosen cat every
-  `collection.auto_capture_interval_sec` seconds (default 3), but only while a cat
-  is in the region of interest; use it when you know who is there. Below are the images per
+  skips those). Below it, a note on naming visits; then the images per
   cat against `collection.min_images_per_cat` (the target, default 300; training
   itself needs far fewer).
 - **Identification:** on/off (restarts detection), which model is deployed and its
@@ -825,7 +834,7 @@ a key is omitted, it is noted.
 | **Collection** | | |
 | `collection.output_dir` | `data/raw` | Root of captured images on the Pi, used for review and counts. Required. |
 | `collection.min_images_per_cat` | 300 | Per-cat target shown by the dashboard's progress bars. |
-| `collection.auto_capture_interval_sec` | 3 | Seconds between frames in auto-capture mode. |
+| `collection.auto_capture_interval_sec` | 3 | Seconds between images while a visit is named ("Who is this?" on the Capture tab). |
 | **Web UI** | | |
 | `web_ui.host` / `port` | `0.0.0.0` / 5003 | Pi dashboard bind address and port. Required. |
 | `web_ui.local_name` | `cats` | With the boot service, the Pi also answers to `<name>.local`, and port 80 goes to the dashboard: `http://cats.local`. Blank: only `http://<hostname>.local:<port>`. Run `scripts/install_service.sh` again after changing it. |
