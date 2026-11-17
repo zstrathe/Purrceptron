@@ -1,4 +1,9 @@
-# Purrceptron
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/purrceptron_logo_white_text.png">
+    <img src="docs/images/purrceptron_logo_black_text.png" alt="Purrceptron" width="420">
+  </picture>
+</h1>
 
 Purrceptron identifies individual cats at a food bowl using a Raspberry Pi 5 and a
 Hailo-10H accelerator. The stock COCO detector on the NPU finds the cat, an INT8
