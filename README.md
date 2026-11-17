@@ -314,24 +314,31 @@ Built for watching, with everything you set up one click away.
 **Always shown:**
 
 - **The live view** (a JPEG preview the browser polls about 15 times a second, with
-  bounding boxes on detected cats), and under it **who is in view**: the cat's
+  bounding boxes on detected cats). Each cat in the region of interest has its name
+  on its bounding box, in its colour: "Cat1", "Cat1?" while the vote is still open,
+  or "?" when it isn't known. Under the view, **who is in view**, one row per cat
+  in the region: the cat's
   name with how many of the recent frames agreed (`Cat1 · 9 of the last 10 frames`),
   "Cat1?" while it is still unsure, "Unknown cat" when the model rejects the crop,
   or "Waiting for a cat...". When detection isn't running, the view
   says so instead of showing the last frame.
-- **"Who is this?"** While a cat is in the region of interest and no model names it,
-  the footer shows a button per cat. With no model yet, or identification off, it
-  asks as soon as a cat is in view. While a model is working it asks only once the
-  model gives up on the visit: its crops are rejected ("Unknown cat"), or a full
-  vote window (10 crops, about 10 seconds) passes with no winner. Until then it
-  shows the model's guess ("Cat1?"). Tapping one (or pressing `1` to `9`) names the visit: an image is
-  saved under that name every `collection.auto_capture_interval_sec` seconds
-  (default 3) while a cat is in the region, images saved as Unlabeled earlier in
-  the visit move to that name, and they all count as checked on the Label tab. It
-  stops by itself once no cat has been in the region for 10 seconds, so the name is
-  never left on for the next cat. Tapping another name corrects it (the visit's
-  images move along); Stop ends it early. This is the quickest way to collect
-  labeled images before the first model, without labeling them afterwards.
+- **"Who is this?"** When no model names a cat in the region of interest, its row
+  shows a button per cat. With no model yet, or identification off, it asks as soon
+  as a cat is in view. While a model is working it asks only once the model gives
+  up on that cat: its crops are rejected ("Unknown cat"), a full vote window (10
+  crops, about 10 seconds) passes with no winner, or the name it votes for belongs
+  to another cat already in view. Until then the row shows the model's guess
+  ("Cat1?"). Tapping a name (or pressing `1` to `9`, when exactly one row is asking)
+  names that cat's visit: an image is saved under that name every
+  `collection.auto_capture_interval_sec` seconds (default 3) while it is in the
+  region, with its bounding box marked for training; its images saved as Unlabeled
+  earlier in the visit move to that name; and they all count as checked on the
+  Label tab. The name stays with the cat through a short dropout (a new visit that
+  is the only one in view within 10 seconds takes it), and ends once the cat has
+  been out of view for 10 seconds, so it is never left on for the next one. Tapping
+  another name corrects it (the visit's images move along); Stop ends it early.
+  This is the quickest way to collect labeled images before the first model,
+  without labeling them afterwards.
 - **Three status chips:** Detection (with a Restart button when it has stopped),
   Identification (and which model is deployed), and Saving (whether images are
   being saved, and "Saving this visit as Cat1" while a visit is named). Clicking a
@@ -766,10 +773,40 @@ Any extra arguments (for example `--input /dev/video2`) are passed through to
 hailo-apps. Settings come from `configs/project.yaml` with `configs/runtime.yaml`
 merged on top.
 
-Gate: overlap is the intersection area divided by the bowl region's area, compared
-with `classifier.roi_overlap_threshold` (default 1%). A detection that leaves the
-region keeps its stability count for `classifier.miss_tolerance` frames (default 15);
-after that the count resets and a departure signal closes the current visit.
+Visits (`deploy/visits.py`): a visit is one animal's stay in the region of interest.
+A detection is in the region when its bounding box covers at least
+`classifier.roi_overlap_threshold` of the region's area (default 1%). The detector's
+track IDs change constantly (in the visit logs only a third of visits kept one ID),
+so visits follow positions instead: each frame, a bounding box continues the visit it
+overlaps or is nearest to, and the track ID only breaks ties. Two bounding boxes that
+overlap heavily (IoU above 0.5, or one at least 80% inside the other) are one animal;
+the more confident one is kept. A visit is stable, and is classified, captured and
+logged, after `classifier.stability_frames` frames (default 5). It ends once its
+animal has been out of the region for `classifier.visit_gap_seconds` (default 0.5; an
+older `miss_tolerance` in frames is used when it is missing), and the classifier is
+told the time it was last seen. The tracker runs on every frame, also with
+identification off.
+
+Several animals are followed at once (up to 8), each with its own name, log row,
+images and footer row. A second bounding box on the same animal is merged as a
+duplicate, and one that slips through can't be logged under a name the animal
+already holds (see "One name per animal at a time" below).
+
+To test the tracker on real visits, record the detector's bounding boxes for up to
+15 minutes (no images or names are stored) and replay them on any computer:
+
+```bash
+curl -X POST http://cats.local/api/debug/record-detections \
+     -H 'Content-Type: application/json' -d '{"seconds": 600}'
+# -> logs/detection/frames_<time>.jsonl on the Pi
+python scripts/replay_visits.py frames_<time>.jsonl     # lists the visits
+```
+
+Feeding the classifier: every stable visit gets a crop of its animal every
+`classifier.classify_interval_seconds` (default 1), on a queue to the worker with
+the visit's id. When a visit ends, the worker is told its id and the time its animal
+was last seen; if the queue is full, that message waits and is sent on a later frame,
+so a visit is never left open.
 
 Classifier worker: started before GStreamer initializes and pinned to
 `classifier.cpu_core`. It loads the ExecuTorch program (XNNPACK backend, one
@@ -779,8 +816,14 @@ threshold embedded in it (a
 ImageNet normalization. Crops arrive on a bounded queue and are dropped when the
 CPU falls behind. Each crop gets one forward pass; the energy score and the softmax
 probabilities are both read from its logits, and the energy check runs first so a
-rejected crop never reaches the vote window. The worker's state is written to `/dev/shm/cat_detection/classifier_status.json` (in RAM),
-which the dashboard polls twice a second.
+rejected crop never reaches the vote window. The worker keeps a vote window, a name
+and a log row for each visit, and writes its state to
+`/dev/shm/cat_detection/classifier_status.json` (in RAM): a `visits` list with one
+record per visit in progress (`visit_id`, `prediction`, `votes`, `visit_cat` (its
+name), `confirmed_cat` (the vote's current majority), `unknown`, `name_taken`,
+`ood_rejected`, `last_crop_rejected`), and the recent `confirmed_visits` as
+`[visit_id, name]` pairs. The dashboard polls it twice a second. A visit that gets no crop for 60 s
+is ended, in case its end was never reported.
 
 Vote window: a prediction is confirmed when one class holds more than half of
 `vote_window_size` votes (6 of 10 by default) and the average confidence of those
@@ -791,30 +834,54 @@ window of crops with no winner); it stays set until the visit ends or a name is
 confirmed, and the dashboard asks "Who is this?" only then. A visit already named
 keeps its name when later crops are rejected.
 
+Names are checked against each other:
+
+- **One name per animal at a time.** A name held by a visit seen at the same time is
+  not given to a second visit: that one stays unidentified (`name_taken`), is not
+  logged, and its images are saved as Unlabeled. It is not given its second-best
+  name, which would log a visit for an animal that wasn't there. If the holder
+  leaves and its vote still stands, it is named then. A holder that hasn't been seen
+  since the second visit began is the same animal, lost and found again by the
+  tracker, and the second visit continues its row.
+- **Split visits are joined by name.** A visit named as an animal whose previous
+  visit ended less than `classifier.visit_rejoin_seconds` earlier (default 5; 0
+  turns it off) continues that log row instead of starting a new one, so a moment
+  the detector loses the animal doesn't split one meal into two. Waiting longer
+  before ending a visit would also join a different animal arriving right after
+  (in the visit logs that happened about once for every eight same-animal splits).
+- **A log row never holds two animals.** When a named visit's vote confirms another
+  name (6 of 10 votes, so a few odd frames change nothing), its row is closed at the
+  time the other name took over (the first of its votes from which on it holds two
+  thirds), and the other name's row starts then. When two animals swap places and
+  both votes have moved, the visits swap rows and nothing is split. Each row counts
+  only the crops that agree with its name.
+
 Event log: `classifier_log.db`, table `classifier_events`, with `cat_name`,
 `start_time`, `end_time` (UTC), `duration_seconds`, `confidence_avg` and
 `frame_count`. The detector timestamps the first and last frame of each visit at
 the bowl, so `start_time` is when the cat arrived, not when the vote confirmed it
 (at least several seconds later). The row is written once the identity is
-confirmed and closed when the cat leaves; on shutdown the end time is the shutdown
-time.
+confirmed and closed when the cat leaves. When identification is switched off or
+detect.py stops during a visit, the visit is not logged (a joined row goes back to
+its earlier end), and rows left open by a crash are cleaned up the same way at the
+next start.
 
-Detection-triggered capture: when enabled, a detection is saved once it is stable
-inside the bowl region, at most once per `min_interval_seconds`. Labels listed in
-`unlabeled_classes` (`cat` for the stock model) are named by the classifier and
-share one throttle, so a cat at the bowl is captured once per interval whatever
-name its images are saved under; other labels are throttled separately.
+Detection-triggered capture: when enabled, an image is saved for each stable visit
+in the region, at most once per `min_interval_seconds` per animal. With two animals
+in view the same frame is saved twice, once for each, under each one's own name.
+Labels listed in `unlabeled_classes` (`cat` for the stock model) are named by the
+classifier; other labels keep the detector's label and are throttled per label.
 
 Their name comes from the classifier's status file. Besides what the dashboard
-shows, it records which visit the latest crop belongs to, whether that crop was
-rejected, and the recent visits the classifier confirmed together with the cat
-each was confirmed as (the visit's first confirmation, as in the event log). Visits
-are the ones the classifier gate defines for the event log: from the first frame at
-the bowl to the last.
+shows, it records for each visit in progress its name, its vote's majority and
+whether its latest crop was rejected, and the recent visits the classifier named
+together with their names. Visits are the visit tracker's, the same ones the event
+log records, and each image is named from its own visit.
 
 - The current visit is confirmed: saved under that cat's name.
-- The latest crop was rejected by the energy check, or the vote majority has moved
-  to a different cat than the one the visit was confirmed as: saved under
+- The latest crop was rejected by the energy check, the visit's name is held by
+  another animal in view, or the vote majority has moved to a different cat than
+  the one the visit was confirmed as: saved under
   `unlabeled/` and left there for review. Rejection applies from the first
   rejected crop, before the dashboard shows Unknown.
 - No decision yet for this visit: saved under `unlabeled/` and registered with the
@@ -829,12 +896,13 @@ the bowl to the last.
 
 While detection capture is off, nothing is saved, renamed or deleted.
 
-If the classifier misses a departure (its queue was full), the first crop of the
-next visit closes the previous one, so votes and names never carry over.
-
-Each image gets a `.json` sidecar with the timestamp, image size and the in-region
-detections (`label`, `confidence`, and `bbox_norm` as `[xmin, ymin, w, h]` in the
-range 0 to 1), plus a line in `data/raw/capture_log.csv`. Files are named
+Each image gets a `.json` sidecar with the timestamp, image size, `visit_id`, the
+bounding box of the animal it was saved for under `detections` (`label`,
+`confidence`, and `bbox_norm` as `[xmin, ymin, w, h]` in the range 0 to 1; training
+and the Label tab use it), and the other bounding boxes in the region under
+`other_detections`, plus a line in `data/raw/capture_log.csv`. Images saved before
+this change may list several bounding boxes under `detections`; the most confident
+one is used, as before. Files are named
 `<label>_<UTC timestamp>.jpg`.
 
 Feeding tracker (`feeding.*`): an earlier session tracker driven only by detector
@@ -878,8 +946,10 @@ a key is omitted, it is noted.
 | `classifier.model_path` | `models/cat_classifier.pte` | ExecuTorch model the classifier runs. |
 | `classifier.bowl_roi` | `[760, 390, 1160, 790]` (code fallback: full frame) | Region of interest `[x_min, y_min, x_max, y_max]` in frame pixels (the key keeps its old name). Set it by dragging in the dashboard. |
 | `classifier.roi_overlap_threshold` | 0.01 | Fraction of the region of interest a bounding box must cover to count. |
-| `classifier.stability_frames` | 5 | Consecutive in-region frames before classifying (also gates detection capture). |
-| `classifier.miss_tolerance` | not in template; code default 15 | Missed frames tolerated before a cat counts as departed. |
+| `classifier.stability_frames` | 5 | Frames in the region before a visit is classified (also gates detection capture). |
+| `classifier.visit_gap_seconds` | 0.5 | Seconds out of the region that end a visit. |
+| `classifier.miss_tolerance` | not in template | Older form of the same, in frames; used only when `visit_gap_seconds` is missing. |
+| `classifier.visit_rejoin_seconds` | 5 | A visit of an animal whose last visit ended this recently continues its log row (0: off). |
 | `classifier.classify_interval_seconds` | 1.0 | Minimum time between crops sent to the classifier. |
 | `classifier.crop_padding` | 0.0 (code fallback 0.2) | Padding around the bounding box as a fraction of its size, for live crops and the Crop step. |
 | `classifier.vote_window_size` | 10 | Votes in the rolling window. |
@@ -968,11 +1038,13 @@ Purrceptron/
 ├── deploy/                         # Runs on the Pi
 │   ├── detect.py                   # hailo-apps GStreamer pipeline, gate, capture, stdin commands
 │   ├── cat_classifier.py           # Classifier worker process: INT8 MobileNetV2, energy check, voting, event log
+│   ├── visits.py                   # Visits: each animal in the region, followed by position
 │   ├── detection_capturer.py       # Frame extraction and asynchronous capture with sidecars
 │   ├── feeding_tracker.py          # Detector-label session tracker
 │   └── coco_labels.json            # COCO label list in hailo-apps format, for custom HEFs
 ├── collect/                        # Pi dashboard helpers
 │   ├── label_review.py             # Review queue, thumbnails, relabel and delete
+│   ├── visit_naming.py             # Capture tab footer rows and naming visits ("Who is this?")
 │   ├── export.py                   # Standalone dataset archive export (CLI)
 │   └── capture.py                  # Legacy standalone capture app, not used by the dashboard
 ├── remote_training/                # Training jobs sent from the Pi (Training tab)
@@ -1007,6 +1079,7 @@ Purrceptron/
 │   ├── pull_dataset.sh             # rsync data/raw/ from the Pi (command-line path)
 │   ├── transfer_model.sh           # scp a model to the Pi (command-line path)
 │   ├── push_labels_to_pi.py        # One-time: copy labels from an old PC version to the Pi
+│   ├── replay_visits.py            # Replay a detections recording through the visit tracker
 │   ├── _pi_remote.sh               # Shared steps of install_pi.sh and restore_pi.sh
 │   └── _common.sh                  # Shared helpers (.env loading, Pi address lookup)
 ├── utils/
@@ -1016,9 +1089,11 @@ Purrceptron/
 │   ├── display.py                  # Colored console output
 │   ├── runtime_paths.py            # Often-rewritten files kept in RAM (/dev/shm)
 │   └── thumbnails.py               # Cached thumbnails for the dashboard's image browsers
+├── tests/                          # pytest, on the PC: venv_train/bin/python -m pytest tests -q
 ├── requirements-pi.txt
 ├── requirements-training.txt
-└── requirements-scripts.txt
+├── requirements-scripts.txt
+└── requirements-dev.txt            # pytest
 ```
 
 Runtime directories (gitignored): `data/` (captures, trash and job state on the Pi;
@@ -1090,6 +1165,10 @@ address; for other commands, use the Pi's IP address.
   (an open NVIDIA bug, also with current drivers), and in a 5-fold comparison on
   the same data 1.5.1 and 1.6 gave the same accuracy and training time as 1.1.0.
 - Prepare produces train and validation splits only. There is no held-out test set.
+- Several animals at once has been tested with recorded two-cat frames and simulated
+  visits, not yet with two cats at the bowl live. When two animals overlap heavily,
+  the crop of one contains part of the other. When they swap places, images taken
+  until both votes have moved (about 6 seconds) are saved as Unlabeled.
 - Run from the command line, `train_classifier.py` overwrites the local
   `models/cat_classifier.pte` as well as the version's copy.
 - The classifier has only been tested on cats that are easy to tell apart. With two

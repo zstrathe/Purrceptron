@@ -163,6 +163,7 @@ class DetectionCapturer:
         session_id: str | None = None,
         detections: list[dict] | None = None,
         throttle_key: str | None = None,
+        extra: dict | None = None,
     ) -> Path | None:
         """Attempt to capture a frame for the given cat.
 
@@ -173,6 +174,7 @@ class DetectionCapturer:
         throttle_key (default: cat_name) is what the minimum interval applies to, so
         one animal at the bowl is throttled once whatever name its images are saved
         under. The per-session cap applies per saved label (cat_name).
+        extra is merged into the sidecar (visit_id, other_detections).
         """
         key = throttle_key or cat_name
         now = time.time()
@@ -214,7 +216,7 @@ class DetectionCapturer:
             if self._queue.qsize() >= self._max_queued_frames:
                 return None
             self._queue.put_nowait((frame, filepath, self.jpeg_quality,
-                                    detections, ts_iso, session_id or ""))
+                                    detections, ts_iso, session_id or "", extra))
 
             # Update state
             self._last_capture_time[key] = now
@@ -247,6 +249,11 @@ class DetectionCapturer:
         if paths:
             self._queue.put_nowait(("delete", list(paths), None))
 
+    def forget(self, throttle_key: str) -> None:
+        """Drop a throttle key that won't be used again (a visit that ended)."""
+        with self._lock:
+            self._last_capture_time.pop(throttle_key, None)
+
     def reset_session(self, cat_name: str) -> None:
         """Reset capture count for a cat when its feeding session ends."""
         with self._lock:
@@ -272,7 +279,7 @@ class DetectionCapturer:
                     print_error(f"Detection capture {action} failed: {exc}")
                 self._queue.task_done()
                 continue
-            frame, filepath, quality, detections, ts_iso, session_id = item
+            frame, filepath, quality, detections, ts_iso, session_id, extra = item
             try:
                 filepath.parent.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(filepath), frame, [cv2.IMWRITE_JPEG_QUALITY, quality])
@@ -290,6 +297,7 @@ class DetectionCapturer:
                             }
                             for d in detections
                         ],
+                        **(extra or {}),
                     }
                     with open(filepath.with_suffix(".json"), "w") as f:
                         json.dump(sidecar, f)
@@ -383,7 +391,7 @@ class VisitBackLabeler:
     def __init__(self, expire_after_seconds: float = 30.0):
         self._expire_after = expire_after_seconds
         # visit_start -> {"paths": [...], "last_seen": last in-ROI frame time}
-        # Both keys come from ClassifierGate, the same visit boundaries the
+        # Both keys come from the visit tracker, the same visit boundaries the
         # classifier's event log uses for arrival and departure.
         self._pending: dict[float, dict] = {}
 
@@ -413,18 +421,20 @@ class VisitBackLabeler:
             ready.append((self._pending.pop(visit)["paths"], confirmed[visit]))
         return ready
 
-    def expire(self, current_visit: float | None, now: float | None = None,
-               last_hit: float | None = None) -> list[Path]:
+    def expire(self, current: dict[float, float] | None = None,
+               now: float | None = None) -> list[Path]:
         """Forget visits that ended without confirmation; return their paths.
 
-        A visit counts as ended once the gate has started a new one or closed it;
-        it expires expire_after_seconds after its last frame at the bowl.
+        current maps each visit in progress to when its animal was last seen.
+        A visit no longer in progress expires expire_after_seconds after its
+        last frame in the region.
         """
         now = time.time() if now is None else now
+        current = current or {}
         expired: list[Path] = []
         for visit in list(self._pending):
-            if visit == current_visit:
-                self._pending[visit]["last_seen"] = last_hit if last_hit is not None else now
+            if visit in current:
+                self._pending[visit]["last_seen"] = current[visit]
                 continue
             if now - self._pending[visit]["last_seen"] >= self._expire_after:
                 expired.extend(self._pending.pop(visit)["paths"])

@@ -63,3 +63,5 @@ requirements-scripts.txt
 # Docs
 docs/
 README.md
+tests/
+requirements-dev.txt

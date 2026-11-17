@@ -120,6 +120,7 @@
   .vname kbd { margin-left: 2px; }
   .vname[aria-pressed="true"] { background: color-mix(in srgb, var(--c) 30%, var(--surface)); border-color: var(--c); box-shadow: 0 0 0 2px color-mix(in srgb, var(--c) 35%, transparent); }
   #cap-which-row.off .seg { opacity: .45; pointer-events: none; }
+  .seg button:disabled { opacity: .45; cursor: not-allowed; }
   .log-tail-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
   .modal.modal-wide { max-width: 760px; }
   .inference-panel h3, .settings-group h4 {
@@ -298,7 +299,8 @@
   .tracked-head h3 { margin: 0 !important; }
   .tracked-nav { display: inline-flex; align-items: center; gap: 2px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .tracked-head button:disabled { opacity: .3; cursor: default; }
-  #identity-action { margin-left: auto; }
+  .identity-action { margin-left: auto; }
+  .identity-rows .classifier-identity + .classifier-identity { border-top: 1px solid var(--border); }
   .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 50;
     padding: 9px 16px; border-radius: var(--radius); font-size: 13px; max-width: 80vw;
     background: var(--raised); color: var(--text); border: 1px solid var(--border-strong);
@@ -446,21 +448,25 @@
           <!-- What the detector sees right now (empty when nothing) -->
           <div class="detection-pills" id="detection-pills"></div>
         </div>
-        <div class="classifier-identity pending" id="classifier-identity">
-          <span class="identity-icon" aria-hidden="true">&#128049;</span>
-          <span class="identity-label msg" id="identity-label">Starting...</span>
-          <span class="identity-votes" id="identity-votes" title="Identified from the most recent frames of the {{ w.animal }} in the region of interest"></span>
-          <span class="identity-conf" id="identity-conf"></span>
-          <button class="btn btn-sm" id="identity-action" hidden onclick="switchTab('training')">Go to Training</button>
-          <!-- Naming the visit: who is in view (before a model can tell, or when it is unsure) -->
-          <span class="visit-names" id="visit-names" hidden role="group" aria-label="Who is this?">
-            {% for i, cat in cats %}
-            <button class="vname" data-cat="{{ cat }}" style="--c: {{ cat_colors[cat] }}" onclick="nameVisit('{{ cat }}')"
-              title="Save images of this visit as {{ cat }} (key {{ i }})"><span class="dot"></span>{{ cat }}<kbd>{{ i }}</kbd></button>
-            {% endfor %}
-            <button class="btn btn-sm" id="visit-stop" hidden onclick="stopVisit()" title="Stop saving images for this visit now">Stop</button>
-          </span>
-        </div>
+        <!-- Who is in view: one row per animal in the region of interest -->
+        <div class="identity-rows" id="identity-rows" aria-live="polite"></div>
+        <template id="identity-row-tpl">
+          <div class="classifier-identity pending">
+            <span class="identity-icon" aria-hidden="true">&#128049;</span>
+            <span class="identity-label msg"></span>
+            <span class="identity-votes" title="Identified from the most recent frames of the {{ w.animal }} in the region of interest"></span>
+            <span class="identity-conf"></span>
+            <button class="btn btn-sm identity-action" hidden onclick="switchTab('training')">Go to Training</button>
+            <!-- Naming the visit: who this is (before a model can tell, or when it gives up) -->
+            <span class="visit-names" hidden role="group" aria-label="Who is this?">
+              {% for i, cat in cats %}
+              <button class="vname" data-cat="{{ cat }}" style="--c: {{ cat_colors[cat] }}"
+                title="Save images of this visit as {{ cat }} (key {{ i }})"><span class="dot"></span>{{ cat }}<kbd>{{ i }}</kbd></button>
+              {% endfor %}
+              <button class="btn btn-sm visit-stop" hidden title="Stop saving images for this visit now">Stop</button>
+            </span>
+          </div>
+        </template>
       </div>
 
       <!-- Status at a glance; each chip opens its part of the controls -->
@@ -985,92 +991,66 @@ function startPreviewLoop() {
   if (previewTimer) clearTimeout(previewTimer);
   pollPreview();
   pollDetections();
-  pollClassifierIdentity();
+  pollVisits();
 }
 
-// ── Classifier identity polling ────────────────────────────
-async function pollClassifierIdentity() {
-  if (activeTab !== 'capture') { setTimeout(pollClassifierIdentity, 1000); return; }
+// ── Who is in view: one footer row per animal ───────────────
+// /api/visits decides what each row shows and whether it asks "Who is this?"
+// (collect/visit_naming.py, footer_rows): only when no model is working, or
+// the model has given up on that animal.
+let footerRows = [];
+async function pollVisits() {
+  if (activeTab !== 'capture') { setTimeout(pollVisits, 1000); return; }
   try {
-    const r = await fetch('/api/classifier/current');
-    if (r.ok) {
-      const data = await r.json();
-      const el = document.getElementById('classifier-identity');
-      const labelEl = document.getElementById('identity-label');
-      const confEl = document.getElementById('identity-conf');
-      const votesEl = document.getElementById('identity-votes');
-      const action = document.getElementById('identity-action');
-      const clfEnabled = document.getElementById('clf-enabled')?.checked;
-      const clf = lastStatus && lastStatus.classifier;
-      const show = (text, color, pending, isName) => {
-        labelEl.textContent = text;
-        labelEl.classList.toggle('msg', !isName);
-        labelEl.style.color = color;
-        el.style.borderColor = color === cssVar('--muted') ? cssVar('--border') : color;
-        el.classList.toggle('pending', !!pending);
-        el.style.display = 'flex';
-      };
-      confEl.textContent = ''; votesEl.textContent = ''; votesEl.title = ''; action.hidden = true;
-      const v = lastStatus && lastStatus.visit;
-      // While a model is working it names the animal itself; "Who is this?" is
-      // asked only once it gives up on this visit (data.unknown: its crops are
-      // rejected, or a full vote passed with no winner).
-      modelHandlesIt = !!(clfEnabled && clf && clf.model_exists && !data.error && !data.unknown);
-      if (v && v.named && lastStatus.pipeline && lastStatus.pipeline.running) {
-        // A person named this visit: that name wins over the model.
-        show(v.named, DET_COLORS[v.named] || DET_DEFAULT_COLOR, false, true);
-        const n = v.saved + v.moved;
-        votesEl.textContent = `named by you · ${n} image${n === 1 ? '' : 's'} saved · ` +
-          (v.in_view ? `stops when the ${W.animal} leaves` : `stopping (no ${W.animal} in view)`);
-      } else if (v && v.in_view && !modelHandlesIt && lastStatus.pipeline && lastStatus.pipeline.running) {
-        const ask = !data.unknown ? 'Who is this?'
-          : data.ood_rejected ? `Unknown ${W.animal}. Who is this?`
-          : data.prediction ? `Who is this? The model thinks ${data.prediction}, but is not sure.`
-          : 'Who is this?';
-        show(ask, cssVar(data.unknown ? '--warn' : '--info'), false);
-        votesEl.textContent = `Tap the name: images are saved under it until the ${W.animal} leaves.`;
-        votesEl.title = `Naming a visit: an image is saved under that name every ${v.interval || 3} s while ` +
-          `${W.an_animal} is in the region of interest, images saved as Unlabeled earlier in the visit move to it, ` +
-          `and all of them count as checked. It stops by itself once no ${W.animal} has been in view for ` +
-          `${v.end_after || 10} s. Tap another name to correct it; Stop ends it early.`;
-      } else if (lastStatus && lastStatus.pipeline && !lastStatus.pipeline.running) {
-        show('Detection is not running.', cssVar('--muted'), true);
-      } else if (!clfEnabled) {
-        show(`Waiting for ${W.an_animal}...`, cssVar('--muted'), true);
-        votesEl.textContent = `Identification is off. When one comes, tap its name here to save its images under that name.`;
-      } else if (clf && !clf.model_exists) {
-        show(`Waiting for ${W.an_animal}...`, cssVar('--muted'), true);
-        votesEl.textContent = `No model yet, so tap its name here when one comes: its images are saved under that name.`;
-        action.hidden = false;
-      } else if (data.error) {
-        // The worker reported a problem; a newly deployed model replaces it
-        // within seconds (the model watcher reloads the classifier).
-        show(/not found|not an ExecuTorch/.test(data.error)
-               ? 'Loading the new model...' : 'Identification failed: ' + data.error,
-             cssVar(/not found|not an ExecuTorch/.test(data.error) ? '--muted' : '--danger'), true);
-      } else if (data.ood_rejected && data.visit_cat) {
-        // Named earlier in this visit; the latest crops are unclear (turned away).
-        show(data.visit_cat, DET_COLORS[data.visit_cat] || DET_DEFAULT_COLOR, false, true);
-        votesEl.textContent = 'unclear right now';
-      } else if (data.prediction) {
-        const name = data.confirmed_cat || data.prediction;
-        const color = DET_COLORS[name] || DET_DEFAULT_COLOR;
-        show(data.confirmed ? name : name + '?', color, !data.confirmed, true);
-        confEl.textContent = (data.confidence * 100).toFixed(0) + '%';
-        if (data.votes) {
-          const n = data.vote_window || 10;
-          votesEl.textContent = Object.entries(data.votes).sort((a, b) => b[1] - a[1])
-            .map(([cat, k]) => `${cat} ${k}`).join(' · ') + ` of the last ${n} frames`;
-        }
-      } else if (data.ood_rejected) {
-        show(`Unknown ${W.animal} (not one of yours, or unclear)`, cssVar('--warn'), true);
-      } else {
-        show(`Waiting for ${W.an_animal}...`, cssVar('--muted'), true);
-      }
-    }
-    renderVisit();
+    const r = await fetch('/api/visits');
+    if (r.ok) renderFooter(await r.json());
   } catch(e) {}
-  setTimeout(pollClassifierIdentity, 500);
+  setTimeout(pollVisits, 500);
+}
+
+function rowColor(row) {
+  if (row.tone === 'name') return DET_COLORS[row.name] || DET_DEFAULT_COLOR;
+  return cssVar({warn: '--warn', info: '--info', muted: '--muted'}[row.tone] || '--muted');
+}
+
+function renderFooter(data) {
+  const box = document.getElementById('identity-rows');
+  const v = lastStatus && lastStatus.visit;
+  const rows = data.rows.length ? data.rows
+    : [{visit_id: 'idle', label: data.idle.label, detail: data.idle.detail, tone: 'muted',
+        pending: true, kind: data.idle.kind}];
+  footerRows = data.rows;
+  const keep = new Set(rows.map(r => String(r.visit_id)));
+  box.querySelectorAll('.classifier-identity').forEach(el => { if (!keep.has(el.dataset.visit)) el.remove(); });
+  rows.forEach((row, i) => {
+    let el = box.querySelector(`.classifier-identity[data-visit="${row.visit_id}"]`);
+    if (!el) {
+      el = document.getElementById('identity-row-tpl').content.firstElementChild.cloneNode(true);
+      el.dataset.visit = String(row.visit_id);
+      el.querySelectorAll('.vname').forEach(b => b.onclick = () => nameVisit(b.dataset.cat, row.visit_id));
+      el.querySelector('.visit-stop').onclick = () => stopVisit(row.visit_id);
+    }
+    if (box.children[i] !== el) box.insertBefore(el, box.children[i] || null);
+    const color = rowColor(row);
+    const label = el.querySelector('.identity-label');
+    label.textContent = row.label;
+    label.classList.toggle('msg', !row.is_name);
+    label.style.color = color;
+    el.style.borderColor = row.tone === 'muted' ? cssVar('--border') : color;
+    el.classList.toggle('pending', !!row.pending);
+    el.querySelector('.identity-votes').textContent = row.detail || '';
+    el.querySelector('.identity-conf').textContent = row.conf || '';
+    el.querySelector('.identity-action').hidden = row.kind !== 'no_model';
+    const names = el.querySelector('.visit-names');
+    names.hidden = !row.prompt;
+    names.title = row.prompt ? `Naming a visit: an image is saved under that name every ${(v && v.interval) || 3} s while ` +
+      `this ${W.animal} is in the region of interest, its images saved as Unlabeled earlier in the visit move to it, ` +
+      `and all of them count as checked. It stops by itself once it has been out of view for ` +
+      `${(v && v.end_after) || 10} s. Tap another name to correct it; Stop ends it early.` : '';
+    names.querySelectorAll('.vname').forEach(b =>
+      b.setAttribute('aria-pressed', row.named_by === 'you' && row.name === b.dataset.cat));
+    el.querySelector('.visit-stop').hidden = !row.stop;
+  });
 }
 
 // ── Tracked events (date-navigable) ──────────────────────
@@ -1475,7 +1455,7 @@ function renderStatusChips(d) {
       (c.model.val_acc != null ? `, ${trPct(c.model.val_acc)} accuracy` : '') + '</span>' : ''));
 
   const saving = document.getElementById('cap-enabled').checked;
-  if (d.visit && d.visit.named) setChip('chip-saving', 'warn', `Saving this visit as <b>${trEsc(d.visit.named)}</b>`);
+  if (d.visit && d.visit.named) setChip('chip-saving', 'warn', `Saving ${d.visit.named.includes(',') ? 'visits' : 'this visit'} as <b>${trEsc(d.visit.named)}</b>`);
   else if (saving) setChip('chip-saving', 'on', 'Saving images automatically');
   else setChip('chip-saving', '', 'Not saving images');
 
@@ -1507,40 +1487,33 @@ if (controlsOpen !== null) setControlsOpen(controlsOpen, null, true);
 
 // ── Auto-Capture ──────────────────────────────────────────
 // ── Naming visits ─────────────────────────────────────────
-async function nameVisit(cat) {
+async function nameVisit(cat, visitId) {
   try {
     const r = await fetch('/api/visit/name', {method: 'POST', headers: {'Content-Type': 'application/json'},
-                                               body: JSON.stringify({cat})});
+                                               body: JSON.stringify({cat, visit_id: visitId})});
     const d = await r.json();
     if (d.status !== 'ok') { toast(d.message || 'Could not name the visit.', true); return; }
     if (lastStatus) { lastStatus.visit = d; renderStatusChips(lastStatus); }
-    renderVisit();
     toast(`Saving this visit as ${cat} until the ${W.animal} leaves.`);
   } catch(e) { toast('Could not name the visit.', true); }
 }
 
-async function stopVisit() {
+async function stopVisit(visitId) {
   try {
-    const r = await fetch('/api/visit/stop', {method: 'POST'});
+    const r = await fetch('/api/visit/stop', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                              body: JSON.stringify({visit_id: visitId})});
     const d = await r.json();
     if (lastStatus) { lastStatus.visit = d; renderStatusChips(lastStatus); }
-    renderVisit();
   } catch(e) { toast('Could not stop.', true); }
 }
 
-// The name buttons under the live view: shown while an animal is in view and
-// no model names it (no model yet, identification off, or the model has given
-// up on this visit), and while a visit is named (the current name stays
-// highlighted; tapping another one corrects it).
-let modelHandlesIt = false;         // set by pollClassifierIdentity
-function renderVisit() {
-  const v = lastStatus && lastStatus.visit;
-  const box = document.getElementById('visit-names');
-  const running = lastStatus && lastStatus.pipeline && lastStatus.pipeline.running;
-  const show = !!(running && v && (v.named || (v.in_view && !modelHandlesIt)));
-  box.hidden = !show;
-  box.querySelectorAll('.vname').forEach(b => b.setAttribute('aria-pressed', !!(v && v.named === b.dataset.cat)));
-  document.getElementById('visit-stop').hidden = !(v && v.named);
+// Keys 1 to N name the one row that is asking (or, failing that, correct the
+// one named by you). With several asking, use the buttons.
+function keyNameVisit(cat) {
+  const asking = footerRows.filter(r => r.prompt && r.named_by !== 'you');
+  const target = asking.length === 1 ? asking[0]
+    : (asking.length === 0 && footerRows.filter(r => r.prompt).length === 1 ? footerRows.find(r => r.prompt) : null);
+  if (target) nameVisit(cat, target.visit_id);
 }
 
 // Say once when a named visit has ended.
@@ -1761,7 +1734,6 @@ async function pollStatus() {
     }
 
     renderStatusChips(d);
-    renderVisit();
     updateCaptureHints();
     noteVisitEnd(d.visit);
   } catch(e) {}
@@ -1775,7 +1747,7 @@ document.addEventListener('keydown', (e) => {
 
   if (activeTab === 'capture') {
     const n = parseInt(e.key);
-    if (n >= 1 && n <= CATS.length && !document.getElementById('visit-names').hidden) nameVisit(CATS[n - 1]);
+    if (n >= 1 && n <= CATS.length) keyNameVisit(CATS[n - 1]);
     return;
   }
   if (activeTab !== 'annotate') return;

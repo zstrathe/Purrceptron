@@ -69,6 +69,8 @@ classifier:
   db_path: data/classifier_log.db
   crop_padding: 0.0
   roi_overlap_threshold: 0.01
+  visit_gap_seconds: 0.5      # a visit ends this long after its animal was last in the region
+  visit_rejoin_seconds: 5     # back this soon as the same animal: continue its log row (0: off)
   cpu_core: 3
 classifier_training:
   phase1_epochs: 20

@@ -46,6 +46,8 @@ from utils import (PROJECT_ROOT, add_common_args, load_config, resolve_path,
 from utils.display import print_info, print_success, print_error, print_warning, print_header
 
 from collect.label_review import LabelReviewApp
+from collect.visit_naming import (VisitNamer, footer_rows, read_preview_detections,
+                                  stable_visits)
 from remote_training import settings as training_settings
 from remote_training.backends import BackendError
 from remote_training.backup.destinations import BackupError
@@ -106,180 +108,30 @@ def _refresh_events_cache(db_path=None, start=None, end=None):
 # Auto-Capture State
 # ═══════════════════════════════════════════════════════════════════════════
 
-class VisitNamer:
-    """Naming a visit, for collecting labeled images before (or without) a
-    trained model.
-
-    A visit is the time an animal stays in the region of interest. While
-    one is in view and nothing names it, the dashboard asks who it is. Once
-    the user names it:
-      - an image is saved under that name every ``interval`` seconds while
-        an animal is in the region (detect.py's capture, require_cat);
-      - images saved as Unlabeled since the visit began (detection capture)
-        are moved to that name;
-      - all of them count as checked on the Label tab, since a person named
-        them;
-      - it ends by itself once nothing has been in the region for
-        ``END_AFTER`` seconds, so a name is never left on for the next animal.
-    """
-
-    END_AFTER = 10.0        # seconds without an animal in the region = visit over
-    FRESH = 2.0             # preview detections older than this are stale
-
-    def __init__(self, cats: list[str], interval: float, reviewer: "LabelReviewApp"):
-        self.cats = cats
-        self.interval = interval
-        self.reviewer = reviewer
-        self._lock = threading.Lock()
-        self.in_view = False
-        self.visit_start: float | None = None   # when the current visit began
-        self.last_seen = 0.0
-        self.cat: str | None = None             # the name given to this visit
-        self.named_at = 0.0
-        self.last_capture = 0.0
-        self.saved: list[str] = []              # filenames saved under the name
-        self.moved: list[str] = []              # Unlabeled images moved to it (new filenames)
-        self.last_result: dict | None = None    # the previous named visit, for the UI
-
-    # ── called from the loop ──
-    def observe(self, in_view: bool, now: float) -> None:
-        with self._lock:
-            if in_view:
-                if self.visit_start is None or now - self.last_seen > self.END_AFTER:
-                    self.visit_start = now
-                self.last_seen = now
-            self.in_view = in_view
-
-    def due_capture(self, now: float) -> str | None:
-        """The name to save an image under now, or None."""
-        with self._lock:
-            if not self.cat or not self.in_view or now - self.last_capture < self.interval:
-                return None
-            self.last_capture = now
-            return self.cat
-
-    def ended(self, now: float) -> bool:
-        with self._lock:
-            return bool(self.cat) and now - self.last_seen > self.END_AFTER
-
-    def on_output_line(self, line: str) -> None:
-        """detect.py prints a JSON line for every manual capture."""
-        if '"capture_ok"' not in line:
-            return
-        try:
-            msg = json.loads(line)
-        except ValueError:
-            return
-        with self._lock:
-            if self.cat and msg.get("cat") == self.cat and msg.get("filename"):
-                self.saved.append(msg["filename"])
-
-    # ── called from the API ──
-    def name(self, cat: str) -> dict:
-        if cat not in self.cats:
-            return {"status": "error", "message": f"Unknown name: {cat}"}
-        now = time.time()
-        with self._lock:
-            if self.visit_start is None or now - self.last_seen > self.END_AFTER:
-                self.visit_start = now          # named before it was seen: wait for it
-                self.last_seen = now
-            old, files = self.cat, self.saved + self.moved
-        if old and old != cat and files:
-            # A correction: move what this visit saved under the old name.
-            results = self.reviewer.label_paths([self.reviewer.data_dir / old / f for f in files], cat)
-            renamed = [r["filename"] for r in results if r.get("status") == "ok" and r.get("filename")]
-            with self._lock:
-                self.saved, self.moved = renamed, []
-        with self._lock:
-            self.cat = cat
-            self.named_at = now
-            self.last_capture = 0.0
-        self._claim_unlabeled()
-        return {"status": "ok", **self.state()}
-
-    def stop(self) -> dict:
-        self._finish()
-        return {"status": "ok", **self.state()}
-
-    def finish_if_ended(self, now: float) -> None:
-        if self.ended(now):
-            self._finish()
-
-    def _claim_unlabeled(self) -> None:
-        """Move images saved as Unlabeled during this visit to its name."""
-        with self._lock:
-            cat, start = self.cat, self.visit_start
-        if not cat or start is None:
-            return
-        folder = self.reviewer.data_dir / "unlabeled"
-        if not folder.is_dir():
-            return
-        paths = []
-        for p in folder.glob("*.jpg"):
-            try:
-                if p.stat().st_mtime >= start - 1:
-                    paths.append(p)
-            except OSError:
-                pass
-        if not paths:
-            return
-        results = self.reviewer.label_paths(sorted(paths), cat)
-        with self._lock:
-            self.moved += [r["filename"] for r in results if r.get("status") == "ok" and r.get("filename")]
-
-    def _finish(self) -> None:
-        self._claim_unlabeled()
-        with self._lock:
-            cat, saved, moved = self.cat, list(self.saved), len(self.moved)
-            self.cat = None
-            self.saved = []
-            self.moved = []
-        if not cat:
-            return
-        self.reviewer.mark_reviewed_paths([self.reviewer.data_dir / cat / f for f in saved])
-        with self._lock:
-            self.last_result = {"cat": cat, "saved": len(saved), "moved": moved,
-                                "ended_at": time.time()}
-
-    def state(self) -> dict:
-        with self._lock:
-            return {
-                "in_view": self.in_view,
-                "named": self.cat,
-                "saved": len(self.saved),
-                "moved": len(self.moved),
-                "interval": self.interval,
-                "end_after": self.END_AFTER,
-                "last": self.last_result,
-            }
-
-
-def _animal_in_view(pipeline_mgr: "DetectionPipelineManager") -> bool:
-    """An animal in the region of interest, from detect.py's preview
-    detections (written about 15 times a second while it runs)."""
-    if not pipeline_mgr.is_running():
-        return False
-    try:
-        if time.time() - PREVIEW_DETECTIONS_JSON.stat().st_mtime > VisitNamer.FRESH:
-            return False
-        dets = json.loads(PREVIEW_DETECTIONS_JSON.read_text())
-    except (OSError, ValueError):
-        return False
-    return any(d.get("in_roi", True) for d in dets if isinstance(d, dict))
-
-
 def _visit_loop(visits: VisitNamer, pipeline_mgr: "DetectionPipelineManager") -> None:
-    """Follows visits, and saves images for a named one."""
+    """Follows the animals in view, and saves images for the named ones."""
+    sent: dict | None = None
+    last_sent = 0.0
     while True:
         time.sleep(0.25)
         now = time.time()
-        visits.observe(_animal_in_view(pipeline_mgr), now)
+        running = pipeline_mgr.is_running()
+        dets = read_preview_detections(PREVIEW_DETECTIONS_JSON) if running else []
+        visits.observe(stable_visits(dets), now)
         visits.finish_if_ended(now)
-        cat = visits.due_capture(now)
-        if cat and pipeline_mgr.is_running():
-            # require_cat: detect.py saves only if an animal is in the region in
-            # that very frame, so an empty frame is never saved under a name.
-            pipeline_mgr.send_command({"cmd": "capture", "cat": cat, "require_cat": True})
+        if not running:
+            sent = None
+            continue
+        for visit_id, cat in visits.due_captures(now):
+            # detect.py saves only while that visit is in the region in that very
+            # frame, with its bounding box as the subject.
+            pipeline_mgr.send_command({"cmd": "capture", "cat": cat, "visit_id": visit_id,
+                                       "require_cat": True})
+        # Names given here, for the live view's bounding boxes.
+        names = visits.names()
+        if names != sent or (names and now - last_sent > 5):
+            if pipeline_mgr.send_command({"cmd": "set_visit_names", "names": names}):
+                sent, last_sent = names, now
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -734,7 +586,7 @@ class ConfigManager:
 # logs/pi_dashboard.out many times a second; errors and all other requests
 # are still logged.
 _QUIET_POLL_RE = re.compile(
-    r'"(?:\x1b\[[0-9;]*m)*GET /api/(?:preview|detections|status|classifier/current|'
+    r'"(?:\x1b\[[0-9;]*m)*GET /api/(?:preview|detections|status|visits|classifier/current|'
     r'classifier/events|training/status|backup/status)(?:\?\S*)? HTTP/[0-9.]+(?:\x1b\[[0-9;]*m)*" '
     r'(?:200|204|304) ')
 
@@ -819,16 +671,42 @@ def create_app(
             return jsonify({"status": "error", "message": "Failed to send capture command"}), 500
 
     # ── Auto-Capture API ─────────────────────────────────────────
+    def _visit_id_arg(data: dict) -> float | None:
+        try:
+            return float(data["visit_id"]) if data.get("visit_id") is not None else None
+        except (TypeError, ValueError):
+            return None
+
     @flask_app.route("/api/visit/name", methods=["POST"])
     def api_visit_name():
-        """Name the visit in progress (who is in the region of interest)."""
+        """Name a visit in progress (who is in the region of interest).
+        Body: {cat, visit_id}; without visit_id, the only animal in view."""
         data = request.get_json(silent=True) or {}
-        res = visits.name(str(data.get("cat", "")).strip())
+        res = visits.name(str(data.get("cat", "")).strip(), _visit_id_arg(data))
         return jsonify(res), (200 if res["status"] == "ok" else 400)
 
     @flask_app.route("/api/visit/stop", methods=["POST"])
     def api_visit_stop():
-        return jsonify(visits.stop())
+        return jsonify(visits.stop(_visit_id_arg(request.get_json(silent=True) or {})))
+
+    @flask_app.route("/api/visits")
+    def api_visits():
+        """The Capture tab's footer: one row per animal in view."""
+        cfg = config_mgr.read()
+        clf_cfg = cfg.get("classifier", {})
+        model_path = resolve_path(clf_cfg.get("model_path", "models/cat_classifier.pte"), PROJECT_ROOT)
+        running = pipeline_mgr.is_running()
+        status = None
+        try:
+            status = json.loads(CLASSIFIER_STATUS_JSON.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+        return jsonify(footer_rows(
+            read_preview_detections(PREVIEW_DETECTIONS_JSON) if running else [],
+            status, visits.by_visit(),
+            enabled=bool(clf_cfg.get("enabled")), model_exists=model_path.is_file(),
+            worker_error=(status or {}).get("error"), running=running,
+            words=subject_words(cfg)))
 
     # ── Status API ───────────────────────────────────────────────
     @flask_app.route("/api/status")
@@ -1044,6 +922,19 @@ def create_app(
                 "roi_overlap_threshold": data["classifier"]["roi_overlap_threshold"],
             })
         return jsonify({"status": "ok"})
+
+    @flask_app.route("/api/debug/record-detections", methods=["POST"])
+    def api_record_detections():
+        """Record each frame's bounding boxes for a while (at most 15 min) to
+        logs/detection/frames_<time>.jsonl, for scripts/replay_visits.py."""
+        data = request.get_json(silent=True) or {}
+        try:
+            secs = min(900.0, max(1.0, float(data.get("seconds", 600))))
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "seconds must be a number"}), 400
+        if not pipeline_mgr.send_command({"cmd": "record_detections", "seconds": secs}):
+            return jsonify({"status": "error", "message": "Detection is not running"}), 503
+        return jsonify({"status": "ok", "seconds": secs})
 
     # ── Classifier ─────────────────────────────────────────────────
     @flask_app.route("/api/classifier/current")

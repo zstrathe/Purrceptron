@@ -35,6 +35,7 @@ import time
 import json as _json
 from datetime import datetime, timezone
 from pathlib import Path
+from collections import deque
 from queue import Full as QueueFull
 
 import cv2
@@ -44,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils import PROJECT_ROOT, get_config_with_args, load_config, resolve_path, add_common_args, get_cat_colors_bgr
 from utils.display import print_info, print_error, print_success, print_warning
 from utils.runtime_paths import PREVIEW_DETECTIONS_JSON, PREVIEW_JPG, runtime_dir
+from deploy.visits import DetectionRecorder, VisitTracker, visit_gap_from  # noqa: E402
 
 # Hailo imports — only available on the Raspberry Pi
 try:
@@ -129,6 +131,8 @@ class PreviewFrameWriter:
                             "bbox": (int(nx * pw), int(ny * ph),
                                      int((nx + nw) * pw), int((ny + nh) * ph)),
                             "track_id": det.get("track_id"),
+                            "name": det.get("name"),
+                            "duplicate": det.get("duplicate", False),
                         })
                     draw_bounding_boxes(resized, pixel_dets)
                 ret, jpeg = cv2.imencode(
@@ -144,7 +148,10 @@ class PreviewFrameWriter:
                 with open(det_tmp, "w") as f:
                     json.dump([
                         {"label": d["label"], "confidence": d["confidence"],
-                         "track_id": d.get("track_id"), "in_roi": d.get("in_roi", True)}
+                         "track_id": d.get("track_id"), "in_roi": d.get("in_roi", True),
+                         "visit_id": d.get("visit_id"), "stable": d.get("stable", False),
+                         "duplicate": d.get("duplicate", False),
+                         "name": d.get("name"), "named_by": d.get("named_by")}
                         for d in detections
                     ], f)
                 os.replace(det_tmp, self.detections_path)
@@ -219,159 +226,76 @@ class StdinCommandListener:
 # Classifier Gate
 # ═══════════════════════════════════════════════════════════════════════════
 
-class ClassifierGate:
-    """Manages Stage 2 classifier interaction from the GStreamer callback.
+class VisitFeeder:
+    """Feeds the Stage 2 classifier from the GStreamer callback.
 
-    Filters detections to the bowl ROI, applies a stability gate (N consecutive
-    frames), throttles classification to classify_interval seconds, and produces
-    224×224 crops.
+    Every stable visit from deploy/visits.py's VisitTracker gets a 224×224
+    crop of its animal every classify_interval seconds; the worker keeps a
+    vote, a name and a log row per visit. Messages (see cat_classifier.py):
+    ("crop", visit_id, seen_at, crop), ("departed", visit_id, last_seen).
+    A departure that finds the queue full is kept and
+    sent again on the next frame, so a visit is never left open.
     """
 
-    def __init__(
-        self,
-        queue,
-        bowl_roi: tuple[int, int, int, int],
-        frame_w: int,
-        frame_h: int,
-        stability_frames: int,
-        classify_interval: float,
-        crop_padding: float,
-        roi_overlap_threshold: float = 0.01,
-        trigger_labels: set[str] | None = None,
-        miss_tolerance: int = 15,
-    ):
+    def __init__(self, queue, classify_interval: float, crop_padding: float):
         self._queue = queue
-        self._bowl_roi = bowl_roi          # (x_min, y_min, x_max, y_max) in pixels
-        self._frame_w = frame_w
-        self._frame_h = frame_h
-        self._stability_frames = stability_frames
         self._classify_interval = classify_interval
         self._crop_padding = crop_padding
-        self._roi_overlap_threshold = roi_overlap_threshold
-        self._trigger_labels = trigger_labels or {"cat"}
-        self._miss_tolerance = miss_tolerance
-        self._roi_consecutive_frames: int = 0
-        self._consecutive_misses: int = 0
-        self._last_classify_time: float = 0.0
-        self._was_tracking: bool = False
-        # Wall-clock times (time.time()) of the first and latest in-ROI frame of
-        # the current visit, so the visit log records when the cat actually
-        # arrived and left rather than when the classifier caught up.
-        self._visit_start: float | None = None
-        self._last_hit: float | None = None
-        self.pending_bbox: tuple | None = None  # normalized (xmin, ymin, w, h)
+        self._pending: deque = deque()          # departures waiting for room
+        self._fed: set[float] = set()           # visits the worker has heard of
+        self._visits: list = []                 # this frame's visits
 
-    _last_log_time: float = 0.0
-
-    def update(self, frame_detections: list[dict]) -> bool:
-        """Check detections against bowl ROI.
-
-        Returns True when a crop should be produced this frame.
-        """
-        W, H = self._frame_w, self._frame_h
-        x0, y0, x1, y1 = self._bowl_roi
-        now = time.monotonic()
-
-        roi_hit = False
-        roi_area = (x1 - x0) * (y1 - y0)
-        best_bbox = None
-        for det in frame_detections:
-            if det["label"] not in self._trigger_labels:
-                continue
-            if roi_area <= 0:
-                # Degenerate ROI -- accept all detections (don't filter)
-                roi_hit = True
-                best_bbox = det["bbox_norm"]
+    def update(self, visits: list, departed: list) -> list:
+        """Called every frame with the tracker's visits. Returns the visits
+        due a crop in this frame."""
+        self._visits = visits
+        for v in departed:
+            if v.visit_id in self._fed:
+                self._fed.discard(v.visit_id)
+                self._pending.append(("departed", v.visit_id, v.last_seen))
+        while self._pending:
+            try:
+                self._queue.put_nowait(self._pending[0])
+            except QueueFull:
                 break
-            xmin, ymin, w, h = det["bbox_norm"]
-            bx1, by1 = xmin * W, ymin * H
-            bx2, by2 = (xmin + w) * W, (ymin + h) * H
-            # Compute intersection area
-            ix1, iy1 = max(x0, bx1), max(y0, by1)
-            ix2, iy2 = min(x1, bx2), min(y1, by2)
-            if ix2 > ix1 and iy2 > iy1:
-                overlap = (ix2 - ix1) * (iy2 - iy1) / roi_area
-                if overlap >= self._roi_overlap_threshold:
-                    roi_hit = True
-                    best_bbox = det["bbox_norm"]
-                    break
-                elif now - self._last_log_time >= 5.0:
-                    print(f"[classifier-gate] Overlap {overlap:.0%} < {self._roi_overlap_threshold:.0%}", flush=True)
-                    self._last_log_time = now
-            elif now - self._last_log_time >= 5.0:
-                print(f"[classifier-gate] Detection outside ROI", flush=True)
-                self._last_log_time = now
+            self._pending.popleft()
+        now = time.monotonic()
+        return [v for v in visits if v.seen and v.stable
+                and now - v.last_classify >= self._classify_interval]
 
-        if not roi_hit:
-            self._consecutive_misses += 1
-            if self._was_tracking and self._consecutive_misses >= self._miss_tolerance:
-                print("[classifier-gate] Cat left ROI — sending departure", flush=True)
-                self.send_reset(last_seen=self._last_hit)
-                self._roi_consecutive_frames = 0
-                self._was_tracking = False
-                self._visit_start = None
-                self._last_hit = None
-            return False
-
-        wall_now = time.time()
-        if self._visit_start is None:
-            self._visit_start = wall_now
-        self._last_hit = wall_now
-        self._consecutive_misses = 0
-        self._roi_consecutive_frames += 1
-        self._was_tracking = True
-
-        if self._roi_consecutive_frames < self._stability_frames:
-            if now - self._last_log_time >= 5.0:
-                print(f"[classifier-gate] Stability: {self._roi_consecutive_frames}"
-                      f"/{self._stability_frames} frames", flush=True)
-                self._last_log_time = now
-            return False
-
-        if (now - self._last_classify_time) >= self._classify_interval:
-            self.pending_bbox = best_bbox
-            self._last_classify_time = now
-            return True
-
-        return False
-
-    def put_crop(self, frame: np.ndarray, bbox_norm: tuple) -> None:
-        """Crop, resize to 224×224, enqueue for classifier, and optionally save full frame + sidecar."""
+    def put_crop(self, frame: np.ndarray, visit) -> None:
+        """Crop the visit's animal, resize to 224×224 and enqueue it."""
+        visit.last_classify = time.monotonic()
         H, W = frame.shape[:2]
-        xmin, ymin, bw, bh = bbox_norm
+        xmin, ymin, bw, bh = visit.bbox_norm
         pad_x = bw * self._crop_padding
         pad_y = bh * self._crop_padding
         x1 = max(0, int((xmin - pad_x) * W))
         y1 = max(0, int((ymin - pad_y) * H))
         x2 = min(W, int((xmin + bw + pad_x) * W))
         y2 = min(H, int((ymin + bh + pad_y) * H))
-
         if x2 <= x1 or y2 <= y1:
             return
-
         crop = cv2.resize(frame[y1:y2, x1:x2], (224, 224))
-
         try:
-            self._queue.put_nowait((crop, self._visit_start))
+            self._queue.put_nowait(("crop", visit.visit_id, visit.last_seen, crop))
+            self._fed.add(visit.visit_id)
         except QueueFull:
             pass
+
+    def _primary(self):
+        return next((v for v in self._visits if v.stable), None)
 
     @property
     def visit_start(self) -> float | None:
-        """Wall time of the current visit's first frame at the bowl (None if no visit)."""
-        return self._visit_start
+        """The oldest stable visit's id (its first frame's wall time), or None."""
+        v = self._primary()
+        return v.visit_id if v else None
 
     @property
     def last_hit(self) -> float | None:
-        """Wall time of the current visit's latest frame at the bowl."""
-        return self._last_hit
-
-    def send_reset(self, last_seen: float | None = None) -> None:
-        """Tell the classifier worker the cat left, with the time it was last seen."""
-        try:
-            self._queue.put_nowait(("departed", last_seen))
-        except QueueFull:
-            pass
+        v = self._primary()
+        return v.last_seen if v else None
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -399,23 +323,33 @@ def draw_bounding_boxes(frame: np.ndarray, detections: list[dict]) -> np.ndarray
     font = cv2.FONT_HERSHEY_SIMPLEX
 
     for det in detections:
+        if det.get("duplicate"):
+            continue            # a second bounding box on an animal already drawn
         label = det["label"]
         conf = det["confidence"]
         xmin, ymin, xmax, ymax = det["bbox"]
         track_id = det.get("track_id")
+        name = det.get("name")
 
-        color = _BBOX_COLORS.get(label, _BBOX_DEFAULT_COLOR)
+        if name:
+            # An animal in the region: who it is ("Cat1", "Cat1?" while the
+            # vote is open, "?" when unknown), in that animal's colour.
+            color = _BBOX_COLORS.get(name.rstrip("?"), _BBOX_DEFAULT_COLOR)
+            text = name
+        else:
+            color = _BBOX_COLORS.get(label, _BBOX_DEFAULT_COLOR)
+            text = f"{label} {conf:.0%}"
+            if track_id is not None:
+                text += f" #{track_id}"
 
         cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), color, 3)
 
-        text = f"{label} {conf:.0%}"
-        if track_id is not None:
-            text += f" #{track_id}"
-
         (tw, th), baseline = cv2.getTextSize(text, font, 0.7, 2)
-        cv2.rectangle(frame, (xmin, ymin - th - baseline - 4),
-                      (xmin + tw + 4, ymin), color, -1)
-        cv2.putText(frame, text, (xmin + 2, ymin - baseline - 2),
+        tag_h = th + baseline + 4
+        # Above the bounding box, or just inside it when it touches the top.
+        top = ymin - tag_h if ymin - tag_h >= 0 else ymin
+        cv2.rectangle(frame, (xmin, top), (xmin + tw + 4, top + tag_h), color, -1)
+        cv2.putText(frame, text, (xmin + 2, top + tag_h - baseline - 2),
                     font, 0.7, (0, 0, 0), 2)
 
     return frame
@@ -429,6 +363,7 @@ from deploy.cat_classifier import (  # noqa: E402  (numpy-only import)
     STATUS_PATH as CLASSIFIER_STATUS_PATH,
     confirmed_visits,
     read_status as read_classifier_status,
+    visit_record,
 )
 
 # Detector labels the classifier names (detection_capture.unlabeled_classes) share
@@ -438,30 +373,35 @@ CLASSIFIED_THROTTLE_KEY = "classified"
 
 
 def classifier_capture_label(status: dict | None,
-                             visit_start: float | None) -> tuple[str | None, bool]:
-    """Decide how a detection capture taken right now should be labeled.
+                             visit_id: float | None) -> tuple[str | None, bool]:
+    """Decide how a detection capture of one visit's animal, taken right now,
+    should be labeled.
 
     Returns (label, backlabel_eligible):
-      - label is the cat this visit was confirmed as (the same cat the event log
-        records), or None to save the image as unlabeled.
+      - label is the name the visit has now (the same one its log row has),
+        or None to save the image as unlabeled.
       - backlabel_eligible is True when the image is unlabeled only because the
-        vote has not decided yet; it is renamed if this visit is confirmed later.
+        vote has not decided yet; it is renamed if this visit is named later.
     Never named, and never eligible: images taken while the classifier is
-    rejecting crops (energy above threshold), or while the vote majority has
-    moved to a different cat than the one the visit was confirmed as.
-    A status from another visit carries no information about the cat at the
-    bowl now, apart from its list of confirmed visits.
+    rejecting the visit's crops (energy above threshold), while its name is
+    held by another animal in view, or while its vote majority has moved to
+    a different name than the visit's.
+    A visit that has ended is looked up in the list of confirmed visits.
     """
-    if visit_start is None:
+    if visit_id is None:
         return None, False
     if not status:
         return None, True
-    current = status.get("visit_start") == visit_start
-    if current and status.get("last_crop_rejected"):
-        return None, False
-    visit_cat = confirmed_visits(status).get(visit_start)
+    rec = visit_record(status, visit_id)
+    if rec is not None:
+        if rec.get("last_crop_rejected") or rec.get("name_taken"):
+            return None, False
+        visit_cat = rec.get("visit_cat")
+        majority = rec.get("confirmed_cat")
+    else:
+        visit_cat = confirmed_visits(status).get(visit_id)
+        majority = None
     if visit_cat:
-        majority = status.get("confirmed_cat") if current else None
         if majority and majority != visit_cat:
             return None, False
         return visit_cat, False
@@ -499,6 +439,37 @@ def capture_plan(status: dict | None, visit_start: float | None, classifier_on: 
     return label, eligible, skip
 
 
+def visit_display(visit, status: dict | None, human_names: dict,
+                  identifying: bool) -> tuple[str, str | None]:
+    """(text, named_by) for an animal's bounding box on the live view:
+    a name a person gave ("you"), the model's name ("model"), the model's
+    guess with "?" while its vote is open, or "?"."""
+    name = human_names.get(visit.visit_id)
+    if name:
+        return name, "you"
+    if not identifying:
+        return "?", None
+    rec = visit_record(status, visit.visit_id)
+    if rec is None:
+        return "?", None
+    if rec.get("visit_cat"):
+        return rec["visit_cat"], "model"
+    if rec.get("prediction") and not rec.get("unknown"):
+        return f"{rec['prediction']}?", None
+    return "?", None
+
+
+def label_visits(detections: list[dict], visits: list, status: dict | None,
+                 human_names: dict, identifying: bool) -> None:
+    """Add name, named_by and stable to the detections that are stable visits."""
+    by_id = {v.visit_id: v for v in visits}
+    for d in detections:
+        v = by_id.get(d.get("visit_id"))
+        d["stable"] = bool(v and v.stable)
+        if v is not None and v.stable:
+            d["name"], d["named_by"] = visit_display(v, status, human_names, identifying)
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Hailo Detection Callback
 # ═══════════════════════════════════════════════════════════════════════════
@@ -520,7 +491,7 @@ if HAILO_AVAILABLE:
             self.preview_writer: PreviewFrameWriter | None = None
             self.command_listener: StdinCommandListener | None = None
             self.manual_capture_dir: Path | None = None
-            self.classifier_gate: ClassifierGate | None = None
+            self.classifier_gate: VisitFeeder | None = None
             self.classifier_process: multiprocessing.Process | None = None
             self.classifier_queue = None  # multiprocessing.Queue
             self.reload_config = None     # () -> current config (project + runtime)
@@ -530,7 +501,9 @@ if HAILO_AVAILABLE:
             self.stability_frames: int = 5
             self.frame_w: int = 1920
             self.frame_h: int = 1080
-            self._track_roi_frames: dict[int, tuple[int, int]] = {}  # track_id -> (roi_frames, miss_frames)
+            self.visits: VisitTracker | None = None   # each animal in the region, by position
+            self.human_names: dict[float, str] = {}   # visit_id -> name given on the dashboard
+            self.recorder: DetectionRecorder | None = None
             from deploy.detection_capturer import VisitBackLabeler
             self.backlabeler = VisitBackLabeler()  # names a visit's early captures once confirmed
             # Classifier status as of the last read (2 Hz poll or a capture). The
@@ -590,12 +563,14 @@ if HAILO_AVAILABLE:
                 "track_id": track_id,
             })
 
-        # Process stdin commands (cheap — just a queue check)
+        # Process stdin commands (cheap — just a queue check). A capture runs
+        # after the visit tracker has seen this frame, so it knows who is in it.
+        capture_cmd = None
         if user_data.command_listener:
             cmd = user_data.command_listener.get_command()
             if cmd:
                 if cmd.get("cmd") == "capture":
-                    _handle_capture_command(element, buffer, user_data, cmd, frame_detections)
+                    capture_cmd = cmd
                 elif cmd.get("cmd") == "set_classifier":
                     _switch_classifier(user_data, restart=False)
                 elif cmd.get("cmd") == "reload_classifier":
@@ -605,17 +580,43 @@ if HAILO_AVAILABLE:
                 elif cmd.get("cmd") == "set_bowl_roi":
                     roi = cmd.get("bowl_roi", [0, 0, 1920, 1080])
                     user_data.bowl_roi = tuple(roi)
-                    gate = user_data.classifier_gate
-                    if gate:
-                        gate._bowl_roi = tuple(roi)
-                    print(f"[classifier-gate] ROI updated: {roi}", flush=True)
+                    user_data.visits.set_roi(roi)
+                    print(f"[visits] ROI updated: {roi}", flush=True)
                 elif cmd.get("cmd") == "set_roi_overlap_threshold":
                     t = cmd.get("roi_overlap_threshold", 0.01)
                     user_data.roi_overlap_threshold = t
-                    gate = user_data.classifier_gate
-                    if gate:
-                        gate._roi_overlap_threshold = t
-                    print(f"[classifier-gate] Overlap threshold: {t:.0%}", flush=True)
+                    user_data.visits.set_overlap_threshold(t)
+                    print(f"[visits] Overlap threshold: {t:.0%}", flush=True)
+                elif cmd.get("cmd") == "set_visit_names":
+                    names = {}
+                    for k, v in (cmd.get("names") or {}).items():
+                        try:
+                            names[float(k)] = str(v)
+                        except (TypeError, ValueError):
+                            pass
+                    user_data.human_names = names
+                elif cmd.get("cmd") == "record_detections":
+                    secs = min(900.0, max(1.0, float(cmd.get("seconds", 600))))
+                    if user_data.recorder:
+                        user_data.recorder.close()
+                    user_data.recorder = DetectionRecorder(
+                        PROJECT_ROOT / "logs" / "detection", secs,
+                        frame_size=(user_data.frame_w, user_data.frame_h))
+                    print(f"[visits] Recording detections for {secs:.0f} s to "
+                          f"{user_data.recorder.path}", flush=True)
+
+        # ── Visits: each animal in the region, followed by position (every frame) ──
+        visits, departed = user_data.visits.update(frame_detections)
+        for v in departed:
+            print(f"[visits] Visit {v.visit_id:.3f} ended ({v.frames} frames)", flush=True)
+            user_data.human_names.pop(v.visit_id, None)
+            if user_data.detection_capturer:
+                user_data.detection_capturer.forget(f"visit:{v.visit_id}")
+        if user_data.recorder and not user_data.recorder.add(frame_detections):
+            print(f"[visits] Recording saved: {user_data.recorder.path}", flush=True)
+            user_data.recorder = None
+        if capture_cmd:
+            _handle_capture_command(element, buffer, user_data, capture_cmd, frame_detections)
 
         # Feed into session tracker (with tracker IDs)
         if user_data.feeding_tracker:
@@ -624,8 +625,8 @@ if HAILO_AVAILABLE:
         # ── Periodic pipeline heartbeat ──────────────────────────────
         if user_data.frame_count % 300 == 0:
             n_det = len(frame_detections)
-            n_tracks = len(user_data._track_roi_frames)
-            print(f"[pipeline] Frame {user_data.frame_count}: {n_det} detections, {n_tracks} tracked", flush=True)
+            print(f"[pipeline] Frame {user_data.frame_count}: {n_det} detections, "
+                  f"{len(visits)} visit(s)", flush=True)
 
         # ── Classifier subprocess health check ─────────────────────────
         if (user_data.classifier_process is not None
@@ -635,16 +636,12 @@ if HAILO_AVAILABLE:
                           f"(exit code: {user_data.classifier_process.exitcode})")
             user_data.classifier_process = None
 
-        # ── Classifier gate (Stage 2) ──────────────────────────────────
-        needs_classify = False
-        classify_bbox = None
-        # One read per frame: the classifier can be switched off (gate set to
-        # None) from another thread at any moment.
+        # ── Classifier feeder (Stage 2) ────────────────────────────────
+        # One read per frame: the classifier can be switched off (feeder set
+        # to None) from another thread at any moment.
         clf_gate = user_data.classifier_gate
-        if clf_gate:
-            needs_classify = clf_gate.update(frame_detections)
-            if needs_classify:
-                classify_bbox = clf_gate.pending_bbox
+        to_classify = clf_gate.update(visits, departed) if clf_gate else []
+        needs_classify = bool(to_classify)
 
         # ── Decide what needs a frame BEFORE extracting (extraction is expensive) ──
         from deploy.detection_capturer import FrameExtractor
@@ -652,37 +649,12 @@ if HAILO_AVAILABLE:
         needs_preview = (user_data.preview_writer
                          and user_data.preview_writer.should_write())
 
-        # Update per-track_id ROI stability (runs every frame, lightweight)
-        if frame_detections:
-            _update_track_roi_stability(user_data, frame_detections)
-
         needs_capture = False
         if user_data.detection_capturer and detected_cats:
             if user_data.capture_mode == "detections":
-                min_stable = user_data.stability_frames
-                gate = user_data.classifier_gate
-                _, _, classified_skip = capture_plan(
-                    user_data._status, gate.visit_start if gate else None,
-                    gate is not None, user_data.save_which)
-                for cat in detected_cats:
-                    if _is_classified(user_data, cat) and classified_skip:
-                        continue
-                    if not user_data.detection_capturer.should_capture(
-                            _throttle_key(user_data, cat)):
-                        continue
-                    # Check if any detection for this cat is stably within ROI
-                    if frame_detections and not any(
-                        d["label"] == cat
-                        and _detection_in_roi(
-                            d, user_data.bowl_roi, user_data.frame_w,
-                            user_data.frame_h, user_data.roi_overlap_threshold)
-                        and user_data._track_roi_frames.get(
-                            d.get("track_id"), (0, 0))[0] >= min_stable
-                        for d in frame_detections
-                    ):
-                        continue
-                    needs_capture = True
-                    break
+                # Some stable visit in the region is due an image (cheap check
+                # with the last status read; the capture reads it again).
+                needs_capture = bool(_capture_targets(user_data, visits, user_data._status))
             elif user_data.capture_mode == "eating" and user_data.feeding_tracker:
                 from deploy.feeding_tracker import CatState
                 for cat in detected_cats:
@@ -697,34 +669,37 @@ if HAILO_AVAILABLE:
 
         # Write preview frame with bounding boxes (async — non-blocking)
         if frame is not None and needs_preview:
-            # The dashboard uses in_roi to see when a visit starts and ends.
-            for d in frame_detections:
-                d["in_roi"] = _detection_in_roi(d, user_data.bowl_roi, user_data.frame_w,
-                                                user_data.frame_h, user_data.roi_overlap_threshold)
+            # The dashboard reads in_roi, visit_id and name (set by the visit
+            # tracker and label_visits) to follow each animal.
+            label_visits(frame_detections, visits, user_data._status, user_data.human_names,
+                         identifying=clf_gate is not None)
             user_data.preview_writer.enqueue_frame(frame, frame_detections)
 
-        # Classifier crop (using shared frame)
-        if frame is not None and needs_classify and classify_bbox is not None:
-            clf_gate.put_crop(frame, classify_bbox)
+        # Classifier crops (using shared frame), one per visit due
+        if frame is not None:
+            for v in to_classify:
+                clf_gate.put_crop(frame, v)
 
         # Detection-triggered capture (using shared frame)
         if frame is not None and needs_capture:
             if user_data.capture_mode == "eating" and user_data.feeding_tracker:
                 _maybe_capture_eating_cats(user_data, detected_cats, frame, frame_detections)
             elif user_data.capture_mode == "detections":
-                _maybe_capture_detections(user_data, detected_cats, frame, frame_detections)
+                _maybe_capture_detections(user_data, detected_cats, frame, frame_detections, visits)
 
-        # Classifier status for capture: read at most twice a second, and only while
-        # a visit is open or captures are waiting to be named.
-        gate = user_data.classifier_gate
-        if (gate and user_data.detection_capturer
-                and user_data.capture_mode == "detections"):
+        # Classifier status (names on the live view, naming captures): read at
+        # most twice a second, and only while a visit is open or captures are
+        # waiting to be named.
+        if clf_gate:
             now = time.time()
             if (now - user_data._status_last_poll >= 0.5
-                    and (gate.visit_start is not None or user_data.backlabeler)):
+                    and (visits or user_data.backlabeler)):
                 user_data._status_last_poll = now
                 user_data._status = read_classifier_status()
-                _apply_backlabels(user_data, now)
+                if user_data.detection_capturer and user_data.capture_mode == "detections":
+                    _apply_backlabels(user_data, now)
+        else:
+            user_data._status = None
 
 
     def _handle_capture_command(element, buffer, user_data: CatDetectionCallback, cmd: dict,
@@ -739,11 +714,22 @@ if HAILO_AVAILABLE:
         """
         from deploy.detection_capturer import FrameExtractor
 
-        if cmd.get("require_cat") and not any(
-                _detection_in_roi(d, user_data.bowl_roi, user_data.frame_w,
-                                  user_data.frame_h, user_data.roi_overlap_threshold)
-                for d in (frame_detections or [])):
-            return
+        # The animal the image is of: a named visit's own (saved only while that
+        # visit is in the region), else the only visit in progress, if one.
+        dets = frame_detections or []
+        visit_id = cmd.get("visit_id")
+        subject = None
+        if visit_id is not None:
+            v = user_data.visits.get(visit_id) if user_data.visits else None
+            if v is None or not v.seen:
+                return
+            subject = v.detection
+        else:
+            if cmd.get("require_cat") and not any(d.get("in_roi") for d in dets):
+                return
+            in_progress = user_data.visits.visits() if user_data.visits else []
+            if len(in_progress) == 1 and in_progress[0].seen:
+                subject, visit_id = in_progress[0].detection, in_progress[0].visit_id
         cat_name = cmd.get("cat", "unlabeled")
         frame = FrameExtractor.extract_frame(buffer, element)
         if frame is None:
@@ -762,147 +748,94 @@ if HAILO_AVAILABLE:
         filepath.parent.mkdir(parents=True, exist_ok=True)
         success = cv2.imwrite(str(filepath), frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
         if success:
-            if frame_detections:
+            if dets:
                 H, W = frame.shape[:2]
+                rounded = lambda ds: [
+                    {"label": d["label"], "confidence": round(float(d["confidence"]), 4),
+                     "bbox_norm": [round(float(x), 6) for x in d["bbox_norm"]]} for d in ds]
                 sidecar = {
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "session_id": "",
                     "image_size": [W, H],
-                    "detections": [
-                        {
-                            "label": d["label"],
-                            "confidence": round(float(d["confidence"]), 4),
-                            "bbox_norm": [round(float(v), 6) for v in d["bbox_norm"]],
-                        }
-                        for d in frame_detections
-                    ],
                 }
+                if subject is not None:
+                    sidecar["detections"] = rounded([subject])
+                    sidecar["visit_id"] = visit_id
+                    sidecar["other_detections"] = rounded([d for d in dets if d is not subject])
+                else:
+                    sidecar["detections"] = rounded(dets)
                 try:
                     with open(filepath.with_suffix(".json"), "w") as f:
                         _json.dump(sidecar, f)
                 except Exception:
                     pass
-            print(json.dumps({"response": "capture_ok", "cat": cat_name, "filename": filename}),
-                  flush=True)
+            print(json.dumps({"response": "capture_ok", "cat": cat_name, "filename": filename,
+                              "visit_id": visit_id}), flush=True)
         else:
             print(json.dumps({"response": "capture_error", "message": "imwrite failed"}),
                   flush=True)
 
 
-    def _detection_in_roi(det: dict, bowl_roi: tuple, frame_w: int, frame_h: int,
-                          threshold: float) -> bool:
-        """Check if a detection bbox overlaps the bowl ROI above the threshold.
-
-        Uses intersection-over-ROI-area, same as ClassifierGate.update().
-        """
-        x0, y0, x1, y1 = bowl_roi
-        roi_area = (x1 - x0) * (y1 - y0)
-        if roi_area <= 0:
-            return True  # degenerate ROI, don't filter
-        xmin, ymin, w, h = det["bbox_norm"]
-        bx1, by1 = xmin * frame_w, ymin * frame_h
-        bx2, by2 = (xmin + w) * frame_w, (ymin + h) * frame_h
-        ix1, iy1 = max(x0, bx1), max(y0, by1)
-        ix2, iy2 = min(x1, bx2), min(y1, by2)
-        if ix2 > ix1 and iy2 > iy1:
-            overlap = (ix2 - ix1) * (iy2 - iy1) / roi_area
-            return overlap >= threshold
-        return False
-
-
-    _ROI_MISS_TOLERANCE = 5  # frames of grace before stability counter resets
-    _MAX_TRACKED_IDS = 50    # cap to prevent unbounded growth from noisy trackers
-
-    def _update_track_roi_stability(user_data, frame_detections):
-        """Update per-track_id consecutive ROI frame counts with grace period."""
-        min_stable = user_data.stability_frames
-        current_ids = set()
-        for det in frame_detections:
-            tid = det.get("track_id")
-            if tid is None:
-                continue
-            if _detection_in_roi(det, user_data.bowl_roi, user_data.frame_w,
-                                 user_data.frame_h, user_data.roi_overlap_threshold):
-                current_ids.add(tid)
-                prev_count, _ = user_data._track_roi_frames.get(tid, (0, 0))
-                new_count = prev_count + 1
-                user_data._track_roi_frames[tid] = (new_count, 0)
-                if prev_count < min_stable <= new_count:
-                    print(f"[roi-stability] Track {tid} stable in ROI ({new_count} frames)", flush=True)
-        for tid in list(user_data._track_roi_frames):
-            if tid not in current_ids:
-                count, misses = user_data._track_roi_frames[tid]
-                misses += 1
-                if misses >= _ROI_MISS_TOLERANCE:
-                    del user_data._track_roi_frames[tid]
-                    print(f"[roi-stability] Track {tid} departed ROI", flush=True)
-                else:
-                    user_data._track_roi_frames[tid] = (count, misses)
-        # Evict lowest-stability entries if dict grows too large
-        if len(user_data._track_roi_frames) > _MAX_TRACKED_IDS:
-            sorted_ids = sorted(user_data._track_roi_frames,
-                                key=lambda t: user_data._track_roi_frames[t][0])
-            for tid in sorted_ids[:len(user_data._track_roi_frames) - _MAX_TRACKED_IDS]:
-                del user_data._track_roi_frames[tid]
-
-
-    def _maybe_capture_detections(user_data, detected_cats, frame, frame_detections=None):
-        """Capture a frame for each detected class (no feeding tracker required).
-
-        Only saves detections whose bbox overlaps the bowl ROI above the
-        configured threshold. For unlabeled_classes detections the label comes
-        from capture_plan(): the cat the current visit was confirmed as, or
-        unlabeled/. Unlabeled images taken before the vote decided are registered
-        for back-labeling. save_which "identified" skips unlabeled images that
-        can never be named; "unidentified" skips named ones.
-
-        Args:
-            user_data: CatDetectionCallback with detection_capturer
-            detected_cats: set of detected label names
-            frame: Pre-extracted BGR numpy array (shared with preview writer)
-            frame_detections: list of detection dicts (label, confidence, bbox_norm)
-        """
-        min_stable = user_data.stability_frames
+    def _capture_targets(user_data, visits, status) -> list[tuple]:
+        """The visits to save an image of in this frame: (visit, label,
+        backlabel_eligible, throttle_key). One image per animal: each stable
+        visit seen in this frame, when its throttle allows and save_which
+        doesn't skip it."""
+        capturer = user_data.detection_capturer
         gate = user_data.classifier_gate
-        visit = gate.visit_start if gate else None
-        if gate:
-            user_data._status = read_classifier_status()
-        confirmed, backlabel_eligible, skip = capture_plan(
-            user_data._status, visit, gate is not None, user_data.save_which)
-        for cat in detected_cats:
-            # Filter to detections in the ROI with stable presence
-            roi_dets = None
-            if frame_detections:
-                roi_dets = [
-                    {"label": d["label"], "confidence": d["confidence"],
-                     "bbox_norm": list(d["bbox_norm"])}
-                    for d in frame_detections
-                    if d["label"] == cat
-                    and _detection_in_roi(
-                        d, user_data.bowl_roi, user_data.frame_w,
-                        user_data.frame_h, user_data.roi_overlap_threshold)
-                    and user_data._track_roi_frames.get(
-                        d.get("track_id"), (0, 0))[0] >= min_stable
-                ] or None
-            if not roi_dets:
+        out, keys = [], set()
+        for v in visits or []:
+            if not (v.seen and v.stable):
                 continue
-
-            classified = _is_classified(user_data, cat)
-            save_label = cat
+            classified = _is_classified(user_data, v.label)
+            key = _throttle_key(user_data, v.label, v.visit_id)
+            if key in keys or not capturer.should_capture(key):
+                continue
+            label, eligible = v.label, False
             if classified:
-                # With save_which "identified", an image that may still be named once the
-                # visit is confirmed is kept for now and deleted if it never is.
+                confirmed, eligible, skip = capture_plan(
+                    status, v.visit_id, gate is not None, user_data.save_which)
                 if skip:
                     continue
-                save_label = confirmed or "unlabeled"
+                label = confirmed or "unlabeled"
+            keys.add(key)
+            out.append((v, label, eligible and classified and label == "unlabeled", key))
+        return out
 
+
+    def _sidecar_dets(dets) -> list[dict]:
+        return [{"label": d["label"], "confidence": d["confidence"],
+                 "bbox_norm": list(d["bbox_norm"])} for d in dets]
+
+
+    def _maybe_capture_detections(user_data, detected_cats, frame, frame_detections=None,
+                                  visits=None):
+        """Save one image per animal in the region (no feeding tracker required).
+
+        Each stable visit gets its own image, named for its animal: for
+        unlabeled_classes labels the name comes from capture_plan() (the name
+        the classifier gave that visit, or unlabeled/; undecided ones are
+        registered for back-labeling), other labels keep the detector's label.
+        The sidecar's "detections" holds only that animal's bounding box (the
+        one training crops); the other bounding boxes in the region go under
+        "other_detections". save_which "identified" skips unlabeled images
+        that can never be named; "unidentified" skips named ones.
+        """
+        if user_data.classifier_gate:
+            user_data._status = read_classifier_status()
+        in_region = [d for d in (frame_detections or []) if d.get("in_roi")]
+        for v, label, eligible, key in _capture_targets(user_data, visits, user_data._status):
+            subject = v.detection
+            if subject is None:
+                continue
+            others = [d for d in in_region if d is not subject]
             saved = user_data.detection_capturer.maybe_capture(
-                save_label, frame, detections=roi_dets,
-                throttle_key=_throttle_key(user_data, cat))
+                label, frame, detections=_sidecar_dets([subject]), throttle_key=key,
+                extra={"visit_id": v.visit_id, "other_detections": _sidecar_dets(others)})
             if saved:
-                print(f"[capture] Saved as '{save_label}' ({len(roi_dets)} detections)", flush=True)
-                if classified and confirmed is None and backlabel_eligible:
-                    user_data.backlabeler.add(visit, saved)
+                print(f"[capture] Saved as '{label}' (visit {v.visit_id:.3f})", flush=True)
+                if eligible:
+                    user_data.backlabeler.add(v.visit_id, saved)
 
 
     def _is_classified(user_data, cat: str) -> bool:
@@ -910,8 +843,13 @@ if HAILO_AVAILABLE:
         return bool(user_data.unlabeled_classes) and cat in user_data.unlabeled_classes
 
 
-    def _throttle_key(user_data, cat: str) -> str:
-        return CLASSIFIED_THROTTLE_KEY if _is_classified(user_data, cat) else cat
+    def _throttle_key(user_data, cat: str, visit_id: float | None = None) -> str:
+        """What the minimum time between images applies to: each animal (visit)
+        for labels the classifier names, whatever name its images get; the
+        label for the others."""
+        if not _is_classified(user_data, cat):
+            return cat
+        return f"visit:{visit_id}" if visit_id is not None else CLASSIFIED_THROTTLE_KEY
 
 
     def _apply_backlabels(user_data, now: float) -> None:
@@ -928,10 +866,10 @@ if HAILO_AVAILABLE:
             capturer.relabel(paths, cat)
             print(f"[capture] Visit confirmed as '{cat}': labeling "
                   f"{len(paths)} earlier capture(s)", flush=True)
-        gate = user_data.classifier_gate
-        if gate is None:            # switched off meanwhile
+        if user_data.classifier_gate is None:      # switched off meanwhile
             return
-        expired = user_data.backlabeler.expire(gate.visit_start, now, last_hit=gate.last_hit)
+        current = {v.visit_id: v.last_seen for v in user_data.visits.visits()}
+        expired = user_data.backlabeler.expire(current, now)
         if expired and user_data.save_which == "identified":
             capturer.delete(expired)
 
@@ -1038,9 +976,6 @@ def _start_classifier(user_data, cfg: dict, ctx) -> None:
     runs threads is unsafe (spawn starts a fresh interpreter instead).
     """
     classifier_cfg = cfg.get("classifier", {})
-    camera_cfg = cfg.get("camera", {})
-    tracking_objects = cfg.get("deployment", {}).get("tracking_objects", ["cat"])
-    bowl_roi = tuple(classifier_cfg.get("bowl_roi", [0, 0, 1920, 1080]))
     CLASSIFIER_STATUS_PATH.unlink(missing_ok=True)      # stale status of an earlier run
 
     from deploy.cat_classifier import classifier_worker
@@ -1048,28 +983,21 @@ def _start_classifier(user_data, cfg: dict, ctx) -> None:
     for key in ("model_path", "db_path"):
         if key in resolved:
             resolved[key] = str(resolve_path(resolved[key], PROJECT_ROOT))
-    q = ctx.Queue(maxsize=5)
+    q = ctx.Queue(maxsize=16)
     proc = ctx.Process(target=classifier_worker, args=(q, resolved), daemon=True,
                        name="cat_classifier")
     proc.start()
     print_info(f"Classifier process started (pid={proc.pid})")
-    gate = ClassifierGate(
+    gate = VisitFeeder(
         queue=q,
-        bowl_roi=bowl_roi,
-        frame_w=camera_cfg.get("width", 1920),
-        frame_h=camera_cfg.get("height", 1080),
-        stability_frames=classifier_cfg.get("stability_frames", 5),
         classify_interval=classifier_cfg.get("classify_interval_seconds", 1.0),
         crop_padding=classifier_cfg.get("crop_padding", 0.20),
-        roi_overlap_threshold=classifier_cfg.get("roi_overlap_threshold", 0.01),
-        trigger_labels=set(tracking_objects),
-        miss_tolerance=classifier_cfg.get("miss_tolerance", 15),
     )
     # Publish the gate last: the frame callback starts feeding it at once.
     user_data.classifier_queue = q
     user_data.classifier_process = proc
     user_data.classifier_gate = gate
-    print_info(f"Classifier gate active — ROI={bowl_roi}")
+    print_info("Classifier feeder active")
 
 
 def _stop_classifier(user_data) -> None:
@@ -1223,6 +1151,19 @@ def main():
     user_data.stability_frames = classifier_cfg.get("stability_frames", 5)
     user_data.frame_w = camera_cfg.get("width", 1920)
     user_data.frame_h = camera_cfg.get("height", 1080)
+    # Visits: each animal in the region, followed by position (track IDs
+    # change constantly). Runs with identification on or off.
+    user_data.visits = VisitTracker(
+        labels=set(tracking_objects),
+        roi=user_data.bowl_roi,
+        frame_w=user_data.frame_w,
+        frame_h=user_data.frame_h,
+        overlap_threshold=user_data.roi_overlap_threshold,
+        stability_frames=user_data.stability_frames,
+        gap_seconds=visit_gap_from(classifier_cfg, camera_cfg),
+    )
+    print_info(f"Visits: up to {user_data.visits.max_visits} at a time, end after "
+               f"{user_data.visits.gap_seconds:.1f} s out of the region")
 
     # ── Classifier setup (BEFORE GStreamer init — fork safety) ───────────
     # Later switches (dashboard: identification on/off, a new model, a new

@@ -132,6 +132,48 @@ model, and a small change in the classifier worker to compute cosine distances.
 This is the largest change on the list and the one most likely to matter if two
 cats are genuinely hard to separate.
 
+**Decision (November 2026): not now.** Reviewed against the Holstein cattle
+re-identification work and the wider animal re-identification field (sources
+below), metric learning does not pay off for this project yet:
+
+- The classifier already reaches 99.0% validation and 99.4% cross-validated
+  accuracy on three cats, so there is no accuracy to gain on what can be measured.
+- Its benefits (enrolling new animals without retraining, rejecting strangers,
+  grouping unnamed animals) need many individuals. Three are too few to train a
+  general embedding, or even to measure stranger rejection; it would rest on outside
+  datasets that look nothing like a camera over a bowl.
+- Identifying several animals at once needed visits that follow each animal by
+  position, not a different model; that is done (`deploy/visits.py`).
+- The ideas from that work that do pay off are in place: deciding over many frames
+  (the vote window; Andrew et al. 2017 went from 86% per image to 98% this way),
+  one label for a whole visit ("Who is this?"), and two animals in view at once
+  being different animals (one name per animal at a time).
+
+Reopen it when one of these is true: more animals than someone can name on sight
+(roughly 20 or more); animals arriving or leaving every week; strangers mattering
+(an outdoor feeder) with the energy check proving too weak; or users without a
+training machine. The first step then is a day on the PC with no change to the Pi:
+nearest-neighbour matching with frozen DINOv2 and MegaDescriptor embeddings on the
+existing labelled images, per visit. Continue only if that matches the classifier
+from five named visits per animal. Farm herds are the likely case: patterned cattle
+are easier to tell apart than cats, but naming and retraining for every animal does
+not scale to a herd.
+
+| Work | What it shows |
+|---|---|
+| [Andrew et al. 2017](https://arxiv.org/abs/1709.00473) | Holsteins: 86.1% per image, 98.1% with evidence fused over video |
+| [Andrew et al. 2021, OpenCows2020](https://arxiv.org/abs/2006.09205) | 46 cows, top-down; 93.8% on cows never seen in training |
+| [Gao et al. 2021, Cows2021](https://arxiv.org/abs/2105.01938) | 186 cows; 57.0% with no labels at all |
+| [Gao et al. 2022, Label a Herd in Minutes](https://link.springer.com/chapter/10.1007/978-3-031-13324-4_33) | Clustering plus a few minutes of labelling: 92.4% |
+| [Best-practice metric learning 2025](https://www.sciencedirect.com/science/article/pii/S0168169925008609) | 99.8% rank-1 on OpenCows2020 |
+| [OpenCowID, WACV 2026](https://openaccess.thecvf.com/content/WACV2026/papers/Prabhune_OpenCowID_Zero-Shot_Visual_Identification_of_Dairy_Cows_WACV_2026_paper.pdf) | Zero-shot from synthetic coat patterns |
+| [MegaDescriptor, WACV 2024](https://openaccess.thecvf.com/content/WACV2024/papers/Cermak_WildlifeDatasets_An_Open-Source_Toolkit_for_Animal_Re-Identification_WACV_2024_paper.pdf) | Re-identification foundation model; weights CC BY-NC 4.0 |
+| [MiewID](https://arxiv.org/pdf/2412.05602) | Best on unseen species; no licence stated |
+| [DINOv2](https://github.com/facebookresearch/dinov2) / [DINOv3](https://github.com/facebookresearch/dinov3) | General image features; DINOv2 is Apache 2.0 |
+| [PetFace, ECCV 2024](https://arxiv.org/abs/2407.13555) | 257k pets, faces only |
+| [AnimalCLEF 2025](https://ceur-ws.org/Vol-4038/paper_231.pdf) | Winning recipe: global match, local keypoint check, novelty threshold |
+| [Feral cat re-identification 2025](https://www.sciencedirect.com/science/article/pii/S1574954125002675) | Infrared night images are the main obstacle for cats |
+
 ### 5. Run Stage 2 on the NPU
 
 The CPU budget is what keeps the classifier small. Compiling it to a HEF with

@@ -10,10 +10,14 @@ Format (written by the Pi's detection capture, read by train/crop_images.py):
     {"timestamp": ..., "session_id": ..., "image_size": [w, h],
      "detections": [{"label": "cat", "confidence": 0.63,
                      "bbox_norm": [xmin, ymin, w, h]}],   # normalized 0-1
+     "visit_id": 1763312345.123,     # the visit the image was saved for
+     "other_detections": [...],      # other bounding boxes in the region
      "original_detections": [...],   # only after a bounding box was edited
      "created_by": "annotate"}       # only when the sidecar was made by hand
 
-Cropping uses the highest-confidence detection. Editing a Pi sidecar keeps the
+Images saved per animal (with visit_id) hold only that animal's bounding box
+in "detections"; older images may hold several. Cropping uses the
+highest-confidence detection in "detections", so both crop the right animal. Editing a Pi sidecar keeps the
 Pi's detections in ``original_detections`` so clearing the edit restores them;
 an untouched Pi sidecar is never deleted.
 """

@@ -1,0 +1,2 @@
+# Development and tests (on the PC): pip install -r requirements-dev.txt
+pytest
