@@ -15,12 +15,11 @@
   /* ── Layout ── */
   .main {
     flex: 1; min-height: 0; display: flex; gap: 16px;
-    width: 100%; max-width: min(var(--app-max), 1440px); margin: 0 auto; padding: 16px 20px;
+    width: 100%; max-width: var(--app-max); margin: 0 auto; padding: 16px 20px;
   }
-  body[data-tab="review"] .main, body[data-tab="annotate"] .main { max-width: var(--app-max); }
-  /* The header lines up with the page body on every tab. */
-  .top-bar-inner { max-width: min(var(--app-max), 1440px); margin: 0 auto; padding: 10px 20px; }
-  body[data-tab="review"] .top-bar-inner, body[data-tab="annotate"] .top-bar-inner { max-width: var(--app-max); }
+  /* Every tab has the same width, and the header lines up with it, so
+     nothing shifts when switching tabs. */
+  .top-bar-inner { max-width: var(--app-max); margin: 0 auto; padding: 10px 20px; }
   .content-col { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding-right: 4px; }
   body[data-tab="review"] .content-col, body[data-tab="annotate"] .content-col { overflow: hidden; padding-right: 0; }
   .sidebar { width: 300px; flex-shrink: 0; overflow-y: auto; }
@@ -223,7 +222,7 @@
   #review-image-wrapper > img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
   #review-info { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .label-badge { font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; display: inline-block; }
-  .label-badge.unlabeled { background: var(--warn-soft); color: var(--warn); }
+  .label-badge.unlabeled { background: color-mix(in srgb, var(--unlabeled) 14%, transparent); color: var(--unlabeled); }
   .label-badge.labeled { background: var(--success-soft); color: var(--success); }
   .filename-display { font: 12.5px var(--font-mono); color: var(--muted); word-break: break-all; }
   .review-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
@@ -291,8 +290,8 @@
 
   /* ── Sidebar ── */
   .sidebar hr { border: 0; border-top: 1px solid var(--border); margin: 8px 0; }
-  #unlabeled-row.has-unlabeled { background: var(--warn-soft); border-radius: var(--radius-sm); }
-  #unlabeled-row.has-unlabeled .count { color: var(--warn); }
+  #unlabeled-row.has-unlabeled { background: color-mix(in srgb, var(--unlabeled) 14%, transparent); border-radius: var(--radius-sm); }
+  #unlabeled-row.has-unlabeled .count { color: var(--unlabeled); }
   .recent-list { font-size: 13px; }
   .recent-list .row { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
   .tracked-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
@@ -521,8 +520,8 @@
           </div>
           {% endfor %}
           <div class="cat-stat" id="unlabeled-row">
-            <span class="name" style="color:var(--warn)">Unlabeled</span>
-            <div class="bar-bg"><div class="bar-fill" id="bar-unlabeled" style="width:0%;background:var(--warn)"></div></div>
+            <span class="name" style="color:var(--unlabeled)">Unlabeled</span>
+            <div class="bar-bg"><div class="bar-fill" id="bar-unlabeled" style="width:0%;background:var(--unlabeled)"></div></div>
             <span class="count" id="count-unlabeled">0</span>
           </div>
         </section>
@@ -1115,7 +1114,7 @@ async function fetchTrackedEvents() {
           '<td style="padding:2px 4px;color:' + color + ';font-weight:700">' + ev.cat_name + '</td>' +
           '<td class="dim">' + formatTime(ev.start_time) + '</td>' +
           (ev.in_progress
-            ? '<td style="color:var(--success)">now</td><td class="dim">--</td>'
+            ? '<td class="dim">-</td><td class="dim">-</td>'
             : '<td class="dim">' + formatTime(ev.end_time) + '</td><td class="dim">' + formatDuration(ev.duration_seconds) + '</td>');
         tbody.appendChild(tr);
       }
@@ -1661,7 +1660,7 @@ async function pollStatus() {
     document.getElementById('count-unlabeled').textContent = uc;
     const unlabeledRow = document.getElementById('unlabeled-row');
     unlabeledRow.classList.toggle('has-unlabeled', uc > 0);
-    topParts.push(['Unlabeled', uc, 'var(--warn)']);
+    topParts.push(['Unlabeled', uc, 'var(--unlabeled)']);
     document.getElementById('top-counts').innerHTML = topParts.map(([name, n, color]) =>
       '<span class="tc"><span class="dot" style="--c:' + color + '"></span>' + name + ' <b>' + n + '</b></span>').join('');
 

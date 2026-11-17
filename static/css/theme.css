@@ -17,6 +17,7 @@
   --text: #e6e8ef; --muted: #8b93ad; --faint: #5b627a;
   --accent: #7ba87a; --on-accent: #0d1a0f;
   --success: #7ba87a; --info: #4cc9f0; --danger: #e5484d; --warn: #d0a46a;
+  --unlabeled: #a87272;   /* muted rose: images no one has named yet */
   --stage: #000;
 
   --accent-soft: color-mix(in srgb, var(--accent) 16%, transparent);
