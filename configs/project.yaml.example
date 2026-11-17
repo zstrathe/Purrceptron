@@ -1,7 +1,10 @@
-cats:
+cats:                       # the individuals to tell apart (any animal; the key keeps its name)
 - Cat1
 - Cat2
 - Cat3
+subject:                    # optional: the dashboard's wording for the animals
+  animal: cat               # default: the first of deployment.tracking_objects
+  plural: cats              # default: animal + "s"
 camera:
   device: /dev/video0
   width: 1920

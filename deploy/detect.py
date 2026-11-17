@@ -700,9 +700,16 @@ if HAILO_AVAILABLE:
         Always saves directly to manual_capture_dir, bypassing DetectionCapturer's
         automatic throttle which is only appropriate for detection-triggered captures.
         Writes a JSON sidecar with current frame detections for crop-on-dashboard.
+        With "require_cat" (auto-capture), saves only when a tracked animal is
+        in the bowl area, so empty frames aren't saved under the cat's name.
         """
         from deploy.detection_capturer import FrameExtractor
 
+        if cmd.get("require_cat") and not any(
+                _detection_in_roi(d, user_data.bowl_roi, user_data.frame_w,
+                                  user_data.frame_h, user_data.roi_overlap_threshold)
+                for d in (frame_detections or [])):
+            return
         cat_name = cmd.get("cat", "unlabeled")
         frame = FrameExtractor.extract_frame(buffer, element)
         if frame is None:

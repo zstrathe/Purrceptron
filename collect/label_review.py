@@ -376,7 +376,8 @@ class LabelReviewApp:
                     self.index -= 1
             except ValueError:
                 pass
-            return {"status": "ok", "action": "already_labeled"}
+            return {"status": "ok", "action": "already_labeled", "label": current_label,
+                    "filename": path.name}
 
         dest_dir = self.data_dir / new_label
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -412,7 +413,8 @@ class LabelReviewApp:
         except ValueError:
             pass
 
-        return {"status": "ok", "action": "labeled", "new_label": new_label}
+        return {"status": "ok", "action": "labeled", "new_label": new_label,
+                "label": new_label, "filename": dest_path.name}
 
     @_one_state_save
     def _delete_by_path(self, path: Path) -> dict:
@@ -493,6 +495,20 @@ class LabelReviewApp:
             self.index = max(0, len(self.images) - 1)
 
         return {"status": "ok", "deleted": deleted, "errors": errors}
+
+    def is_reviewed(self, path: Path) -> bool:
+        return self._review_state.is_reviewed(path)
+
+    @_one_state_save
+    def label_paths(self, paths: list[Path], label: str) -> list[dict]:
+        """Give each image this label (moving it to that folder) and mark it
+        reviewed. Keeping an image's current label just marks it reviewed."""
+        return [self._label_by_path(p, label) for p in paths]
+
+    @_one_state_save
+    def trash_paths(self, paths: list[Path]) -> list[dict]:
+        """Move images (and their sidecars) to the trash folder."""
+        return [self._delete_by_path(p) for p in paths]
 
     def get_stats(self) -> dict:
         return {

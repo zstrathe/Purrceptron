@@ -4,11 +4,13 @@
 # Noncommercial use only; see LICENSE.md. Not licensed for AI/ML training or
 # text and data mining (rights reserved under Art. 4(3) Directive (EU) 2019/790).
 
-"""Unified collection dashboard — capture, label review, and inference control.
+"""Purrceptron: the Pi's web dashboard for capture, labelling, training and backups.
 
-Single-page tabbed web UI for the full data collection workflow:
-- Capture tab: live detection feed with bounding boxes, mode switching, manual capture
-- Review tab: iterate images, assign labels, delete bad captures, thumbnail navigation
+Single-page tabbed web UI:
+- Capture tab: live detection feed, cat identification, saving training images
+- Label tab: which cat each image shows, and its bounding box
+- Training tab: train, deploy and switch models (remote_training/)
+- Backup tab: nightly snapshots to the PC or Hugging Face
 
 Usage:
     python pi_dashboard.py                   # reads configs/project.yaml
@@ -39,7 +41,8 @@ from flask import Flask, Response, jsonify, render_template, request, send_file
 # ---------------------------------------------------------------------------
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from utils import PROJECT_ROOT, add_common_args, load_config, resolve_path, get_cat_colors_hex
+from utils import (PROJECT_ROOT, add_common_args, load_config, resolve_path,
+                   get_cat_colors_hex, subject_words)
 from utils.display import print_info, print_success, print_error, print_warning, print_header
 
 from collect.label_review import LabelReviewApp
@@ -130,6 +133,7 @@ class AutoCaptureState:
             return {
                 "capture_mode": "auto" if self.enabled else "manual",
                 "auto_target": self.target_cat,
+                "auto_interval": self.interval,
             }
 
 
@@ -147,7 +151,9 @@ def _auto_capture_loop(state: AutoCaptureState, pipeline_mgr: 'DetectionPipeline
             state.last_capture_time = now
 
         if pipeline_mgr.is_running():
-            pipeline_mgr.send_command({"cmd": "capture", "cat": cat})
+            # Only frames with an animal in the region of interest: an empty frame saved under
+            # the cat's name would be a wrong training example.
+            pipeline_mgr.send_command({"cmd": "capture", "cat": cat, "require_cat": True})
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -180,9 +186,23 @@ class DetectionPipelineManager:
         # Model file watcher: auto-restart when classifier model changes
         self._model_watcher_thread: threading.Thread | None = None
         self._model_watcher_stop = threading.Event()
+        self._config_reader = None
 
     def set_config(self, config: dict) -> None:
         self._config = config
+
+    def set_config_reader(self, reader) -> None:
+        """reader() returns the current merged config (project + runtime), so
+        settings changed in the dashboard are seen without a restart."""
+        self._config_reader = reader
+
+    def _current_config(self) -> dict:
+        if self._config_reader:
+            try:
+                return self._config_reader()
+            except Exception:
+                pass
+        return self._config or {}
 
     def is_running(self) -> bool:
         with self._lock:
@@ -267,7 +287,6 @@ class DetectionPipelineManager:
     def stop(self) -> dict:
         """Stop the detect.py subprocess."""
         self._intentional_stop = True
-        self._model_watcher_stop.set()
         with self._lock:
             if self.process is None or self.process.poll() is not None:
                 self.process = None
@@ -292,44 +311,45 @@ class DetectionPipelineManager:
             return {"status": "ok"}
 
     def _start_model_watcher(self) -> None:
-        """Watch the classifier model file for changes and auto-restart."""
-        if not self._config:
+        """Start the classifier model watcher once; it runs for the life of
+        the dashboard (start/stop/restart and watchdog restarts reuse it, so
+        there is never more than one)."""
+        if self._model_watcher_thread and self._model_watcher_thread.is_alive():
             return
-        clf_cfg = self._config.get("classifier", {})
-        if not clf_cfg.get("enabled", False):
-            return
-        model_path = Path(clf_cfg.get("model_path", "models/cat_classifier.pte"))
-        if not model_path.is_absolute():
-            model_path = self.project_root / model_path
-
         self._model_watcher_stop.clear()
         self._model_watcher_thread = threading.Thread(
-            target=self._watch_model_file,
-            args=(model_path,),
-            daemon=True,
-        )
+            target=self._watch_model_file, daemon=True, name="model-watcher")
         self._model_watcher_thread.start()
 
-    def _watch_model_file(self, model_path: Path) -> None:
-        """Poll model file mtime and trigger restart on change."""
-        try:
-            last_mtime = model_path.stat().st_mtime if model_path.exists() else None
-        except OSError:
-            last_mtime = None
+    def _model_path(self, cfg: dict) -> Path:
+        model_path = Path((cfg.get("classifier") or {}).get("model_path")
+                          or "models/cat_classifier.pte")
+        return model_path if model_path.is_absolute() else self.project_root / model_path
 
+    @staticmethod
+    def _file_signature(path: Path) -> float | None:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return None
+
+    def _watch_model_file(self) -> None:
+        """Restart detection when the classifier model file is created or
+        replaced (deploy, rollback, or a copy by hand), so the classifier
+        loads it. Reads the config each time: the classifier may be turned
+        on, or its model path changed, while the dashboard runs."""
+        last = self._file_signature(self._model_path(self._current_config()))
         while not self._model_watcher_stop.wait(timeout=5):
-            try:
-                if not model_path.exists():
-                    continue
-                mtime = model_path.stat().st_mtime
-                if last_mtime is not None and mtime != last_mtime:
-                    print(f"[model-watcher] Model file changed, restarting pipeline...",
-                          flush=True)
-                    self.restart()
-                    return  # restart() starts a new watcher
-                last_mtime = mtime
-            except OSError:
+            cfg = self._current_config()
+            sig = self._file_signature(self._model_path(cfg))
+            if sig == last:
                 continue
+            last = sig
+            enabled = bool((cfg.get("classifier") or {}).get("enabled"))
+            if sig is None or not enabled or not self.is_running():
+                continue    # removed, or nothing to reload; the next start loads it
+            print("[model-watcher] Model file changed, restarting detection...", flush=True)
+            self.restart()
 
     def restart(self) -> dict:
         """Stop and restart the pipeline with a delay for device release."""
@@ -617,6 +637,7 @@ def create_app(
             cat_names=cats,
             cat_colors=cat_colors,
             min_images=min_images,
+            w=subject_words(config_mgr.read()),      # animal / animals wording
         )
 
     # ── Preview Frame (latest JPEG from detect.py) ───────────────
@@ -707,10 +728,24 @@ def create_app(
             classifier_cfg.get("model_path", "models/cat_classifier.pte"),
             PROJECT_ROOT,
         )
+        # What the classifier worker itself reported: an error such as a
+        # missing model stays there until detection restarts.
+        worker_error = None
+        try:
+            worker_error = json.loads(CLASSIFIER_STATUS_JSON.read_text()).get("error")
+        except (OSError, json.JSONDecodeError, AttributeError):
+            pass
+        meta = training_mgr.deployed_info().get("meta") if training_mgr else None
         result["classifier"] = {
             "enabled": classifier_cfg.get("enabled", False),
             "model_exists": model_path.is_file(),
+            "worker_error": worker_error,
+            "model": {"job_id": meta.get("job_id"), "deployed_at": meta.get("deployed_at"),
+                      "val_acc": (meta.get("metrics") or {}).get("val_acc")} if meta else None,
         }
+        cam = cfg.get("camera") or {}
+        result["camera_size"] = [cam.get("width", 1920), cam.get("height", 1080)]
+        result["capture_target"] = min_images
 
         # Review state
         result["review"] = {
@@ -1069,7 +1104,8 @@ def create_app(
             for img in sorted(d.glob("*.jpg")):
                 bbox = _bbox_json(sidecars.read_sidecar(img))
                 images.append({"cat": folder, "filename": img.name,
-                               "has_bbox": bbox is not None, "bbox": bbox})
+                               "has_bbox": bbox is not None, "bbox": bbox,
+                               "reviewed": reviewer.is_reviewed(img)})
         backend = training_mgr.settings()["backend"]
         return jsonify({
             "images": images,
@@ -1077,6 +1113,34 @@ def create_app(
             "backend": backend,
             "job_active": training_mgr.is_active(),
         })
+
+    def _label_items(items) -> list[Path] | None:
+        """[{cat, filename}] from the Label tab -> image paths, or None if
+        any is not an image in the label folders."""
+        paths = [_ann_path(str(it.get("cat", "")), str(it.get("filename", "")))
+                 for it in (items or []) if isinstance(it, dict)]
+        return paths if paths and all(paths) else None
+
+    @flask_app.route("/api/label", methods=["POST"])
+    def api_label():
+        """Label images (move them to that cat's folder) and mark them
+        reviewed. Body: {items: [{cat, filename}], label}; the current label
+        ("Looks right") only marks them reviewed."""
+        data = request.get_json(silent=True) or {}
+        label = str(data.get("label", ""))
+        paths = _label_items(data.get("items"))
+        if paths is None or label not in ann_folders:
+            return jsonify({"status": "error", "message": "Unknown image or label"}), 400
+        return jsonify({"status": "ok", "results": reviewer.label_paths(paths, label)})
+
+    @flask_app.route("/api/label/trash", methods=["POST"])
+    def api_label_trash():
+        """Move images to the trash folder (data/trash); nothing is deleted."""
+        data = request.get_json(silent=True) or {}
+        paths = _label_items(data.get("items"))
+        if paths is None:
+            return jsonify({"status": "error", "message": "Unknown image"}), 400
+        return jsonify({"status": "ok", "results": reviewer.trash_paths(paths)})
 
     @flask_app.route("/api/annotate/thumb/<folder>/<filename>")
     def api_annotate_thumb(folder, filename):
@@ -1174,7 +1238,7 @@ def create_app(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Cat collection dashboard — capture, review, and inference"
+        description="Purrceptron dashboard: capture, labelling, training and backups"
     )
     add_common_args(parser)
     parser.add_argument("--host", default=None,
@@ -1204,7 +1268,7 @@ def main() -> None:
     trash_dir = resolve_path(review_cfg.get("trash_dir", "data/trash"), PROJECT_ROOT)
     min_images = collection_cfg.get("min_images_per_cat", 300)
 
-    print_header("Cat Collection Dashboard")
+    print_header("Purrceptron Dashboard")
     print_info(f"Cats: {', '.join(cats)}")
 
     # Label reviewer (with review state tracking and thumbnail cache)
@@ -1231,21 +1295,17 @@ def main() -> None:
 
     pipeline_mgr = DetectionPipelineManager(PROJECT_ROOT, config_path, hailo_apps_dir)
     pipeline_mgr.set_config(config)
+    pipeline_mgr.set_config_reader(config_mgr.read)
 
     # Remote training jobs (local PC / cloud backends); resumes a running job
     secrets = SecretsStore(yaml_path.parent / "secrets.yaml")
 
     def _on_model_installed() -> str | None:
-        # The pipeline's model watcher restarts detection when the model file
-        # changes, but it only runs if the classifier was enabled at startup.
-        # Without it, restart here so the new model is loaded.
-        watcher = pipeline_mgr._model_watcher_thread
-        if watcher and watcher.is_alive():
-            return None
+        # The model watcher restarts detection within a few seconds when the
+        # model file changes, so the classifier loads the new model.
         if not pipeline_mgr.is_running():
             return "Model installed. Detection is not running; it loads on the next start."
-        threading.Thread(target=pipeline_mgr.restart, daemon=True).start()
-        return "Restarting detection with the new model."
+        return None
 
     training_mgr = TrainingJobManager(PROJECT_ROOT, yaml_path, config_mgr.read, secrets,
                                       on_model_installed=_on_model_installed)

@@ -7,8 +7,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Cat Collection Dashboard</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%231a1e2e'/%3E%3Crect x='8' y='8' width='16' height='16' rx='2' fill='none' stroke='%237ba87a' stroke-width='3'/%3E%3C/svg%3E">
+<title>Purrceptron</title>
+<link rel="icon" type="image/png" href="{{ url_for('static', filename='img/icon.png') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/theme.css') }}">
 <script src="{{ url_for('static', filename='js/chart.umd.min.js') }}"></script>
 <style>
@@ -18,6 +18,9 @@
     width: 100%; max-width: min(var(--app-max), 1440px); margin: 0 auto; padding: 16px 20px;
   }
   body[data-tab="review"] .main, body[data-tab="annotate"] .main { max-width: var(--app-max); }
+  /* The header lines up with the page body on every tab. */
+  .top-bar-inner { max-width: min(var(--app-max), 1440px); margin: 0 auto; padding: 10px 20px; }
+  body[data-tab="review"] .top-bar-inner, body[data-tab="annotate"] .top-bar-inner { max-width: var(--app-max); }
   .content-col { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; padding-right: 4px; }
   body[data-tab="review"] .content-col, body[data-tab="annotate"] .content-col { overflow: hidden; padding-right: 0; }
   .sidebar { width: 300px; flex-shrink: 0; overflow-y: auto; }
@@ -37,7 +40,60 @@
   .top-counts .tc b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 
   /* ── Capture tab ── */
-  .capture-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin-top: 12px; }
+  .capture-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; align-items: start; }
+  .capture-grid > #sec-collect { grid-row: span 2; }
+  #sec-ident .cap-row { grid-template-columns: 156px 1fr; }
+  @media (max-width: 1000px) { .capture-grid { grid-template-columns: 1fr; } .capture-grid > #sec-collect { grid-row: auto; } }
+  @media (max-width: 460px) { .capture-grid { grid-template-columns: 1fr; } }
+  .capture-grid[hidden] { display: none; }
+
+  /* Status chips: shape + colour + text, so state never rests on colour alone */
+  .status-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .status-row .spacer { flex: 1; }
+  .schip {
+    display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border-radius: 999px;
+    background: var(--surface); border: 1px solid var(--border); color: var(--muted);
+    font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap;
+  }
+  .schip:hover { border-color: var(--border-strong); color: var(--text); }
+  .schip .stext b { color: var(--text); font-weight: 600; }
+  .sdot { width: 9px; height: 9px; flex-shrink: 0; border-radius: 50%; border: 2px solid var(--faint); box-sizing: border-box; }
+  .schip.on .sdot { background: var(--success); border-color: var(--success); }
+  .schip.busy .sdot { background: var(--warn); border-color: var(--warn); animation: pulse 1s infinite; }
+  .schip.warn { border-color: color-mix(in srgb, var(--warn) 55%, transparent); color: var(--warn); }
+  .schip.warn .sdot { background: var(--warn); border-color: var(--warn); border-radius: 2px; transform: rotate(45deg); }
+  .schip.err { border-color: var(--danger); color: var(--danger); }
+  .schip.err .sdot { background: var(--danger); border-color: var(--danger); border-radius: 2px; }
+  #controls-btn { height: 32px; }
+  #controls-btn .chev { transition: transform .15s; display: inline-block; }
+  #controls-btn[aria-expanded="true"] .chev { transform: rotate(180deg); }
+  #controls-btn[aria-expanded="true"] { border-color: var(--muted); }
+  #chip-restart { height: 32px; }
+
+  /* Drawer rows: labels in one column, controls in the next, hints under the control */
+  .cap-row { display: grid; grid-template-columns: 184px 1fr; column-gap: 12px; row-gap: 4px; align-items: center; margin-bottom: 12px; }
+  .cap-row > label:first-child { font-size: 13px; color: var(--text); }
+  .cap-row > .ctl { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 32px; }
+  .cap-row > .fhint { grid-column: 1 / -1; font-size: 12px; line-height: 1.4; color: var(--muted); }
+  .cap-row > .fhint:empty { display: none; }
+  .cap-row input[type="number"] { width: 80px; }
+  .cap-row .unit { font-size: 12.5px; color: var(--muted); }
+  .cap-row .btn-sm, .cap-row select { height: 32px; }
+  .cap-sub { font-size: 12px; font-weight: 600; color: var(--muted); margin: 16px 0 8px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .sidebar .cap-sub { border-top: 0; padding-top: 0; margin: 12px 0 6px; }
+  @media (max-width: 460px) {
+    .cap-row { grid-template-columns: 1fr auto; }
+    .cap-row > .ctl { justify-content: flex-end; }
+  }
+  /* Detection: status and its two buttons on one line */
+  .det-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; }
+  .det-line .status-indicator { margin-right: auto; }
+  .det-line .btn-sm { height: 32px; }
+  #sec-detection .fhint { font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .settings-group.sec-flash { animation: sec-flash 1s ease-out; }
+  @keyframes sec-flash { from { border-color: var(--info); box-shadow: 0 0 0 3px var(--info-soft); } to { border-color: var(--border); box-shadow: none; } }
+  .log-tail-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .modal.modal-wide { max-width: 760px; }
   .inference-panel h3, .settings-group h4 {
     font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
     color: var(--muted); margin-bottom: 12px;
@@ -52,7 +108,9 @@
   .inference-row .unit { font-size: 12px; color: var(--muted); }
   .inference-row .hint-text { font-size: 12px; color: var(--faint); font-style: italic; }
   .roi-coords { font: 11.5px var(--font-mono); color: var(--muted); }
-  #clf-model-status { font-size: 12px; margin-left: auto; }
+  /* Status text that belongs to a control sits on the control's line. */
+  .inline-status { font-size: 12.5px; color: var(--muted); flex: 1 1 160px; min-width: 0; line-height: 1.35; }
+  .inline-status b { color: var(--text); font-weight: 600; }
 
   .toggle-switch { position: relative; display: inline-block; width: 40px; height: 22px; flex-shrink: 0; }
   .toggle-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
@@ -75,30 +133,29 @@
   .status-dot.running { background: var(--success); animation: pulse 1.5s infinite; }
   .status-dot.restarting { background: var(--warn); animation: pulse 1s infinite; }
 
-  .inference-log-wrap { position: relative; margin-top: 10px; display: none; }
-  .inference-log-wrap.visible { display: block; }
   .inference-log {
-    max-height: 140px; overflow-y: auto; background: var(--surface-2); border: 1px solid var(--border);
+    max-height: 260px; overflow-y: auto; background: var(--surface-2); border: 1px solid var(--border);
     border-radius: var(--radius); padding: 8px 10px; font: 11.5px/1.6 var(--font-mono); color: var(--muted);
   }
-  .log-actions { position: absolute; top: 6px; right: 10px; display: flex; gap: 6px; z-index: 1; }
   .log-copy-btn {
     background: var(--raised); border: 1px solid var(--border-strong); color: var(--muted);
     font-size: 11.5px; padding: 3px 9px; border-radius: var(--radius-sm); cursor: pointer;
   }
   .log-copy-btn:hover { color: var(--text); border-color: var(--muted); }
 
-  .auto-row { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
-  .auto-row label { font-size: 13px; color: var(--muted); }
   .btn-toggle.auto-on { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
 
+  .stage-card { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; background: var(--surface); }
   .stream-wrapper {
-    position: relative; background: var(--stage); border-radius: var(--radius-lg); overflow: hidden;
-    min-height: 300px; border: 1px solid var(--border);
+    position: relative; background: var(--stage); overflow: hidden;
     display: flex; align-items: center; justify-content: center;
   }
-  .stream-wrapper img { display: block; width: 100%; height: auto; }
-  .no-feed-msg { color: var(--faint); text-align: center; padding: 40px; }
+  /* Never taller than the window, so who-is-there and the status stay in view. */
+  .stream-wrapper img { display: block; width: auto; height: auto; max-width: 100%; max-height: calc(100vh - 236px); }
+  .no-feed-msg { color: var(--faint); text-align: center; padding: 96px 40px; }
+  /* Over a (dimmed) last frame when detection isn't running. */
+  .no-feed-msg.over { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--text); font-size: 15px; font-weight: 600; z-index: 2; }
   .flash { position: absolute; inset: 0; pointer-events: none; opacity: 0; }
   .stream-wrapper canvas { position: absolute; top: 0; left: 0; pointer-events: none; }
   .stream-wrapper.roi-drawing { cursor: crosshair; }
@@ -109,19 +166,24 @@
   .flash.active { animation: flash-fade 0.3s ease-out; }
   @keyframes flash-fade { from { opacity: 1; } to { opacity: 0; } }
 
+  /* Who is in view: the footer of the stage card. A cat's name is the
+     largest text on the page; status messages are quiet. */
   .classifier-identity {
-    display: flex; align-items: center; gap: 12px; margin-top: 10px; padding: 10px 16px;
-    background: var(--surface); border: 2px solid var(--border); border-radius: var(--radius-lg);
+    display: flex; align-items: center; gap: 12px; padding: 12px 16px; min-height: 56px;
+    border: 0; border-left: 4px solid var(--border); background: var(--surface);
   }
-  .classifier-identity.pending { opacity: .7; }
+  .classifier-identity.pending .identity-label { opacity: .85; }
   .identity-icon { font-size: 1.1rem; }
-  .identity-label { font-size: 1.35rem; font-weight: 700; }
+  .identity-label { font-size: 1.6rem; font-weight: 700; line-height: 1.2; }
+  .identity-label.msg { font-size: 14px; font-weight: 500; }
+  #tab-annotate .fileinfo { flex: 1 1 320px; flex-wrap: wrap; row-gap: 4px; }
+  #tab-annotate .fileinfo .tag { flex-shrink: 0; }
+  #tab-annotate .tag.unchecked { background: var(--warn-soft); color: var(--warn); }
   .identity-votes { font: 12px var(--font-mono); color: var(--muted); }
   .identity-conf { font: 13px var(--font-mono); color: var(--muted); margin-left: auto; }
 
-  .detection-bar { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 8px 12px; margin-top: 10px; }
-  .detection-pills { display: flex; flex-wrap: wrap; gap: 6px; min-height: 24px; align-items: center; }
-  .det-none { color: var(--faint); font-size: 12.5px; }
+  /* Detector labels, over the top-left corner of the live view */
+  .detection-pills { position: absolute; top: 10px; left: 10px; display: flex; flex-wrap: wrap; gap: 6px; z-index: 2; pointer-events: none; }
   .det-pill {
     display: inline-flex; align-items: center; gap: 4px; padding: 3px 10px; border-radius: 999px;
     font-size: 12.5px; font-weight: 600; color: #0b0d10; white-space: nowrap;
@@ -145,6 +207,14 @@
   .btn-cat:hover { background: color-mix(in srgb, var(--c) 24%, var(--surface)); }
   .btn-cat kbd { margin-left: auto; }
   .btn-cat.btn-delete { --c: var(--danger); color: var(--danger); }
+  .btn-cat.btn-keep { --c: var(--info); }
+  .selection-bar[hidden] { display: none; }
+  #ann-label-row { margin-top: 10px; }
+  /* Label tab: not-yet-reviewed images get a small dot (bottom right). */
+  .thumb.unreviewed::before {
+    content: ""; position: absolute; bottom: 5px; right: 5px; width: 9px; height: 9px; border-radius: 50%;
+    background: var(--warn); box-shadow: 0 0 0 2px rgba(0,0,0,.5); pointer-events: none; z-index: 1;
+  }
   .nav-row { display: flex; gap: 8px; flex-wrap: wrap; }
   .review-empty {
     display: none; flex: 1; min-height: 240px; flex-direction: column; align-items: center; justify-content: center;
@@ -196,7 +266,17 @@
   #unlabeled-row.has-unlabeled .count { color: var(--warn); }
   .recent-list { font-size: 13px; }
   .recent-list .row { display: flex; align-items: center; gap: 8px; padding: 2px 0; }
-  .tracked-head { display: flex; align-items: center; justify-content: space-between; }
+  .tracked-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .tracked-head h3 { margin: 0 !important; }
+  .tracked-nav { display: inline-flex; align-items: center; gap: 2px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .tracked-head button:disabled { opacity: .3; cursor: default; }
+  #identity-action { margin-left: auto; }
+  .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 50;
+    padding: 9px 16px; border-radius: var(--radius); font-size: 13px; max-width: 80vw;
+    background: var(--raised); color: var(--text); border: 1px solid var(--border-strong);
+    box-shadow: 0 6px 24px rgba(0,0,0,.4); transition: opacity .2s; }
+  .toast.err { border-color: var(--danger); color: var(--danger); }
+  .toast[hidden] { display: none; }
   .tracked-head button { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 0 6px; font-size: 14px; }
   .tracked-head button:hover { color: var(--text); }
   .tracked-table { width: 100%; font: 12px var(--font-mono); border-collapse: collapse; font-variant-numeric: tabular-nums; }
@@ -208,6 +288,8 @@
   /* ── Training tab ── */
   body[data-tab="training"] .sidebar, body[data-tab="backup"] .sidebar { display: none; }
   .tr-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+  #bk-setup { grid-row: span 2; }
+  @media (max-width: 900px) { #bk-setup { grid-row: auto; } }
   @media (max-width: 900px) { .tr-grid { grid-template-columns: 1fr; } }
   .tr-grid .card h3 {
     font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
@@ -216,7 +298,9 @@
   .tr-wide { grid-column: 1 / -1; }
   .tr-desc { font-size: 12.5px; color: var(--muted); margin: -4px 0 12px; }
   .tr-help { font-size: 11.5px; color: var(--faint); margin: -6px 0 10px 140px; }
-  #tab-training .inference-row > label:first-child { min-width: 130px; }
+  #tab-training .inference-row > label:first-child,
+  #tab-backup .inference-row > label:first-child { min-width: 170px; }
+  #tab-backup .tr-help, #tab-training .tr-help { margin-left: 180px; }
   #tab-training input[type="text"], #tab-training input[type="password"] { min-width: 220px; flex: 1; max-width: 340px; }
   #tab-training input[type="password"] {
     background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
@@ -268,8 +352,22 @@
   .tr-chart { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px; min-width: 0; }
   .tr-chart h4 { font-size: 12px; font-weight: 600; color: var(--muted); margin: 0 0 6px; }
   .tr-chart-wrap { position: relative; height: 220px; }
-  .tr-cv-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px;
-    padding-top: 12px; border-top: 1px solid var(--border); }
+  details.tr-subfold { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); }
+  details.tr-subfold > summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+  details.tr-subfold > summary:hover { color: var(--text); }
+  details.tr-subfold[open] > summary { margin-bottom: 8px; }
+  .tr-fold-note { font-size: 12px; color: var(--faint); font-weight: 400; }
+  .tr-dirty { font-size: 12px; color: var(--warn); }
+  .tr-summary { font-size: 13.5px; margin-bottom: 6px; }
+  .tr-summary:empty { display: none; }
+  .tr-summary.err { color: var(--danger); }
+  .tr-model-head { font-size: 13.5px; margin-bottom: 8px; }
+  .tr-model-none { font-size: 13.5px; color: var(--muted); margin-bottom: 10px; }
+  .tr-cand-list { margin-top: 6px; }
+  .tr-cand-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; border-top: 1px solid var(--border); font-size: 13px; }
+  .tr-cand-row span:first-child { flex: 1; }
+  .tr-shelp { font-size: 11.5px; color: var(--faint); margin: -4px 0 8px; }
+  .tr-cv-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .tr-cv-row label { font-size: 13px; color: var(--muted); }
   .tr-cv-row input { width: 64px; }
 
@@ -286,15 +384,15 @@
 </style>
 </head>
 <body data-tab="capture">
+<div class="toast" id="toast" hidden role="status" aria-live="polite"></div>
 
 <!-- Top Bar -->
 <div class="top-bar">
   <div class="top-bar-inner">
-    <div class="brand"><span class="brand-mark" aria-hidden="true"></span>Cat Detector <span class="brand-sub">Pi</span></div>
+    <div class="brand"><img src="{{ url_for('static', filename='img/logo.png') }}" alt="Purrceptron" width="198" height="36"></div>
     <nav class="tab-bar" aria-label="Dashboard tabs">
       <button class="tab-btn active" data-tab="capture" onclick="switchTab('capture')">Capture</button>
-      <button class="tab-btn" data-tab="review" onclick="switchTab('review')">Review</button>
-      <button class="tab-btn" data-tab="annotate" onclick="switchTab('annotate')">Annotate<span class="badge attn" id="badge-annotate"></span></button>
+      <button class="tab-btn" data-tab="annotate" onclick="switchTab('annotate')" title="Check which {{ w.animal }} is in each image and where (bounding box)">Label<span class="badge attn" id="badge-annotate"></span></button>
       <button class="tab-btn" data-tab="training" onclick="switchTab('training')">Training</button>
       <button class="tab-btn" data-tab="backup" onclick="switchTab('backup')">Backup</button>
     </nav>
@@ -306,125 +404,168 @@
   <div class="content-col">
 
     <!-- ════ CAPTURE TAB ════ -->
+    <!-- Level 1 (always shown): the live view, who is in view, and status.
+         Level 2 (the Controls drawer): everything you set up or change. -->
     <div class="tab-content active" id="tab-capture">
 
-      <!-- Live Video Feed (always visible — reads from detect.py preview) -->
-      <div class="stream-wrapper">
-        <img id="camera-feed" src="" alt="Detection Feed" style="display:none">
-        <canvas id="roi-canvas"></canvas>
-        <div class="no-feed-msg" id="no-feed-msg">Waiting for camera...</div>
-        <div class="flash" id="capture-flash"></div>
-      </div>
-
-      <!-- Classifier Identity (Stage 2) -->
-      <div class="classifier-identity" id="classifier-identity" style="display:none"
-           title="Cat identity from the MobileNetV2 classifier">
-        <span class="identity-icon">&#128049;</span>
-        <span class="identity-label" id="identity-label" title="Predicted cat identity"></span>
-        <span class="identity-votes" id="identity-votes" title="Vote counts per cat in the sliding window (window size configurable via vote_window_size)"></span>
-        <span class="identity-conf" id="identity-conf" title="Raw model confidence for the top prediction (lower with label smoothing — the vote window determines identity, not this value)"></span>
-      </div>
-
-      <!-- Current Detections -->
-      <div class="detection-bar">
-        <div class="detection-pills" id="detection-pills">
-          <span class="det-none">No detections</span>
+      <!-- The live view and who is in it, as one unit -->
+      <div class="stage-card">
+        <div class="stream-wrapper">
+          <img id="camera-feed" src="" alt="Live view" style="display:none">
+          <canvas id="roi-canvas"></canvas>
+          <div class="no-feed-msg" id="no-feed-msg">Waiting for camera...</div>
+          <div class="flash" id="capture-flash"></div>
+          <!-- What the detector sees right now (empty when nothing) -->
+          <div class="detection-pills" id="detection-pills"></div>
+        </div>
+        <div class="classifier-identity pending" id="classifier-identity">
+          <span class="identity-icon" aria-hidden="true">&#128049;</span>
+          <span class="identity-label msg" id="identity-label">Starting...</span>
+          <span class="identity-votes" id="identity-votes" title="Identified from the most recent frames of the {{ w.animal }} in the region of interest"></span>
+          <span class="identity-conf" id="identity-conf"></span>
+          <button class="btn btn-sm" id="identity-action" hidden onclick="switchTab('training')">Go to Training</button>
         </div>
       </div>
 
-      <!-- Auto-Capture Controls -->
-      <div class="auto-row">
-        <button class="btn btn-toggle" id="btn-auto" onclick="toggleAutoCapture()">Auto: OFF</button>
-        <label>Target:</label>
-        <select id="auto-target" onchange="setAutoTarget(this.value)">
-          {% for i, cat in cats %}
-          <option value="{{ cat }}">{{ cat }}</option>
-          {% endfor %}
-        </select>
+      <!-- Status at a glance; each chip opens its part of the controls -->
+      <div class="status-row" id="status-row">
+        <button class="schip" id="chip-detection" onclick="setControlsOpen(true, 'sec-detection')" title="Camera and detector"><span class="sdot"></span><span class="stext">Detection</span></button>
+        <button class="btn btn-sm" id="chip-restart" hidden onclick="restartDetection()">Restart</button>
+        <button class="schip" id="chip-ident" onclick="setControlsOpen(true, 'sec-ident')" title="Telling your {{ w.animals }} apart"><span class="sdot"></span><span class="stext">Identification</span></button>
+        <button class="schip" id="chip-saving" onclick="setControlsOpen(true, 'sec-collect')" title="Saving images for training"><span class="sdot"></span><span class="stext">Saving</span></button>
+        <span class="spacer"></span>
+        <button class="btn btn-sm" id="controls-btn" aria-expanded="false" aria-controls="capture-controls" onclick="setControlsOpen()">Controls <span class="chev" aria-hidden="true">&#9662;</span></button>
       </div>
-      <div class="capture-grid">
-      <!-- Detection Mode Panel -->
-      <div class="inference-panel">
-        <h3>Detection Mode</h3>
 
-        <div class="status-indicator">
-          <span class="status-dot running" id="inf-status-dot"></span>
-          <span id="inf-status-text">Running</span>
-        </div>
+      <!-- The Controls drawer -->
+      <div class="capture-grid" id="capture-controls" hidden>
 
-        <div class="inference-log-wrap" id="inf-log-wrap">
-          <div class="log-actions">
-            <button class="log-copy-btn" id="log-copy-btn" onclick="copyPipelineLog()">Copy</button>
-            <button class="log-copy-btn" onclick="openLogBrowser()">Logs</button>
+        <section class="settings-group" id="sec-collect">
+          <h4>Collect Training Images</h4>
+          <div class="cap-row">
+            <label for="cap-enabled">Save images automatically</label>
+            <div class="ctl">
+              <label class="toggle-switch">
+                <input type="checkbox" id="cap-enabled" onchange="saveCaptureSettings()">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="fhint" id="cap-status-hint"></div>
           </div>
-          <div class="inference-log" id="inf-log"></div>
-        </div>
+          <div class="cap-row">
+            <label for="cap-interval">Time between images</label>
+            <div class="ctl">
+              <input type="number" id="cap-interval" min="1" step="1" onchange="saveCaptureSettings()">
+              <span class="unit">seconds, per {{ w.animal }}</span>
+            </div>
+          </div>
+          <div class="cap-row" id="cap-labeled-only-row">
+            <label for="cap-labeled-only">Only identified {{ w.animals }}</label>
+            <div class="ctl">
+              <label class="toggle-switch">
+                <input type="checkbox" id="cap-labeled-only" onchange="saveCaptureSettings()">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
+            <div class="fhint">Off: {{ w.animals }} it couldn't name are saved as Unlabeled.</div>
+          </div>
+          <div class="cap-row">
+            <label for="auto-target">Auto-capture</label>
+            <div class="ctl">
+              <button class="btn btn-sm btn-toggle" id="btn-auto" onclick="toggleAutoCapture()">Off</button>
+              <span class="unit">as</span>
+              <select id="auto-target" onchange="setAutoTarget(this.value)">
+                {% for i, cat in cats %}
+                <option value="{{ cat }}">{{ cat }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div class="fhint" id="auto-hint"></div>
+          </div>
+          <div class="cap-sub">Images per {{ w.animal }} <span class="faint">(target {{ min_images }})</span></div>
+          {% for i, cat in cats %}
+          <div class="cat-stat">
+            <span class="name">{{ cat }}</span>
+            <div class="bar-bg"><div class="bar-fill bar-low" id="bar-{{ cat }}" style="width:0%"></div></div>
+            <span class="count" id="count-{{ cat }}">0</span>
+          </div>
+          {% endfor %}
+          <div class="cat-stat" id="unlabeled-row">
+            <span class="name" style="color:var(--warn)">Unlabeled</span>
+            <div class="bar-bg"><div class="bar-fill" id="bar-unlabeled" style="width:0%;background:var(--warn)"></div></div>
+            <span class="count" id="count-unlabeled">0</span>
+          </div>
+        </section>
+
+        <section class="settings-group" id="sec-ident">
+          <h4>Identification</h4>
+          <div class="cap-row">
+            <label for="clf-enabled">Identify {{ w.animals }}</label>
+            <div class="ctl">
+              <label class="toggle-switch">
+                <input type="checkbox" id="clf-enabled" onchange="saveClassifierSettings()">
+                <span class="toggle-slider"></span>
+              </label>
+              <span class="inline-status" id="clf-model-status"></span>
+            </div>
+          </div>
+          <div class="cap-row">
+            <label>Region of interest</label>
+            <div class="ctl">
+              <button class="btn btn-sm" id="roi-draw-btn" onclick="toggleROIDrawMode()">Draw</button>
+              <button class="btn btn-sm" id="roi-show-btn" onclick="toggleROIOverlay()">Show</button>
+              <span id="roi-coords" class="roi-coords"></span>
+            </div>
+            <div class="fhint">The part of the picture to watch, for example a food bowl, a bed or a feeder. {{ w.Animals }} are identified, and saved, only while they are in it. Not drawn: the whole picture.</div>
+          </div>
+          <div class="cap-row">
+            <label for="clf-roi-overlap">Bounding box overlap</label>
+            <div class="ctl">
+              <input type="number" id="clf-roi-overlap" min="1" max="100" step="1"
+                     onchange="saveClassifierSettings()" value="1">
+              <span class="unit">% of the region, at least</span>
+            </div>
+            <div class="fhint">How much of the region a detected {{ w.animal }}'s bounding box must cover to count as being in it.</div>
+          </div>
+          <div class="cap-row">
+            <label for="clf-confidence">Certainty needed</label>
+            <div class="ctl">
+              <input type="number" id="clf-confidence" min="0" max="1" step="0.05"
+                     onchange="saveClassifierSettings()">
+              <span class="unit">0 to 1</span>
+            </div>
+            <div class="fhint">How sure the model must be before it names {{ w.an_animal }}. Applies after detection restarts.</div>
+          </div>
+        </section>
+
+        <section class="settings-group" id="sec-detection">
+          <h4>Detection</h4>
+          <div class="det-line">
+            <span class="status-indicator">
+              <span class="status-dot" id="inf-status-dot"></span>
+              <span id="inf-status-text">--</span>
+            </span>
+            <button class="btn btn-sm" id="restart-btn" onclick="restartDetection()">Restart detection</button>
+            <button class="btn btn-sm" onclick="openLogBrowser()">View log</button>
+          </div>
+          <div class="fhint">Restarting stops and starts the camera, the detector and identification (about 10 seconds).</div>
+        </section>
 
       </div>
 
-      <!-- Detection Capture Settings (visible in both modes) -->
-      <div class="settings-group" id="capture-settings">
-        <h4>Detection Capture</h4>
-        <div class="inference-row">
-          <label>Auto-save detections:</label>
-          <label class="toggle-switch">
-            <input type="checkbox" id="cap-enabled" onchange="saveCaptureSettings()">
-            <span class="toggle-slider"></span>
-          </label>
-          <span id="cap-status-hint" class="hint-text"></span>
-        </div>
-        <div class="inference-row">
-          <label>Interval (s):</label>
-          <input type="number" id="cap-interval" min="1" step="1" onchange="saveCaptureSettings()">
-        </div>
-        <div class="inference-row" id="cap-labeled-only-row">
-          <label title="Only save images where the classifier has confirmed a cat identity. Unlabeled detections are discarded.">Save labeled only:</label>
-          <label class="toggle-switch">
-            <input type="checkbox" id="cap-labeled-only" onchange="saveCaptureSettings()">
-            <span class="toggle-slider"></span>
-          </label>
-        </div>
-      </div>
-
-      <!-- Classifier Settings -->
-      <div class="settings-group" id="classifier-settings">
-        <h4>Cat Classifier (Stage 2)</h4>
-        <div class="inference-row">
-          <label title="Start/stop the MobileNetV2 identity classifier subprocess. Restarts the detection pipeline.">Enable classifier:</label>
-          <label class="toggle-switch">
-            <input type="checkbox" id="clf-enabled" onchange="saveClassifierSettings()">
-            <span class="toggle-slider"></span>
-          </label>
-          <span id="clf-model-status"></span>
-        </div>
-        <div class="inference-row">
-          <label title="Minimum average confidence in the vote window to confirm a cat identity (0-1).">Confidence:</label>
-          <input type="number" id="clf-confidence" min="0" max="1" step="0.05"
-                 onchange="saveClassifierSettings()">
-        </div>
-        <div class="inference-row">
-          <label title="Draw a rectangle on the preview to define the area where cat detections trigger the classifier (e.g. around the food bowl).">Bowl ROI:</label>
-          <button class="btn btn-sm" id="roi-draw-btn" onclick="toggleROIDrawMode()">Set ROI</button>
-          <button class="btn btn-sm" id="roi-show-btn" onclick="toggleROIOverlay()">Show ROI</button>
-          <span id="roi-coords" class="roi-coords"></span>
-        </div>
-        <div class="inference-row">
-          <label title="How much of the ROI must be overlapped by a cat bounding box to trigger classification. 1% = any overlap, 50% = half the ROI covered, 100% = fully covered.">ROI overlap:</label>
-          <input type="number" id="clf-roi-overlap" min="1" max="100" step="1"
-                 onchange="saveClassifierSettings()" value="1">
-          <span class="unit">%</span>
-        </div>
-      </div>
-
-      </div>
-
-      <!-- Log browser modal -->
+      <!-- Log viewer: the live tail, and older log files -->
       <div id="log-modal" class="modal-backdrop" onclick="if (event.target === this) closeLogBrowser()">
-        <div class="modal" role="dialog" aria-labelledby="log-modal-title">
+        <div class="modal modal-wide" role="dialog" aria-labelledby="log-modal-title">
           <div class="modal-head">
-            <h3 id="log-modal-title">Detection logs</h3>
+            <h3 id="log-modal-title">Detection log</h3>
             <button class="modal-close" onclick="closeLogBrowser()" aria-label="Close">&times;</button>
           </div>
+          <div class="log-tail-head">
+            <span class="hint">Latest lines</span>
+            <button class="log-copy-btn" id="log-copy-btn" onclick="copyPipelineLog()">Copy</button>
+          </div>
+          <div class="inference-log" id="inf-log"></div>
+          <div class="hint" style="margin:12px 0 6px">Earlier logs</div>
           <div id="log-list" class="mono" style="font-size:12.5px">Loading...</div>
         </div>
       </div>
@@ -434,83 +575,87 @@
     <div class="tab-content" id="tab-training">
       <div class="tr-grid">
 
-        <!-- Setup: where training runs -->
-        <div class="card" id="tr-setup">
-          <h3>Training Backend</h3>
-          <div class="inference-row">
-            <label for="tr-backend">Train on:</label>
-            <select id="tr-backend" onchange="renderBackendForm()"></select>
-          </div>
-          <div class="tr-desc" id="tr-backend-desc"></div>
-          <div id="tr-fields"></div>
-          <div class="inference-row">
-            <label for="tr-min-images" title="Each cat needs at least this many labeled images with bounding boxes before a job can start.">Min images per cat:</label>
-            <input type="number" id="tr-min-images" min="1" step="1">
-          </div>
-          <div class="inference-row">
-            <label>Pi torch version:</label>
-            <span class="mono" id="tr-pi-torch">--</span>
-          </div>
-          <div class="inference-row">
-            <label title="The Pi runs the classifier with ExecuTorch. Training backends export with the same version.">Pi ExecuTorch version:</label>
-            <span class="mono" id="tr-pi-executorch">--</span>
-          </div>
-          <div class="actionrow" style="margin-top:12px">
-            <button class="btn btn-sm btn-primary" onclick="saveTrainingConfig()">Save</button>
-            <button class="btn btn-sm" id="tr-test-btn" onclick="testTrainingConnection()">Test connection</button>
-          </div>
-          <div class="tr-result" id="tr-test-result"></div>
+        <!-- Model: what's deployed, and deploying a newer one -->
+        <div class="card" id="tr-model-card">
+          <h3>Identification Model</h3>
+          <div id="tr-model"><div class="hint">Loading...</div></div>
+          <div class="tr-result" id="tr-deploy-result"></div>
         </div>
 
-        <!-- Run: data check, start, progress -->
+        <!-- Run: data check, start -->
         <div class="card" id="tr-run">
           <h3>Train a New Model</h3>
+          <div class="tr-desc" id="tr-backend-line"></div>
           <div id="tr-image-counts"></div>
           <div class="hint" id="tr-image-hint" style="margin-bottom:10px"></div>
           <div class="actionrow">
             <button class="btn btn-sm btn-primary" id="tr-start-btn" onclick="startJob('train')">Start training</button>
-            <button class="btn btn-sm btn-danger" id="tr-cancel-btn" onclick="cancelTraining()" hidden>Cancel</button>
+            <button class="btn btn-sm btn-danger" id="tr-cancel-btn" onclick="cancelTraining()" hidden>Cancel job</button>
             <a id="tr-job-link" href="#" target="_blank" rel="noopener" hidden>Open job page</a>
           </div>
-          <div class="tr-cv-row">
-            <label for="tr-cv-folds" title="Trains one model per fold on different session splits to measure how stable accuracy is. Produces no deployable model.">Cross-validate with</label>
-            <input type="number" id="tr-cv-folds" min="2" max="10" step="1" value="5">
-            <label for="tr-cv-folds">folds</label>
-            <button class="btn btn-sm" id="tr-cv-btn" onclick="startJob('crossval')">Run cross-validation</button>
-          </div>
           <div class="tr-result" id="tr-run-result"></div>
+          <details class="tr-subfold" id="tr-cv-fold">
+            <summary>Check how reliable training is (cross-validation)</summary>
+            <div class="hint" style="margin:6px 0 8px">Trains one model per fold, each validated on different capture
+              sessions, and reports how much accuracy varies. Takes about that many times as long as training and
+              produces no model to deploy.</div>
+            <div class="tr-cv-row">
+              <label for="tr-cv-folds">Folds</label>
+              <input type="number" id="tr-cv-folds" min="2" max="10" step="1" value="5">
+              <button class="btn btn-sm" id="tr-cv-btn" onclick="startJob('crossval')">Run cross-validation</button>
+            </div>
+          </details>
+        </div>
+
+        <!-- Progress of the newest job -->
+        <div class="card tr-wide" id="tr-progress" hidden>
+          <h3 id="tr-progress-title">Current Job</h3>
+          <div class="tr-steps" id="tr-steps"></div>
+          <div id="tr-stage-msg" class="tr-summary"></div>
+          <div id="tr-job-result"></div>
+          <details class="tr-subfold" id="tr-log-fold">
+            <summary>Log</summary>
+            <div class="tr-log" id="tr-log"></div>
+          </details>
+        </div>
+
+        <!-- Where training runs (folded once set up) -->
+        <div class="card tr-wide" id="tr-setup">
+          <details class="tr-fold" id="tr-backend-fold">
+            <summary><h3>Where Training Runs</h3><span class="tr-fold-note" id="tr-backend-note"></span></summary>
+            <div class="inference-row">
+              <label for="tr-backend">Train on:</label>
+              <select id="tr-backend" onchange="renderBackendForm(); trMarkDirty('tr')"></select>
+            </div>
+            <div class="tr-desc" id="tr-backend-desc"></div>
+            <div id="tr-fields"></div>
+            <div class="inference-row">
+              <label for="tr-min-images">Images needed per {{ w.animal }}:</label>
+              <input type="number" id="tr-min-images" min="1" step="1">
+            </div>
+            <div class="tr-help">Each {{ w.animal }} needs at least this many labeled images with a bounding box before training can start.</div>
+            <div class="actionrow" style="margin-top:12px">
+              <button class="btn btn-sm btn-primary" onclick="saveTrainingConfig()">Save</button>
+              <button class="btn btn-sm" id="tr-test-btn" onclick="testTrainingConnection()">Test connection</button>
+              <span class="tr-dirty" id="tr-dirty" hidden>Not saved yet</span>
+            </div>
+            <div class="tr-result" id="tr-test-result"></div>
+            <div class="hint" style="margin-top:10px">On the Pi: torch <span class="mono" id="tr-pi-torch">--</span>,
+              ExecuTorch <span class="mono" id="tr-pi-executorch">--</span> (trained models are exported for this version).</div>
+          </details>
         </div>
 
         <!-- Training settings -->
         <div class="card tr-wide">
           <details class="tr-fold" id="tr-settings-fold">
-            <summary><h3>Training Settings</h3></summary>
+            <summary><h3>Training Settings</h3><span class="tr-fold-note">For fine-tuning; the defaults work well</span></summary>
             <div class="tr-settings" id="tr-settings"></div>
             <div class="actionrow" style="margin-top:8px">
               <button class="btn btn-sm btn-primary" onclick="saveTrainingSettings()">Save settings</button>
-              <span class="hint">Used by the next job. Saved on the Pi (runtime.yaml).</span>
+              <span class="hint">Used by the next job.</span>
             </div>
             <div class="tr-result" id="tr-settings-result"></div>
           </details>
-        </div>
-
-        <!-- Progress + log -->
-        <div class="card tr-wide" id="tr-progress" hidden>
-          <h3 id="tr-progress-title">Current Job</h3>
-          <div class="tr-steps" id="tr-steps"></div>
-          <div class="hint" id="tr-stage-msg" style="margin-bottom:8px"></div>
-          <div class="tr-log" id="tr-log"></div>
-        </div>
-
-        <!-- Result: compare + deploy -->
-        <div class="card tr-wide" id="tr-result-card" hidden>
-          <h3>Result</h3>
-          <div id="tr-compare"></div>
-          <div class="actionrow">
-            <button class="btn btn-sm btn-primary" id="tr-deploy-btn" onclick="deployModel()">Deploy this model</button>
-            <button class="btn btn-sm" id="tr-rollback-btn" onclick="rollbackModel()">Roll back to previous model</button>
-          </div>
-          <div class="tr-result" id="tr-deploy-result"></div>
         </div>
 
         <!-- Training curves -->
@@ -527,7 +672,7 @@
           <div class="tr-charts">
             <div class="tr-chart"><h4>Loss</h4><div class="tr-chart-wrap"><canvas id="tr-chart-loss"></canvas></div></div>
             <div class="tr-chart"><h4>Accuracy</h4><div class="tr-chart-wrap"><canvas id="tr-chart-acc"></canvas></div></div>
-            <div class="tr-chart"><h4>Validation accuracy per cat</h4><div class="tr-chart-wrap"><canvas id="tr-chart-cls"></canvas></div></div>
+            <div class="tr-chart"><h4>Validation accuracy per {{ w.animal }}</h4><div class="tr-chart-wrap"><canvas id="tr-chart-cls"></canvas></div></div>
           </div>
         </div>
 
@@ -540,56 +685,79 @@
       </div>
     </div>
 
-    <!-- ════ ANNOTATE TAB ════ -->
+    <!-- ════ LABEL TAB: which cat, and where it is (bounding box) ════ -->
     <div class="tab-content" id="tab-annotate">
       <div class="workspace" id="ann-workspace">
         <div class="pane-main">
           <div class="toolbar">
             <div class="progress-block">
-              <div class="progress-text" id="ann-progress">0/0 with bounding box</div>
+              <div class="progress-text" id="ann-progress">Loading...</div>
               <div class="meter"><span id="ann-meter" style="width:0"></span></div>
             </div>
             <div class="fileinfo">
               <span class="dot" id="ann-dot"></span>
               <span class="mono" id="ann-img-info"></span>
+              <span class="tag" id="ann-reviewed-tag" hidden></span>
               <span class="tag" id="ann-src"></span>
             </div>
             <div class="tb-actions">
-              <button class="btn btn-sm" id="ann-detect-btn" onclick="annAutoDetectCurrent()">Auto-detect <kbd>a</kbd></button>
-              <button class="btn btn-sm btn-ghost" onclick="annClearBbox()">Clear <kbd>d</kbd></button>
+              <button class="btn btn-sm" id="ann-detect-btn" onclick="annAutoDetectCurrent()">Auto-detect bounding box <kbd>a</kbd></button>
+              <button class="btn btn-sm btn-ghost" id="ann-reset-btn" onclick="annClearBbox()"
+                title="Removes a bounding box you drew or auto-detected, bringing back the one the Pi saved (if any)">Reset bounding box <kbd>r</kbd></button>
             </div>
           </div>
           <div class="stage" id="ann-canvas-wrap">
             <img id="ann-img" alt="">
             <canvas id="ann-canvas" aria-label="Drag on the image to draw a bounding box"></canvas>
-            <div class="stage-note" id="ann-note" hidden>No bounding box yet. Drag to draw one, or press a to auto-detect.</div>
+            <div class="flash" id="ann-flash"></div>
+            <div class="stage-note" id="ann-note" hidden>No bounding box yet. Drag around the {{ w.animal }} to draw one.</div>
+          </div>
+          <div class="review-controls" id="ann-label-row">
+            {% for i, cat in cats %}
+            <button class="btn-cat" style="--c: {{ cat_colors[cat] }}" onclick="annLabel('{{ cat }}')" title="This is {{ cat }}"><span class="dot"></span>{{ cat }}<kbd>{{ i }}</kbd></button>
+            {% endfor %}
+            <button class="btn-cat btn-keep" onclick="annKeep()" title="The label is right; mark it reviewed and go to the next image">Looks right<kbd>Enter</kbd></button>
+            <button class="btn-cat btn-delete" onclick="annTrash()" title="Move this image to the trash folder (data/trash)">Move to trash<kbd>x</kbd></button>
           </div>
           <div class="actionrow">
             <button class="btn btn-sm" onclick="annPrev()">&larr; Prev <kbd>p</kbd></button>
             <button class="btn btn-sm" onclick="annNext()">Next <kbd>n</kbd> &rarr;</button>
             <span class="spacer"></span>
             <span class="ann-job" id="ann-msg"></span>
-            <button class="btn btn-primary btn-sm" id="ann-auto-all" onclick="annAutoDetectAll()">Auto-detect all missing</button>
+            <button class="btn btn-sm" id="ann-auto-all" onclick="annAutoDetectAll()">Auto-detect missing bounding boxes</button>
           </div>
         </div>
         <div class="splitter" tabindex="0" role="separator" aria-orientation="vertical" aria-label="Resize image browser"></div>
         <aside class="browser" aria-label="Image browser">
           <div class="browser-head">
             <div class="browser-head-row">
-              <div class="seg seg-sm" id="ann-status-seg" role="group" aria-label="Filter by bounding-box status">
+              <div class="seg seg-sm" id="ann-status-seg" role="group" aria-label="Which images to show">
+                <button data-s="review" title="Saved automatically under the name the Pi gave them; nobody has confirmed the name yet. Checking is optional: training uses them either way, but a wrong name teaches the model the wrong {{ w.animal }}.">Label not checked<span class="n" id="ann-cnt-review"></span></button>
+                <button data-s="missing" title="Images without a bounding box can't be used for training">No bounding box<span class="n" id="ann-cnt-missing"></span></button>
                 <button data-s="all">All<span class="n" id="ann-cnt-all"></span></button>
-                <button data-s="missing">Missing<span class="n" id="ann-cnt-missing"></span></button>
-                <button data-s="done">Has one<span class="n" id="ann-cnt-done"></span></button>
               </div>
               <label class="size-ctl" for="ann-thumb-size">Size <input type="range" id="ann-thumb-size" min="96" max="260" value="132"></label>
             </div>
             <div class="chips" id="ann-cat-chips"></div>
           </div>
+          <div class="selection-bar" id="ann-selection-bar" hidden>
+            <span class="sel-count" id="ann-sel-count">0 selected</span>
+            <select id="ann-batch-label" aria-label="Label for the selected images">
+              {% for i, cat in cats %}<option value="{{ cat }}">{{ cat }}</option>{% endfor %}
+            </select>
+            <button class="btn btn-sm btn-primary" onclick="annBatchLabel()">Label them</button>
+            <span class="divider"></span>
+            <button class="btn btn-sm btn-danger" onclick="annBatchTrash()">Move to trash</button>
+            <button class="modal-close" onclick="annClearSelection()" title="Clear the selection" aria-label="Clear selection">&times;</button>
+          </div>
           <div class="browser-scroll" id="ann-thumbs"></div>
           <div class="browser-foot">
-            <span><kbd>n</kbd> <kbd>p</kbd> step through filtered images</span>
-            <span><kbd>a</kbd> auto-detect</span>
-            <span><kbd>d</kbd> clear</span>
+            <span><kbd>1</kbd>-<kbd>{{ cats|length }}</kbd> label</span>
+            <span><kbd>Enter</kbd> looks right</span>
+            <span><kbd>x</kbd> trash</span>
+            <span><kbd>n</kbd> <kbd>p</kbd> or arrows: next / prev</span>
+            <span>Drag on the image: bounding box</span>
+            <span>Ctrl-click / Shift-click thumbnails: select several</span>
           </div>
         </aside>
       </div>
@@ -606,7 +774,7 @@
             than the number of days below are deleted; the newest is always kept.</div>
           <div class="inference-row">
             <label for="bk-dest">Back up to:</label>
-            <select id="bk-dest" onchange="renderBackupForm()"></select>
+            <select id="bk-dest" onchange="renderBackupForm(); trMarkDirty('bk')"></select>
           </div>
           <div class="tr-desc" id="bk-desc"></div>
           <div id="bk-fields"></div>
@@ -621,6 +789,7 @@
           <div class="actionrow" style="margin-top:12px">
             <button class="btn btn-sm btn-primary" onclick="saveBackupConfig()">Save</button>
             <button class="btn btn-sm" id="bk-test-btn" onclick="testBackupConnection()">Test connection</button>
+            <span class="tr-dirty" id="bk-dirty" hidden>Not saved yet</span>
           </div>
           <div class="tr-result" id="bk-test-result"></div>
         </div>
@@ -630,9 +799,10 @@
           <table class="tr-metrics tr-jobs" id="bk-status"></table>
           <div class="actionrow">
             <button class="btn btn-sm btn-primary" id="bk-now-btn" onclick="backupNow()">Back up now</button>
+            <span class="hint" id="bk-now-why"></span>
           </div>
           <div class="tr-result" id="bk-run-result"></div>
-          <div class="tr-log" id="bk-log" style="height:180px; margin-top:10px"></div>
+          <div class="tr-log" id="bk-log" style="height:180px; margin-top:10px" hidden></div>
         </div>
 
         <div class="card" id="bk-snapshots-card">
@@ -644,155 +814,57 @@
       </div>
     </div>
 
-    <!-- ════ REVIEW TAB ════ -->
-    <div class="tab-content" id="tab-review">
-      <div class="workspace" id="review-workspace">
-        <div class="pane-main">
-          <div id="review-info" class="toolbar">
-            <span id="review-progress" class="progress-text">0/0</span>
-            <span id="review-label-badge" class="label-badge">--</span>
-            <span class="filename-display" id="review-filename">--</span>
-          </div>
-          <div class="stage" id="review-image-wrapper">
-            <img id="review-image" src="" alt="">
-            <div class="flash" id="review-flash"></div>
-          </div>
-
-          <!-- No unreviewed images message -->
-          <div class="review-empty" id="no-review-msg">
-            <h2>No images to review</h2>
-            <p>All images have been reviewed. New captures will appear here.</p>
-            <button class="btn" onclick="reviewRescan()" style="margin-top:8px">Rescan for new images</button>
-          </div>
-
-          <div class="review-empty" id="done-screen">
-            <h2>Review complete</h2>
-            <div id="done-stats" class="mono"></div>
-          </div>
-
-          <div class="review-controls" id="review-controls">
-        {% for i, cat in cats %}
-        <button class="btn-cat" style="--c: {{ cat_colors[cat] }}" onclick="labelAs('{{ cat }}')"><span class="dot"></span>{{ cat }}<kbd>{{ i }}</kbd></button>
-        {% endfor %}
-        <button class="btn-cat btn-delete" onclick="reviewDelete()">Delete<kbd>d</kbd></button>
-          </div>
-
-          <div class="nav-row" id="review-nav">
-            <button class="btn btn-sm" onclick="reviewPrev()">&larr; Prev <kbd>p</kbd></button>
-            <button class="btn btn-sm" onclick="reviewSkip()">Skip <kbd>n</kbd> &rarr;</button>
-          </div>
-        </div>
-        <div class="splitter" tabindex="0" role="separator" aria-orientation="vertical" aria-label="Resize image browser"></div>
-        <aside class="browser" aria-label="Captured images">
-          <div class="browser-head thumb-sort-row">
-            <div class="browser-head-row">
-              <span class="head-label">Sort</span>
-              <div class="seg seg-sm">
-                <button class="sort-btn active" id="sort-time" onclick="sortThumbnails('time')">Newest</button>
-                <button class="sort-btn" id="sort-name" onclick="sortThumbnails('name')">By label</button>
-              </div>
-              <span id="select-hint">Ctrl-click or right-click to select</span>
-            </div>
-            <div class="chips">
-              <button class="chip sort-btn active" onclick="toggleLabelFilter(this, '')" data-filter="">All</button>
-              <button class="chip sort-btn" style="--c: var(--warn)" onclick="toggleLabelFilter(this, 'unlabeled')" data-filter="unlabeled"><span class="dot"></span>Unlabeled</button>
-              {% for i, cat in cats %}
-                <button class="chip sort-btn" style="--c: {{ cat_colors[cat] }}" onclick="toggleLabelFilter(this, '{{ cat }}')" data-filter="{{ cat }}"><span class="dot"></span>{{ cat }}</button>
-                {% endfor %}
-            </div>
-          </div>
-          <div class="selection-bar" id="selection-bar" style="display:none">
-            <span class="sel-count" id="selection-count">0 selected</span>
-            <select id="batch-label-select" aria-label="Label for selected images">
-              {% for i, cat in cats %}
-              <option value="{{ cat }}">{{ cat }}</option>
-              {% endfor %}
-            </select>
-            <button class="btn btn-sm btn-primary" onclick="batchLabel(document.getElementById('batch-label-select').value)">Apply label</button>
-            <span class="divider"></span>
-            <button class="btn btn-sm btn-danger" onclick="batchDelete()">Delete selected</button>
-            <button class="modal-close" onclick="clearSelection()" title="Exit multi-select" aria-label="Clear selection">&times;</button>
-          </div>
-          <div id="thumbnail-grid"></div>
-          <div class="browser-foot" id="hints-review">
-            {% for i, cat in cats %}<span><kbd>{{ i }}</kbd> {{ cat }}</span>{% endfor %}
-            <span><kbd>d</kbd> delete</span>
-            <span><kbd>n</kbd> <kbd>p</kbd> next / prev</span>
-            <span>Shift-click selects a range</span>
-          </div>
-        </aside>
-      </div>
-    </div>
-
   </div>
 
-  <!-- ════ SIDEBAR ════ -->
+  <!-- ════ SIDEBAR (Capture tab): the day's visits ════ -->
   <div class="sidebar">
-    <div class="sidebar-card">
-      <h3>Image Counts</h3>
-      {% for i, cat in cats %}
-      <div class="cat-stat">
-        <span class="name">{{ cat }}</span>
-        <div class="bar-bg"><div class="bar-fill bar-low" id="bar-{{ cat }}" style="width:0%"></div></div>
-        <span class="count" id="count-{{ cat }}">0</span>
-      </div>
-      {% endfor %}
-      <div class="cat-stat" id="unlabeled-row">
-        <span class="name" style="color:var(--warn)">Unlabeled</span>
-        <div class="bar-bg"><div class="bar-fill" id="bar-unlabeled" style="width:0%;background:var(--warn)"></div></div>
-        <span class="count" id="count-unlabeled">0</span>
-      </div>
-    </div>
-
-    <div class="sidebar-card">
-      <h3>Session</h3>
-      <div class="stat-row"><span class="label">Mode:</span><span id="sidebar-mode">DETECTION</span></div>
-      <div class="stat-row"><span class="label">Pipeline:</span><span id="sidebar-pipeline">--</span></div>
-      <hr>
-      <div class="stat-row"><span class="label">Labeled:</span><span id="sidebar-labeled">0</span></div>
-      <div class="stat-row"><span class="label">Deleted:</span><span id="sidebar-deleted">0</span></div>
-    </div>
-
-    <div class="sidebar-card">
-      <h3>Recent Detections</h3>
-      <div id="recent-detections" class="recent-list">
-        <span class="muted">No detections yet</span>
-      </div>
-    </div>
-
     <div class="sidebar-card" id="tracked-card" style="display:none">
-      <h3 class="tracked-head">
-        <button onclick="changeTrackedDate(-1)" aria-label="Previous day">&larr;</button>
-        <span id="tracked-date"></span>
-        <button onclick="changeTrackedDate(1)" aria-label="Next day">&rarr;</button>
-      </h3>
+      <div class="tracked-head">
+        <h3 id="tracked-title">Today</h3>
+        <span class="tracked-nav">
+          <button onclick="changeTrackedDate(-1)" aria-label="Previous day">&larr;</button>
+          <span id="tracked-date"></span>
+          <button onclick="changeTrackedDate(1)" aria-label="Next day" id="tracked-next">&rarr;</button>
+        </span>
+      </div>
+      <div id="tracked-totals-card" style="display:none">
+        <div class="cap-sub">Time in view</div>
+        <div id="tracked-totals"></div>
+      </div>
+      <div class="cap-sub">Visits</div>
       <div style="overflow-x:auto">
         <table class="tracked-table">
           <thead>
-            <tr><th>Cat</th><th>Start</th><th>End</th><th>Duration</th></tr>
+            <tr><th>{{ w.Animal }}</th><th>Start</th><th>End</th><th>Duration</th></tr>
           </thead>
           <tbody id="tracked-tbody"></tbody>
         </table>
-        <div id="tracked-empty" class="muted" style="font-size:13px;padding:4px;display:none">No events</div>
+        <div id="tracked-empty" class="muted" style="font-size:13px;padding:4px;display:none">No visits</div>
       </div>
-    </div>
-
-    <div class="sidebar-card" id="tracked-totals-card" style="display:none">
-      <h3>Total Tracked Time</h3>
-      <div id="tracked-totals"></div>
     </div>
   </div>
 </div>
 
 <script>
+const W = {{ w|tojson }};        // wording: animal, animals (and capitalized), an_animal
 const CATS = [{% for i, cat in cats %}"{{ cat }}"{% if not loop.last %}, {% endif %}{% endfor %}];
 const MIN_IMAGES = {{ min_images }};
 
 let activeTab = 'capture';
+let lastStatus = null;           // last /api/status
+// A short message at the bottom of the page (saves, errors).
+let toastTimer = null;
+function toast(msg, isErr) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast' + (isErr ? ' err' : '');
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, isErr ? 6000 : 2500);
+}
 function cssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 }
-let reviewDone = false;
 let lastLogHtml = '';
 let logAutoScroll = true;
 let logUpdating = false;
@@ -812,14 +884,6 @@ function switchTab(tab) {
   if (tab === 'training') loadTrainingTab();
   if (tab === 'backup') loadBackupTab();
   if (tab === 'annotate') loadAnnotateTab();
-
-  // Load thumbnails + rescan when entering review
-  if (tab === 'review') {
-    fetch('/api/review/rescan', {method:'POST'}).then(() => {
-      loadReviewCurrent();
-      loadThumbnails();
-    });
-  }
 }
 
 // ── Flash effect ───────────────────────────────────────────
@@ -836,7 +900,7 @@ let roiStart = null;
 let roiCurrent = null;
 let currentROI = null;
 let showROIOverlay = false;
-const SOURCE_W = 1920, SOURCE_H = 1080;
+let SOURCE_W = 1920, SOURCE_H = 1080;   // camera size; updated from /api/status
 
 // ── Live preview polling ──────────────────────────────────
 let previewTimer = null;
@@ -846,7 +910,18 @@ async function pollPreview() {
   if (activeTab !== 'capture') return;
   try {
     const resp = await fetch('/api/preview');
-    if (resp.ok && activeTab === 'capture') {
+    const running = !lastStatus || (lastStatus.pipeline && lastStatus.pipeline.running);
+    const msg = document.getElementById('no-feed-msg');
+    if (!running || resp.status === 204) {
+      // No live frame: say so instead of showing the last one as if it were live.
+      msg.textContent = running ? 'Waiting for camera...' : 'Detection is not running. Press Restart below.';
+      const feedShown = document.getElementById('camera-feed').style.display === 'block';
+      msg.classList.toggle('over', feedShown);
+      msg.style.display = feedShown ? 'flex' : 'block';
+      document.getElementById('camera-feed').style.opacity = running ? '1' : '0.25';
+    } else if (resp.ok && activeTab === 'capture') {
+      msg.style.display = 'none';
+      document.getElementById('camera-feed').style.opacity = '1';
       const blob = await resp.blob();
       const url = URL.createObjectURL(blob);
       const feed = document.getElementById('camera-feed');
@@ -884,59 +959,45 @@ async function pollClassifierIdentity() {
       const labelEl = document.getElementById('identity-label');
       const confEl = document.getElementById('identity-conf');
       const votesEl = document.getElementById('identity-votes');
+      const action = document.getElementById('identity-action');
       const clfEnabled = document.getElementById('clf-enabled')?.checked;
-      if (data.error) {
-        if (!clfEnabled) {
-          // Stale error from previous run — hide when classifier is disabled
-          el.style.display = 'none';
-        } else {
-          // Classifier subprocess crashed or failed to start
-          labelEl.textContent = data.error;
-          labelEl.style.color = cssVar('--danger');
-          el.style.borderColor = cssVar('--danger');
-          confEl.textContent = '';
-          votesEl.textContent = '';
-          el.classList.remove('pending');
-          el.style.display = 'flex';
-        }
+      const clf = lastStatus && lastStatus.classifier;
+      const show = (text, color, pending, isName) => {
+        labelEl.textContent = text;
+        labelEl.classList.toggle('msg', !isName);
+        labelEl.style.color = color;
+        el.style.borderColor = color === cssVar('--muted') ? cssVar('--border') : color;
+        el.classList.toggle('pending', !!pending);
+        el.style.display = 'flex';
+      };
+      confEl.textContent = ''; votesEl.textContent = ''; action.hidden = true;
+      if (lastStatus && lastStatus.pipeline && !lastStatus.pipeline.running) {
+        show('Detection is not running.', cssVar('--muted'), true);
+      } else if (!clfEnabled) {
+        show('Identification is off.', cssVar('--muted'), true);
+      } else if (clf && !clf.model_exists) {
+        show('No model deployed yet: train one and deploy it on the Training tab.', cssVar('--warn'), true);
+        action.hidden = false;
+      } else if (data.error) {
+        // The worker reported a problem; a model deployed since then loads
+        // when detection restarts (the model watcher does that).
+        show(/not found|not an ExecuTorch/.test(data.error)
+               ? 'Loading the new model...' : 'Identification failed: ' + data.error,
+             cssVar(/not found|not an ExecuTorch/.test(data.error) ? '--muted' : '--danger'), true);
       } else if (data.prediction) {
         const name = data.confirmed_cat || data.prediction;
         const color = DET_COLORS[name] || DET_DEFAULT_COLOR;
-        labelEl.textContent = name;
-        labelEl.style.color = color;
-        el.style.borderColor = color;
+        show(data.confirmed ? name : name + '?', color, !data.confirmed, true);
         confEl.textContent = (data.confidence * 100).toFixed(0) + '%';
-        // Show vote progress
         if (data.votes) {
-          const parts = Object.entries(data.votes)
-            .sort((a, b) => b[1] - a[1])
-            .map(([cat, n]) => cat + ':' + n);
-          votesEl.textContent = parts.join(' ') + ' / ' + (data.vote_window || 10);
-        } else {
-          votesEl.textContent = '';
+          const n = data.vote_window || 10;
+          votesEl.textContent = Object.entries(data.votes).sort((a, b) => b[1] - a[1])
+            .map(([cat, k]) => `${cat} ${k}`).join(' · ') + ` of the last ${n} frames`;
         }
-        el.classList.toggle('pending', !data.confirmed);
-        el.style.display = 'flex';
       } else if (data.ood_rejected) {
-        // Energy filter is rejecting frames — show unknown indicator
-        labelEl.textContent = 'Unknown';
-        labelEl.style.color = cssVar('--warn');
-        el.style.borderColor = cssVar('--warn');
-        confEl.textContent = '';
-        votesEl.textContent = '';
-        el.classList.add('pending');
-        el.style.display = 'flex';
-      } else if (clfEnabled) {
-        // Classifier enabled but no prediction yet — show waiting state
-        labelEl.textContent = 'Waiting for detection in ROI...';
-        labelEl.style.color = cssVar('--muted');
-        el.style.borderColor = cssVar('--border');
-        confEl.textContent = '';
-        votesEl.textContent = '';
-        el.classList.add('pending');
-        el.style.display = 'flex';
+        show(`Unknown ${W.animal} (not one of yours, or unclear)`, cssVar('--warn'), true);
       } else {
-        el.style.display = 'none';
+        show(`Waiting for ${W.an_animal}...`, cssVar('--muted'), true);
       }
     }
   } catch(e) {}
@@ -950,8 +1011,11 @@ function formatTrackedDate(d) {
   return (d.getMonth()+1) + '/' + d.getDate() + '/' + String(d.getFullYear()).slice(2);
 }
 
+function isToday(d) { return d.toDateString() === new Date().toDateString(); }
 function changeTrackedDate(delta) {
+  if (delta > 0 && isToday(trackedDate)) return;
   trackedDate.setDate(trackedDate.getDate() + delta);
+  document.getElementById('tracked-next').disabled = isToday(trackedDate);
   document.getElementById('tracked-date').textContent = formatTrackedDate(trackedDate);
   fetchTrackedEvents();
 }
@@ -972,9 +1036,8 @@ function formatDuration(sec) {
 async function fetchTrackedEvents() {
   const card = document.getElementById('tracked-card');
   const totalsCard = document.getElementById('tracked-totals-card');
-  const clfEnabled = document.getElementById('clf-enabled')?.checked;
-  if (!clfEnabled) { card.style.display = 'none'; totalsCard.style.display = 'none'; return; }
-
+  document.getElementById('tracked-next').disabled = isToday(trackedDate);
+  document.getElementById('tracked-title').textContent = isToday(trackedDate) ? 'Today' : 'Visits';
   const dayStart = new Date(trackedDate);
   dayStart.setHours(0, 0, 0, 0);
   const dayEnd = new Date(dayStart);
@@ -1045,6 +1108,8 @@ function syncCanvasSize() {
   canvas.height = rect.height;
   canvas.style.width = rect.width + 'px';
   canvas.style.height = rect.height + 'px';
+  canvas.style.left = img.offsetLeft + 'px';
+  canvas.style.top = img.offsetTop + 'px';
   drawROI();
 }
 window.addEventListener('resize', syncCanvasSize);
@@ -1086,7 +1151,7 @@ function drawROI() {
     ctx.setLineDash([]);
     ctx.font = '11px monospace';
     ctx.fillStyle = cssVar('--success');
-    ctx.fillText('Bowl ROI', x1 / scale.sx + 4, y1 / scale.sy + 14);
+    ctx.fillText('Region of interest', x1 / scale.sx + 4, y1 / scale.sy + 14);
   }
 }
 
@@ -1094,7 +1159,7 @@ function toggleROIOverlay() {
   showROIOverlay = !showROIOverlay;
   const btn = document.getElementById('roi-show-btn');
   btn.classList.toggle('active', showROIOverlay);
-  btn.textContent = showROIOverlay ? 'Hide ROI' : 'Show ROI';
+  btn.textContent = showROIOverlay ? 'Hide' : 'Show';
   drawROI();
 }
 
@@ -1106,10 +1171,12 @@ function toggleROIDrawMode() {
     btn.classList.add('active');
     btn.textContent = 'Cancel';
     wrapper.classList.add('roi-drawing');
+    wrapper.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+    toast('Drag a rectangle on the live view around the part to watch.');
     syncCanvasSize();
   } else {
     btn.classList.remove('active');
-    btn.textContent = 'Set ROI';
+    btn.textContent = 'Draw';
     wrapper.classList.remove('roi-drawing');
     roiStart = null;
     roiCurrent = null;
@@ -1129,27 +1196,28 @@ async function finishROIDraw() {
   ];
   if (roi[2] - roi[0] < 50 || roi[3] - roi[1] < 50) {
     roiStart = null; roiCurrent = null; drawROI();
+    toast('That rectangle is too small; drag a bigger one.', true);
     return;
   }
   currentROI = roi;
   localStorage.setItem('bowlROI', JSON.stringify(roi));
-  await fetch('/api/inference/settings', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ classifier: { bowl_roi: roi } }),
-  });
+  try {
+    await fetch('/api/inference/settings', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ classifier: { bowl_roi: roi } }),
+    });
+    toast('Region of interest saved.');
+  } catch(e) { toast('Could not save the region of interest.', true); }
   toggleROIDrawMode();
-  if (showROIOverlay) toggleROIOverlay();
+  if (!showROIOverlay) toggleROIOverlay();     // show what was just drawn
   updateROICoordsDisplay();
 }
 
 function updateROICoordsDisplay() {
   const el = document.getElementById('roi-coords');
-  if (currentROI) {
-    el.textContent = '[' + currentROI.join(', ') + ']';
-  } else {
-    el.textContent = 'Not set';
-  }
+  el.textContent = currentROI ? '' : 'Not set (whole picture)';
+  el.title = currentROI ? 'Pixels: ' + currentROI.join(', ') : '';
 }
 
 function drawCrosshairs(ctx, mx, my, canvas) {
@@ -1220,8 +1288,6 @@ async function pollDetections() {
     if (r.ok) {
       const dets = await r.json();
       renderDetectionPills(dets);
-      updateRecentLabels(dets);
-      renderRecentDetections();
     }
   } catch(e) {}
   setTimeout(pollDetections, 200);
@@ -1246,34 +1312,7 @@ function renderDetectionPills(dets) {
     if (g.ids.length) detail += ' #' + g.ids.join(',');
     html += `<span class="det-pill" style="background:${color}">${text} <span class="det-conf">${detail}</span></span>`;
   }
-  container.innerHTML = html || '<span class="det-none">No detections</span>';
-}
-
-// ── Recent detections tracking ────────────────────────────
-const recentLabels = [];  // ordered most-recent first, max 20 unique
-function updateRecentLabels(dets) {
-  const seen = new Set();
-  for (const d of dets) {
-    const label = d.label;
-    if (seen.has(label)) continue;
-    seen.add(label);
-    const idx = recentLabels.indexOf(label);
-    if (idx !== -1) recentLabels.splice(idx, 1);
-    recentLabels.unshift(label);
-  }
-  while (recentLabels.length > 20) recentLabels.pop();
-}
-
-function renderRecentDetections() {
-  const container = document.getElementById('recent-detections');
-  if (recentLabels.length === 0) {
-    container.innerHTML = '<span class="muted">No detections yet</span>';
-    return;
-  }
-  container.innerHTML = recentLabels.map(label => {
-    const color = DET_COLORS[label] || DET_DEFAULT_COLOR;
-    return `<div class="row"><span class="dot" style="--c:${color}"></span>${label}</div>`;
-  }).join('');
+  container.innerHTML = html;
 }
 
 // ── Detection Mode Switching ───────────────────────────────
@@ -1328,12 +1367,73 @@ function closeLogBrowser() {
   document.getElementById('log-modal').style.display = 'none';
 }
 
-function updateModeUI() {
-  const dot = document.getElementById('inf-status-dot');
-  const text = document.getElementById('inf-status-text');
-  dot.className = 'status-dot running';
-  text.textContent = 'Running';
+async function restartDetection() {
+  const btn = document.getElementById('restart-btn');
+  btn.disabled = true;
+  toast('Restarting detection (about 10 s)...');
+  try {
+    const r = await fetch('/api/pipeline/restart', {method: 'POST'});
+    const d = await r.json();
+    toast(d.status === 'ok' ? 'Detection restarted.' : 'Restart failed: ' + (d.message || 'unknown error'), d.status !== 'ok');
+  } catch(e) { toast('Restart failed: the dashboard did not answer.', true); }
+  btn.disabled = false;
 }
+
+// ── Status chips (the watch view's summary of everything in the drawer) ──
+function setChip(id, cls, html) {
+  const el = document.getElementById(id);
+  el.className = 'schip ' + cls;
+  el.querySelector('.stext').innerHTML = html;
+}
+function renderStatusChips(d) {
+  const p = d.pipeline || {};
+  const ri = p.restart_info;
+  if (p.running) setChip('chip-detection', 'on', 'Detection running');
+  else if (ri && !ri.exhausted) setChip('chip-detection', 'busy', `Detection restarting (attempt ${ri.count}/${ri.max})`);
+  else setChip('chip-detection', 'err', ri ? 'Detection crashed' : 'Detection stopped');
+  document.getElementById('chip-restart').hidden = !!p.running || !!(ri && !ri.exhausted);
+
+  const c = d.classifier || {};
+  const notLoaded = c.worker_error && /not found|not an ExecuTorch/.test(c.worker_error);
+  if (!c.enabled) setChip('chip-ident', '', 'Identification off');
+  else if (!c.model_exists) setChip('chip-ident', 'warn', 'No model yet');
+  else if (c.worker_error && !notLoaded) setChip('chip-ident', 'err', 'Identification error');
+  else if (!p.running) setChip('chip-ident', '', 'Identification paused');
+  else if (notLoaded) setChip('chip-ident', 'busy', 'Identification starting');
+  else setChip('chip-ident', 'on', `Identifying ${W.animals}` +
+    (c.model ? ` <span class="faint">· model ${trDate(c.model.job_id)}` +
+      (c.model.val_acc != null ? `, ${trPct(c.model.val_acc)}` : '') + '</span>' : ''));
+
+  const saving = document.getElementById('cap-enabled').checked;
+  if (d.capture_mode === 'auto') setChip('chip-saving', 'warn', `Auto-capture on: <b>${trEsc(d.auto_target)}</b>`);
+  else if (saving) setChip('chip-saving', 'on', 'Saving images automatically');
+  else setChip('chip-saving', '', 'Not saving images');
+
+  // First visit: controls open while still collecting, closed once cats are identified.
+  if (controlsOpen === null) setControlsOpen(!(c.enabled && c.model_exists), null, true);
+}
+
+// ── Controls drawer (one level of disclosure, remembered) ──
+let controlsOpen = null;
+try { const v = localStorage.getItem('captureControls'); if (v !== null) controlsOpen = v === '1'; } catch(e) {}
+function setControlsOpen(open, section, isDefault) {
+  if (open === undefined) open = !controlsOpen;
+  controlsOpen = !!open;
+  const drawer = document.getElementById('capture-controls');
+  const btn = document.getElementById('controls-btn');
+  drawer.hidden = !controlsOpen;
+  btn.setAttribute('aria-expanded', controlsOpen);
+  btn.firstChild.textContent = controlsOpen ? 'Hide controls ' : 'Controls ';
+  if (!isDefault) { try { localStorage.setItem('captureControls', controlsOpen ? '1' : '0'); } catch(e) {} }
+  if (controlsOpen && section) {
+    const el = document.getElementById(section);
+    if (el) {
+      el.scrollIntoView({behavior: 'smooth', block: 'nearest'});
+      el.classList.remove('sec-flash'); void el.offsetWidth; el.classList.add('sec-flash');
+    }
+  }
+}
+if (controlsOpen !== null) setControlsOpen(controlsOpen, null, true);
 
 // ── Auto-Capture ──────────────────────────────────────────
 async function toggleAutoCapture() {
@@ -1341,7 +1441,7 @@ async function toggleAutoCapture() {
     const r = await fetch('/api/mode', {method:'POST'});
     const d = await r.json();
     updateAutoUI(d.mode, d.auto_target);
-  } catch(e) { console.error(e); }
+  } catch(e) { toast('Could not switch auto-capture.', true); }
 }
 
 async function setAutoTarget(cat) {
@@ -1355,345 +1455,16 @@ async function setAutoTarget(cat) {
 
 function updateAutoUI(mode, target) {
   const btn = document.getElementById('btn-auto');
-  if (mode === 'auto') {
-    btn.textContent = 'Auto: ON (' + target + ')';
-    btn.classList.add('auto-on');
-  } else {
-    btn.textContent = 'Auto: OFF';
-    btn.classList.remove('auto-on');
-  }
+  const every = lastStatus && lastStatus.auto_interval ? lastStatus.auto_interval : 3;
+  btn.textContent = mode === 'auto' ? 'On' : 'Off';
+  btn.classList.toggle('auto-on', mode === 'auto');
+  btn.setAttribute('aria-pressed', mode === 'auto');
+  document.getElementById('auto-hint').textContent = mode === 'auto'
+    ? `Saving an image every ${every} s as ${target} while ${W.an_animal} is in the region of interest. Turn it off when ${target} leaves.`
+    : `Saves an image every ${every} s under the chosen name while ${W.an_animal} is in the region of interest. For when you know who is there.`;
   // Sync dropdown
   const sel = document.getElementById('auto-target');
   if (sel && target) sel.value = target;
-}
-
-// ── Review functions ───────────────────────────────────────
-async function loadReviewCurrent() {
-  try {
-    const r = await fetch('/api/review/current');
-    const d = await r.json();
-    updateReviewUI(d);
-  } catch(e) { console.error(e); }
-}
-
-function updateReviewUI(data) {
-  const current = data.current !== undefined ? data.current : data;
-  if (data.stats) {
-    document.getElementById('sidebar-labeled').textContent = data.stats.labeled;
-    document.getElementById('sidebar-deleted').textContent = data.stats.deleted;
-  }
-
-  if (data.done || current === null) {
-    reviewDone = true;
-    document.getElementById('review-image-wrapper').style.display = 'none';
-    document.getElementById('review-controls').style.display = 'none';
-    document.getElementById('review-nav').style.display = 'none';
-    document.getElementById('review-info').style.display = 'none';
-    document.getElementById('done-screen').style.display = 'none';
-    document.getElementById('no-review-msg').style.display = 'flex';
-    return;
-  }
-
-  reviewDone = false;
-  document.getElementById('review-image-wrapper').style.display = 'flex';
-  document.getElementById('review-controls').style.display = 'grid';
-  document.getElementById('review-nav').style.display = 'flex';
-  document.getElementById('review-info').style.display = 'flex';
-  document.getElementById('done-screen').style.display = 'none';
-  document.getElementById('no-review-msg').style.display = 'none';
-
-  document.getElementById('review-progress').textContent = (current.index+1) + '/' + current.total;
-  const badge = document.getElementById('review-label-badge');
-  badge.textContent = current.label;
-  badge.className = 'label-badge ' + (current.label === 'unlabeled' ? 'unlabeled' : 'labeled');
-  document.getElementById('review-filename').textContent = current.filename;
-  document.getElementById('review-image').src = '/api/review/image?' + Date.now();
-
-  // Update active thumbnail in grid (match by original server index)
-  if (current.all_index !== undefined && current.all_index >= 0) {
-    currentAllIndex = current.all_index;
-    document.querySelectorAll('.thumb-item').forEach(el => {
-      el.classList.toggle('active', parseInt(el.dataset.originalIndex) === current.all_index);
-    });
-    const activeThumb = document.querySelector('.thumb-item.active');
-    if (activeThumb) {
-      activeThumb.scrollIntoView({block: 'nearest'});
-    }
-  }
-}
-
-async function labelAs(label) {
-  if (reviewDone || activeTab !== 'review') return;
-  try {
-    const r = await fetch('/api/review/label', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({label})
-    });
-    const d = await r.json();
-    if (d.status === 'ok') triggerFlash('review-flash', 'label-flash');
-    updateReviewUI(d);
-    loadThumbnails(); // Refresh thumbnails to update reviewed state
-  } catch(e) { console.error(e); }
-}
-
-async function reviewDelete() {
-  if (reviewDone || activeTab !== 'review') return;
-  try {
-    const r = await fetch('/api/review/delete', {method:'POST'});
-    const d = await r.json();
-    if (d.status === 'ok') triggerFlash('review-flash', 'delete-flash');
-    updateReviewUI(d);
-    loadThumbnails(); // Refresh thumbnails
-  } catch(e) { console.error(e); }
-}
-
-async function reviewSkip() {
-  if (reviewDone || activeTab !== 'review') return;
-  try {
-    const r = await fetch('/api/review/skip', {method:'POST'});
-    const d = await r.json();
-    updateReviewUI(d);
-    loadThumbnails(); // Refresh thumbnails to update reviewed state
-  } catch(e) { console.error(e); }
-}
-
-async function reviewPrev() {
-  if (activeTab !== 'review') return;
-  try {
-    const r = await fetch('/api/review/prev', {method:'POST'});
-    updateReviewUI(await r.json());
-  } catch(e) { console.error(e); }
-}
-
-async function reviewRescan() {
-  await fetch('/api/review/rescan', {method:'POST'});
-  selectedThumbnails.clear();
-  updateSelectionBar();
-  loadReviewCurrent();
-  loadThumbnails();
-}
-
-// ── Thumbnail Grid + Multi-Select ─────────────────────────
-let thumbnailImages = [];
-let currentAllIndex = null;    // server index of the image shown in the review pane
-let displayedThumbnails = [];  // currently rendered (filtered) subset
-let currentSort = 'time';
-let activeFilters = new Set();
-const selectedThumbnails = new Set();
-let lastSelectedVisualIndex = null;
-
-async function loadThumbnails() {
-  try {
-    const r = await fetch('/api/review/thumbnails');
-    const d = await r.json();
-    thumbnailImages = d.images;
-    // Prune stale selections (indices that no longer exist)
-    const validIndices = new Set(thumbnailImages.map(img => img.index));
-    for (const idx of selectedThumbnails) {
-      if (!validIndices.has(idx)) selectedThumbnails.delete(idx);
-    }
-    updateSelectionBar();
-    applySortOrder(currentSort);
-    renderThumbnails();
-  } catch(e) { console.error(e); }
-}
-
-function applySortOrder(mode) {
-  if (mode === 'time') {
-    thumbnailImages.sort((a, b) => {
-      const ta = a.filename.substring(a.filename.indexOf('_') + 1);
-      const tb = b.filename.substring(b.filename.indexOf('_') + 1);
-      return tb.localeCompare(ta);
-    });
-  } else if (mode === 'name') {
-    thumbnailImages.sort((a, b) => {
-      if (a.label !== b.label) return a.label.localeCompare(b.label);
-      return a.filename.localeCompare(b.filename);
-    });
-  }
-}
-
-function sortThumbnails(mode) {
-  currentSort = mode;
-  document.getElementById('sort-time').classList.toggle('active', mode === 'time');
-  document.getElementById('sort-name').classList.toggle('active', mode === 'name');
-  applySortOrder(mode);
-  renderThumbnails();
-}
-
-function toggleLabelFilter(btn, label) {
-  if (label === '') {
-    // "All" button: clear all filters
-    activeFilters.clear();
-    document.querySelectorAll('.thumb-sort-row [data-filter]').forEach(el => {
-      el.classList.toggle('active', el.dataset.filter === '');
-    });
-  } else {
-    // Toggle specific label
-    if (activeFilters.has(label)) {
-      activeFilters.delete(label);
-    } else {
-      activeFilters.add(label);
-    }
-    // Update button states
-    document.querySelectorAll('.thumb-sort-row [data-filter]').forEach(el => {
-      if (el.dataset.filter === '') {
-        el.classList.toggle('active', activeFilters.size === 0);
-      } else {
-        el.classList.toggle('active', activeFilters.has(el.dataset.filter));
-      }
-    });
-  }
-  lastSelectedVisualIndex = null;  // reset — filtered indices changed
-  renderThumbnails();
-}
-
-function updateSelectionBar() {
-  const bar = document.getElementById('selection-bar');
-  const count = selectedThumbnails.size;
-  if (count > 0) {
-    bar.style.display = 'flex';
-    document.getElementById('selection-count').textContent = count + ' selected';
-  } else {
-    bar.style.display = 'none';
-  }
-}
-
-function toggleSelect(index, div) {
-  if (selectedThumbnails.has(index)) {
-    selectedThumbnails.delete(index);
-    div.classList.remove('selected');
-  } else {
-    selectedThumbnails.add(index);
-    div.classList.add('selected');
-  }
-  updateSelectionBar();
-}
-
-function clearSelection() {
-  selectedThumbnails.clear();
-  lastSelectedVisualIndex = null;
-  document.querySelectorAll('.thumb-item.selected').forEach(el => el.classList.remove('selected'));
-  updateSelectionBar();
-}
-
-function selectAll() {
-  thumbnailImages.forEach(img => selectedThumbnails.add(img.index));
-  document.querySelectorAll('.thumb-item').forEach(el => el.classList.add('selected'));
-  updateSelectionBar();
-}
-
-async function batchLabel(label) {
-  if (selectedThumbnails.size === 0) return;
-  const indices = Array.from(selectedThumbnails);
-  try {
-    const r = await fetch('/api/review/batch-label', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({indices, label})
-    });
-    const d = await r.json();
-    selectedThumbnails.clear();
-    updateSelectionBar();
-    loadThumbnails();
-    updateReviewUI(d);
-    triggerFlash('review-flash', 'label-flash');
-  } catch(e) { console.error(e); }
-}
-
-async function batchDelete() {
-  if (selectedThumbnails.size === 0) return;
-  const indices = Array.from(selectedThumbnails);
-  try {
-    const r = await fetch('/api/review/batch-delete', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({indices})
-    });
-    const d = await r.json();
-    selectedThumbnails.clear();
-    updateSelectionBar();
-    loadThumbnails();
-    updateReviewUI(d);
-    triggerFlash('review-flash', 'delete-flash');
-  } catch(e) { console.error(e); }
-}
-
-function renderThumbnails() {
-  const grid = document.getElementById('thumbnail-grid');
-  const scrollPos = grid.scrollTop;
-  grid.innerHTML = '';
-
-  displayedThumbnails = activeFilters.size > 0
-    ? thumbnailImages.filter(img => activeFilters.has(img.label))
-    : thumbnailImages;
-
-  displayedThumbnails.forEach((img, filteredIdx) => {
-    const div = document.createElement('div');
-    div.className = 'thumb-item';
-    div.dataset.originalIndex = img.index;
-    if (img.reviewed) div.classList.add('reviewed');
-    if (img.index === currentAllIndex) div.classList.add('active');
-    if (selectedThumbnails.has(img.index)) div.classList.add('selected');
-
-    const imgEl = document.createElement('img');
-    imgEl.src = '/api/review/thumbnail/' + encodeURIComponent(img.relative_path);
-    imgEl.loading = 'lazy';
-    div.appendChild(imgEl);
-
-    const label = document.createElement('div');
-    label.className = 'thumb-label';
-    label.textContent = img.label;
-    div.appendChild(label);
-
-    div.onclick = (e) => {
-      if (e.shiftKey) {
-        let anchor = lastSelectedVisualIndex;
-        if (anchor === null) {
-          const activeEl = grid.querySelector('.thumb-item.active');
-          if (activeEl) {
-            anchor = Array.from(grid.children).indexOf(activeEl);
-          } else {
-            anchor = 0;
-          }
-        }
-        const lo = Math.min(anchor, filteredIdx);
-        const hi = Math.max(anchor, filteredIdx);
-        const thumbEls = grid.querySelectorAll('.thumb-item');
-        for (let i = lo; i <= hi; i++) {
-          selectedThumbnails.add(displayedThumbnails[i].index);
-          thumbEls[i].classList.add('selected');
-        }
-        lastSelectedVisualIndex = filteredIdx;
-        updateSelectionBar();
-      } else if (selectedThumbnails.size > 0 || e.ctrlKey || e.metaKey) {
-        toggleSelect(img.index, div);
-        lastSelectedVisualIndex = filteredIdx;
-      } else {
-        gotoThumbnail(img.index);
-        lastSelectedVisualIndex = filteredIdx;
-      }
-    };
-    // Long-press or right-click to start selection without needing Ctrl
-    div.oncontextmenu = (e) => {
-      e.preventDefault();
-      toggleSelect(img.index, div);
-    };
-    grid.appendChild(div);
-  });
-  grid.scrollTop = Math.min(scrollPos, grid.scrollHeight - grid.clientHeight);
-}
-
-async function gotoThumbnail(originalIndex) {
-  try {
-    const r = await fetch('/api/review/goto', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({index: originalIndex})
-    });
-    const d = await r.json();
-    updateReviewUI(d);
-  } catch(e) { console.error(e); }
 }
 
 // ── Detection Capture Settings ─────────────────────────────
@@ -1705,12 +1476,15 @@ function updateCaptureHints() {
   if (!hint || !labeledOnly || !labeledRow) return;
   labeledOnly.disabled = !clfOn;
   labeledRow.style.opacity = clfOn ? '1' : '0.4';
-  if (!clfOn) {
-    hint.textContent = 'Images saved as unlabeled (classifier disabled)';
+  const on = document.getElementById('cap-enabled').checked;
+  if (!on) {
+    hint.textContent = `Off. When on, an image is saved whenever ${W.an_animal} is in the region of interest.`;
+  } else if (!clfOn) {
+    hint.textContent = 'Saved as Unlabeled (identification is off); label them on the Label tab.';
   } else if (labeledOnly.checked) {
-    hint.textContent = 'Only identified cats saved';
+    hint.textContent = `Saved under the identified ${W.animal}'s name; unidentified ${W.animals} are skipped.`;
   } else {
-    hint.textContent = 'All detections saved (labeled + unlabeled)';
+    hint.textContent = `Saved under the identified ${W.animal}'s name, or as Unlabeled when unsure.`;
   }
 }
 
@@ -1739,7 +1513,9 @@ async function saveCaptureSettings() {
       })
     });
     updateCaptureHints();
-  } catch(e) { console.error(e); }
+    if (lastStatus) renderStatusChips(lastStatus);
+    toast('Saved.');
+  } catch(e) { toast('Could not save the setting.', true); }
 }
 
 // ── Classifier settings ────────────────────────────────────
@@ -1777,13 +1553,17 @@ async function saveClassifierSettings() {
         }
       })
     });
-    // Auto-restart pipeline when enabled state changes
+    // Turning identification on or off restarts detection.
     if (_lastClfEnabled !== null && enabled !== _lastClfEnabled) {
+      toast((enabled ? 'Turning identification on' : 'Turning identification off') + '; detection restarts (about 10 s).');
       await fetch('/api/pipeline/restart', { method: 'POST' });
+    } else {
+      toast('Saved. Certainty applies after detection restarts; the rest applies now.');
     }
     _lastClfEnabled = enabled;
     updateCaptureHints();
-  } catch(e) { console.error(e); }
+    fetchTrackedEvents();
+  } catch(e) { toast('Could not save the setting.', true); }
 }
 
 // ── Status polling ─────────────────────────────────────────
@@ -1791,13 +1571,15 @@ async function pollStatus() {
   try {
     const r = await fetch('/api/status');
     const d = await r.json();
+    lastStatus = d;
+    if (d.camera_size) { SOURCE_W = d.camera_size[0]; SOURCE_H = d.camera_size[1]; }
 
     // Image counts
     const counts = d.image_counts || {};
     let topParts = [];
     CATS.forEach(cat => {
       const c = counts[cat] || 0;
-      document.getElementById('count-' + cat).textContent = c + '/' + MIN_IMAGES;
+      document.getElementById('count-' + cat).textContent = c.toLocaleString();
       const pct = Math.min(100, (c / MIN_IMAGES) * 100);
       const bar = document.getElementById('bar-' + cat);
       if (bar) {
@@ -1820,7 +1602,6 @@ async function pollStatus() {
       // Log output — skip DOM update if user has text selected (preserves copy ability)
       if (d.pipeline.output) {
         const log = document.getElementById('inf-log');
-        const logWrap = document.getElementById('inf-log-wrap');
         const newHtml = d.pipeline.output.slice(-20).map(l => l.replace(/</g,'&lt;')).join('<br>');
         const hasSelection = window.getSelection().toString().length > 0;
         if (newHtml !== lastLogHtml && !hasSelection) {
@@ -1832,7 +1613,7 @@ async function pollStatus() {
           }
           requestAnimationFrame(() => { logUpdating = false; });
         }
-        logWrap.classList.toggle('visible', d.pipeline.output.length > 0);
+
       }
 
       // Update status indicators
@@ -1850,31 +1631,44 @@ async function pollStatus() {
         text.textContent = 'Restarting in ' + ri.waiting_seconds + 's... (attempt ' + ri.count + '/' + ri.max + ')';
       } else {
         dot.className = 'status-dot stopped';
-        text.textContent = 'Pipeline stopped';
+        text.textContent = 'Stopped';
       }
 
-    // Classifier model status
-    if (d.classifier) {
-      const statusEl = document.getElementById('clf-model-status');
-      if (d.classifier.model_exists) {
-        statusEl.textContent = d.classifier.enabled ? 'Active' : 'Model ready';
-        statusEl.style.color = d.classifier.enabled ? cssVar('--success') : cssVar('--muted');
-      } else {
-        statusEl.textContent = 'No model found';
-        statusEl.style.color = cssVar('--danger');
+      // Cat identification: what's deployed, and whether it's actually running
+      if (d.classifier) {
+        const c = d.classifier;
+        const statusEl = document.getElementById('clf-model-status');
+        const notLoaded = c.worker_error && /not found|not an ExecuTorch/.test(c.worker_error);
+        // "<model id> · 99.0% · Nov 14, 21:19", or a note when it wasn't deployed from the Training tab
+        // The model's id is when it was trained (20261114-211947 = Nov 14, 21:19:47).
+        const model = c.model
+          ? `<b>${trEsc(c.model.job_id)}</b>` + (c.model.val_acc != null ? ` · ${trPct(c.model.val_acc)}` : '')
+          : 'installed by hand';
+        statusEl.title = c.model ? `Trained ${trDate(c.model.job_id)}` +
+          (c.model.deployed_at ? `, deployed ${trDate(c.model.deployed_at)}` : '') : '';
+        let html;
+        if (!c.model_exists) {
+          html = `<span style="color:var(--warn)">No model yet:</span> <a href="#" onclick="switchTab('training');return false">train and deploy one</a>`;
+        } else if (!c.enabled) {
+          html = `Off · model ready: ${model}`;
+        } else if (c.worker_error && !notLoaded) {
+          html = `<span style="color:var(--danger)">Error:</span> ${trEsc(c.worker_error)}`;
+        } else if (!d.pipeline.running) {
+          html = `Paused (detection stopped) · ${model}`;
+        } else if (notLoaded) {
+          html = `Loading model ${model}...`;
+        } else {
+          html = `<span style="color:var(--success)">Loaded model</span> ${model}`;
+        }
+        if (html !== statusEl.innerHTML) statusEl.innerHTML = html;
       }
-    }
-
-      // Sidebar
-      document.getElementById('sidebar-mode').textContent = 'DETECTION';
-      document.getElementById('sidebar-pipeline').textContent =
-        d.pipeline.running ? 'Running' : (ri && !ri.exhausted ? 'Restarting...' : 'Stopped');
     }
 
     // Auto-capture state
     if (d.capture_mode !== undefined) {
       updateAutoUI(d.capture_mode, d.auto_target);
     }
+    renderStatusChips(d);
   } catch(e) {}
 }
 
@@ -1884,26 +1678,16 @@ document.addEventListener('keydown', (e) => {
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === 'Escape') { closeLogBrowser(); return; }
 
+  if (activeTab !== 'annotate') return;
   const num = parseInt(e.key);
-  if (num >= 1 && num <= CATS.length) {
-    if (activeTab === 'review') labelAs(CATS[num-1]);
-    return;
-  }
-
-  if (activeTab === 'review') {
-    switch (e.key) {
-      case 'd': reviewDelete(); break;
-      case 'n': case 'ArrowRight': reviewSkip(); break;
-      case 'p': case 'ArrowLeft': reviewPrev(); break;
-    }
-  }
-  if (activeTab === 'annotate') {
-    switch (e.key) {
-      case 'a': annAutoDetectCurrent(); break;
-      case 'd': annClearBbox(); break;
-      case 'n': case 'ArrowRight': annNext(); e.preventDefault(); break;
-      case 'p': case 'ArrowLeft': annPrev(); e.preventDefault(); break;
-    }
+  if (num >= 1 && num <= CATS.length) { annLabel(CATS[num - 1]); return; }
+  switch (e.key) {
+    case 'Enter': annKeep(); e.preventDefault(); break;
+    case 'x': case 'Delete': annTrash(); break;
+    case 'a': annAutoDetectCurrent(); break;
+    case 'r': annClearBbox(); break;
+    case 'n': case 'ArrowRight': annNext(); e.preventDefault(); break;
+    case 'p': case 'ArrowLeft': annPrev(); e.preventDefault(); break;
   }
 });
 
@@ -1948,6 +1732,9 @@ function initSplitters() {
 // ── Init ───────────────────────────────────────────────────
 (async function init() {
   initSplitters();
+  // Typing in the Training or Backup setup marks it "Not saved yet".
+  document.getElementById('tr-setup').addEventListener('input', () => trMarkDirty('tr'));
+  document.getElementById('bk-setup').addEventListener('input', () => trMarkDirty('bk'));
   startPreviewLoop();
   await loadCaptureSettings();
   await loadClassifierSettings();
@@ -1998,22 +1785,77 @@ async function loadTrainingTab() {
   }
 }
 
-// ── Setup card ──
+// ── Small helpers ──
+// "20261114-211947" or an ISO time -> "Nov 14, 21:19"
+function trDate(v) {
+  if (!v) return '';
+  let d;
+  const m = /^(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})$/.exec(v);
+  d = m ? new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5]) : new Date(v);
+  if (isNaN(d)) return String(v);
+  return d.toLocaleString(undefined, {month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false});
+}
+// Unsaved-change markers for the forms that re-render from saved values.
+const formDirty = {tr: false, bk: false};
+function trMarkDirty(which) {
+  formDirty[which] = true;
+  const el = trEl(which + '-dirty');
+  if (el) el.hidden = false;
+}
+function trClearDirty(which) {
+  formDirty[which] = false;
+  const el = trEl(which + '-dirty');
+  if (el) el.hidden = true;
+}
+
+// ── Where training runs ──
 async function loadTrainingConfig() {
-  trainCfg = await trJson('/api/training/config');
+  const cfg = await trJson('/api/training/config');
+  trainCfg = cfg;
+  trEl('tr-pi-torch').textContent = cfg.pi_torch_version || 'not installed';
+  trEl('tr-pi-executorch').textContent = cfg.pi_executorch_version || 'not installed (needed to run trained models)';
+  renderBackendLine();
+  if (formDirty.tr) return;        // keep the user's unsaved edits
   const sel = trEl('tr-backend');
-  const keep = sel.value;
-  sel.innerHTML = trainCfg.backends.map(b =>
+  sel.innerHTML = cfg.backends.map(b =>
     `<option value="${trEsc(b.name)}">${trEsc(b.label)}</option>`).join('');
-  sel.value = keep && trainCfg.backends.some(b => b.name === keep) ? keep : trainCfg.backend;
-  trEl('tr-min-images').value = trainCfg.min_images_per_cat;
-  trEl('tr-pi-torch').textContent = trainCfg.pi_torch_version || 'torch not installed';
-  trEl('tr-pi-executorch').textContent = trainCfg.pi_executorch_version || 'not installed (needed to run trained models)';
+  sel.value = cfg.backend;
+  trEl('tr-min-images').value = cfg.min_images_per_cat;
   renderBackendForm();
+  trClearDirty('tr');
+  // Open the setup on the first visit, when nothing is set up yet.
+  if (backendMissing(savedBackend()).length) trEl('tr-backend-fold').open = true;
 }
 
 function currentBackend() {
   return trainCfg.backends.find(b => b.name === trEl('tr-backend').value);
+}
+function savedBackend() {
+  return trainCfg && trainCfg.backends.find(b => b.name === trainCfg.backend);
+}
+// Required settings of a backend that aren't saved yet.
+function backendMissing(b) {
+  if (!b) return ['backend'];
+  return b.fields.filter(f => f.required && (f.secret ? !b.secrets_set[f.key]
+    : [undefined, null, ''].includes(b.values[f.key]))).map(f => f.label);
+}
+
+function renderBackendLine() {
+  const b = savedBackend();
+  const missing = backendMissing(b);
+  let where = '';
+  if (b && b.name === 'local_pc') where = ` (${trEsc(b.values.host || '?')}:${trEsc(b.values.port || '5004')})`;
+  else if (b && b.name === 'hf_jobs') where = ` (${trEsc(b.values.flavor || '')})`;
+  const change = `<a href="#" onclick="openBackendSetup();return false">${missing.length ? 'Set it up' : 'Change'}</a>`;
+  trEl('tr-backend-line').innerHTML = missing.length
+    ? `<span style="color:var(--warn)">Choose where training runs first.</span> ${change}`
+    : `Trains on <b>${trEsc(b.label)}</b>${where}. ${change}`;
+  trEl('tr-backend-note').textContent = missing.length ? 'Not set up yet' : `${b.label}${where.replace(/&#39;|&quot;/g, '')}`;
+}
+
+function openBackendSetup() {
+  trEl('tr-backend-fold').open = true;
+  trEl('tr-setup').scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 
 function renderBackendForm() {
@@ -2054,8 +1896,10 @@ async function saveTrainingConfig() {
   const res = await trPost('/api/training/config', collectTrainingForm());
   if (res.status !== 'ok') { trShow('tr-test-result', 'err', res.message || 'Save failed'); return; }
   trainCfg = res;
+  trClearDirty('tr');
   renderBackendForm();
-  trShow('tr-test-result', 'ok', 'Saved. ' + currentBackend().label + ' is the active backend.');
+  renderBackendLine();
+  trShow('tr-test-result', 'ok', 'Saved. ' + currentBackend().label + ' is where training runs.');
   loadTrainingImages();
 }
 
@@ -2080,19 +1924,19 @@ async function loadTrainingImages() {
     if (n < min) short++;
     const pct = Math.min(100, Math.round(100 * n / Math.max(min, 1)));
     const cls = n >= min ? 'bar-good' : (n >= min / 2 ? 'bar-mid' : 'bar-low');
-    const extra = c.images > n ? ` <span class="hint" title="Images without a bounding-box sidecar can't be cropped">(+${c.images - n} without bounding box)</span>` : '';
+    const extra = c.images > n ? ` <span class="hint" title="Images without a bounding box can't be used; give them one on the Annotate tab">(+${c.images - n} without bounding box)</span>` : '';
     return `<div class="cat-stat"><span class="name" style="color:${colors[cat] || 'inherit'}">${trEsc(cat)}</span>` +
            `<div class="bar-bg"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>` +
            `<span class="count">${n}${extra}</span></div>`;
   }).join('');
   trEl('tr-image-hint').textContent = short
-    ? `${short} cat(s) below the minimum of ${min} labeled images with bounding boxes.`
-    : `Labeled images with bounding boxes (minimum ${min} per cat).`;
+    ? `${short} of your ${W.animals} ${short === 1 ? 'has' : 'have'} fewer than ${min} labeled images with a bounding box; training needs at least ${min} each.`
+    : `Labeled images with a bounding box per ${W.animal} (training needs at least ${min} each).`;
 }
 
 async function startJob(kind, extra) {
   if (!trainCfg) trainCfg = await trJson('/api/training/config');
-  const b = trainCfg.backends.find(x => x.name === trainCfg.backend);
+  const b = savedBackend();
   const label = b ? b.label : 'the configured backend';
   const body = {kind, ...(extra || {})};
   let msg;
@@ -2102,12 +1946,12 @@ async function startJob(kind, extra) {
   } else if (kind === 'detect') {
     msg = `Auto-detect bounding boxes for ${extra && extra.count} images on ${label}?\n\nThe images are sent to the backend; bounding boxes come back and are saved as auto-detected. Images you annotate meanwhile are left alone.`;
   } else {
-    msg = `Start a training job on ${label}?\n\nThe Pi crops and packages your labeled images first; detection keeps running.`;
+    msg = `Start a training job on ${label}?\n\nThe Pi crops and packages your labeled images first; detection keeps running. When it finishes, deploy the new model in the Identification Model card.`;
   }
   if (trainCfg.backend === 'hf_jobs') {
     msg += kind === 'detect'
       ? '\n\nThe full images are uploaded to a private Hugging Face bucket (deleted afterwards), and GPU time is billed to your HF credits.'
-      : '\n\nCropped cat images are uploaded to a private Hugging Face bucket (deleted afterwards), and GPU time is billed to your HF credits.';
+      : '\n\nCropped images are uploaded to a private Hugging Face bucket (deleted afterwards), and GPU time is billed to your HF credits.';
   }
   if (!confirm(msg)) return null;
   delete body.count;
@@ -2115,6 +1959,7 @@ async function startJob(kind, extra) {
   trainLastLogLen = -1;
   if (activeTab === 'training') {
     trShow('tr-run-result', res.status === 'ok' ? '' : 'err', res.status === 'ok' ? '' : res.message);
+    if (res.status === 'ok') trEl('tr-log-fold').open = true;
     pollTraining();
   }
   return res;
@@ -2126,7 +1971,8 @@ async function cancelTraining() {
   if (res.status !== 'ok') trShow('tr-run-result', 'err', res.message);
 }
 
-// ── Progress + result ──
+// ── Progress ──
+let trainWasActive = null;
 async function pollTraining() {
   const st = await trJson('/api/training/status');
   trainStatus = st;
@@ -2137,11 +1983,16 @@ async function pollTraining() {
   const link = trEl('tr-job-link');
   link.hidden = !(job && job.url && st.active);
   if (job && job.url) link.href = job.url;
+  // The log is open while a job runs, and folds away when it finishes.
+  if (trainWasActive !== st.active) trEl('tr-log-fold').open = st.active;
+  trainWasActive = st.active;
 
   trEl('tr-progress').hidden = !job;
   if (job) {
-    trEl('tr-progress-title').textContent =
-      `${JOB_KINDS[job.kind || 'train']} job ${job.job_id} on ${job.backend_label}`;
+    const kindName = JOB_KINDS[job.kind || 'train'];
+    trEl('tr-progress-title').textContent = st.active
+      ? `${kindName} job running on ${job.backend_label}`
+      : `Last job: ${kindName.toLowerCase()} on ${job.backend_label}, ${trDate(job.job_id)}`;
     const idx = st.stages.indexOf(job.stage);
     const failed = job.stage === 'failed' || job.stage === 'cancelled';
     const lastIdx = failed ? Math.max(...Object.keys(job.stage_times || {})
@@ -2153,7 +2004,7 @@ async function pollTraining() {
       else if (i === idx && !failed) cls = 'current';
       return `<span class="tr-step ${cls}">${trEsc(s)}</span>`;
     }).join('') + (failed ? `<span class="tr-step failed">${trEsc(job.stage)}</span>` : '');
-    trEl('tr-stage-msg').textContent = job.message || '';
+    renderJobSummary(st);
     const logEl = trEl('tr-log');
     if (st.log.length !== trainLastLogLen || st.active) {
       const atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 20;
@@ -2162,9 +2013,38 @@ async function pollTraining() {
       trainLastLogLen = st.log.length;
     }
   }
-  renderTrainingResult(st);
+  renderModelCard(st);
   loadTrainingJobs(st);
 }
+
+// One line on how the newest job went, plus its result when it has no model.
+function renderJobSummary(st) {
+  const job = st.job;
+  const kind = job.kind || 'train';
+  const el = trEl('tr-stage-msg');
+  const failed = job.stage === 'failed' || job.stage === 'cancelled';
+  el.className = 'tr-summary' + (failed ? ' err' : '');
+  let text = job.message || '';
+  if (job.stage === 'ready' && kind === 'train' && job.metrics) {
+    const deployed = st.deployed.meta && st.deployed.meta.job_id === job.job_id;
+    text = `Finished: ${trPct(job.metrics.val_acc)} validation accuracy. ` +
+      (deployed ? 'This model is deployed.' : 'Deploy it in the Identification Model card above.');
+  }
+  el.textContent = text;
+  let html = '';
+  if (job.stage === 'ready' && kind === 'crossval' && job.cv) {
+    html = `<details class="tr-subfold"><summary>Results per fold</summary>${renderCvTable(job.cv)}</details>`;
+  }
+  if (job.stage === 'ready' && kind === 'detect' && job.detect_result) {
+    const r = job.detect_result;
+    html = `<div class="hint" style="margin-bottom:10px"><b>${r.applied}</b> bounding boxes added, ${r.no_cat} images with no ${W.animal} found` +
+      (r.already_had_bbox ? `, ${r.already_had_bbox} skipped because they got a bounding box meanwhile` : '') +
+      (r.gone ? `, ${r.gone} images deleted meanwhile` : '') + '. Check them on the Annotate tab.</div>';
+  }
+  // Only replace it when it changed, so an opened fold stays open.
+  if (html !== trJobResultHtml) { trEl('tr-job-result').innerHTML = html; trJobResultHtml = html; }
+}
+let trJobResultHtml = null;
 
 function renderCvTable(cv) {
   const cats = Object.keys(cv.per_class_mean || {});
@@ -2181,98 +2061,102 @@ function renderCvTable(cv) {
   return html + '<div class="hint" style="margin-bottom:10px">Each fold holds out different capture sessions. A large spread means accuracy depends a lot on which sessions land in validation.</div>';
 }
 
-function renderTrainingResult(st) {
-  const job = st.job;
+// ── Cat Identification Model card ──
+let trModelKey = '';
+function renderModelCard(st) {
   const dep = st.deployed;
-  const card = trEl('tr-result-card');
-  const kind = (job && job.kind) || 'train';
-  const ready = job && job.stage === 'ready';
-  if (ready && kind !== 'train') {
-    card.hidden = false;
-    trEl('tr-deploy-btn').hidden = true;
-    trEl('tr-rollback-btn').hidden = !dep.has_previous;
-    if (kind === 'crossval' && job.cv) {
-      trEl('tr-compare').innerHTML = `<div class="hint" style="margin-bottom:8px">Cross-validation, job ${trEsc(job.job_id)}</div>` + renderCvTable(job.cv);
-    } else if (kind === 'detect' && job.detect_result) {
-      const r = job.detect_result;
-      trEl('tr-compare').innerHTML = `<div style="margin-bottom:10px">Auto-detect, job ${trEsc(job.job_id)}: ` +
-        `<b>${r.applied}</b> bounding boxes added, ${r.no_cat} images with no cat found` +
-        (r.already_had_bbox ? `, ${r.already_had_bbox} skipped because they got a bounding box meanwhile` : '') +
-        (r.gone ? `, ${r.gone} images deleted meanwhile` : '') +
-        '. Check them on the Annotate tab.</div>';
-    }
-    return;
-  }
-  const hasCandidate = ready && job.metrics;
-  card.hidden = !(hasCandidate || dep.has_previous);
-  if (card.hidden) return;
-
+  const cands = st.candidates || [];
+  const key = JSON.stringify([dep, cands.map(c => c.job_id), st.active]);
+  if (key === trModelKey) return;         // avoid re-rendering (and flicker) every poll
+  trModelKey = key;
   const cur = dep.meta && dep.meta.metrics;
-  const neu = hasCandidate ? job.metrics : null;
-  const cats = (neu && neu.classes) || (cur && cur.classes) || [];
-  const delta = (a, b) => (a == null || b == null) ? '' :
-    `<span class="${a >= b ? 'up' : 'down'}">${a >= b ? '+' : ''}${((a - b) * 100).toFixed(1)}</span>`;
+  const neu = cands[0];
   let html = '';
-  if (neu || cur) {
-    html += '<table class="tr-metrics"><tr><th>Validation accuracy</th>' +
-      (neu ? `<th>New (job ${trEsc(job.job_id)})</th>` : '') + '<th>Deployed now</th>' +
-      (neu ? '<th>Change (pts)</th>' : '') + '</tr>';
-    const row = (name, n, c) => `<tr><td>${name}</td>` + (neu ? `<td>${trPct(n)}</td>` : '') +
-      `<td>${cur ? trPct(c) : 'unknown'}</td>` + (neu ? `<td>${delta(n, c)}</td>` : '') + '</tr>';
-    html += row('<b>Overall</b>', neu && neu.val_acc, cur && cur.val_acc);
-    cats.forEach(cat => {
-      html += row(trEsc(cat), neu && neu.per_class_acc[cat], cur && cur.per_class_acc && cur.per_class_acc[cat]);
-    });
-    html += '</table>';
+  if (dep.exists && dep.meta) {
+    html += `<div class="tr-model-head">Deployed: model from <b>${trDate(dep.meta.job_id)}</b>` +
+      (cur ? `, ${trPct(cur.val_acc)} validation accuracy` : '') + '.</div>';
+  } else if (dep.exists) {
+    html += '<div class="tr-model-head">A model is deployed, but it was installed outside this tab, so its accuracy is unknown.</div>';
+  } else {
+    html += '<div class="tr-model-none">No model deployed yet. ' +
+      (neu ? `Deploy the trained model below so the Pi can tell your ${W.animals} apart.`
+           : 'Train one (right), then deploy it here.') + '</div>';
   }
-  if (!cur) html += '<div class="hint" style="margin-bottom:10px">The deployed model was installed outside this tab, so its accuracy is unknown. Validation sets also differ between jobs, so compare with care.</div>';
-  if (neu) html += `<div class="hint" style="margin-bottom:10px">Trained on ${neu.train_images} images, validated on ${neu.val_images}, on ${trEsc(neu.device)} (torch ${trEsc(neu.torch_version)}). Loads on the Pi: yes.</div>`;
-  if (dep.meta) html += `<div class="hint" style="margin-bottom:10px">Deployed now: job ${trEsc(dep.meta.job_id)} from ${trEsc(dep.meta.backend)}, installed ${trEsc(dep.meta.deployed_at)}.</div>`;
-  trEl('tr-compare').innerHTML = html;
-  const deployBtn = trEl('tr-deploy-btn');
-  deployBtn.hidden = !hasCandidate;
-  deployBtn.disabled = !!(hasCandidate && job.deployed_at);
-  deployBtn.textContent = (hasCandidate && job.deployed_at) ? 'Deployed' : 'Deploy this model';
-  trEl('tr-rollback-btn').hidden = !dep.has_previous;
+  if (neu || cur) {
+    const n = neu && neu.metrics;
+    const cats = (n && n.classes) || (cur && cur.classes) || [];
+    const delta = (a, b) => (a == null || b == null) ? '' :
+      `<span class="${a >= b ? 'up' : 'down'}">${a >= b ? '+' : ''}${((a - b) * 100).toFixed(1)}</span>`;
+    const row = (name, a, b) => `<tr><td>${name}</td>` + (n ? `<td>${trPct(a)}</td>` : '') +
+      (cur ? `<td>${trPct(b)}</td>` : '') + (n && cur ? `<td>${delta(a, b)}</td>` : '') + '</tr>';
+    html += '<table class="tr-metrics"><tr><th>Validation accuracy</th>' +
+      (n ? `<th>Newest (${trDate(neu.job_id)})</th>` : '') + (cur ? '<th>Deployed</th>' : '') +
+      (n && cur ? '<th>Change (pts)</th>' : '') + '</tr>';
+    html += row('<b>Overall</b>', n && n.val_acc, cur && cur.val_acc);
+    cats.forEach(c => { html += row(trEsc(c), n && n.per_class_acc[c], cur && cur.per_class_acc && cur.per_class_acc[c]); });
+    html += '</table>';
+    if (n && cur) html += '<div class="hint" style="margin-bottom:10px">Each job validates on a different random set of capture sessions, so small differences are noise.</div>';
+  }
+  html += '<div class="actionrow">';
+  if (neu) {
+    html += `<button class="btn btn-primary" ${st.active ? 'disabled title="Available when the running job finishes"' : ''} ` +
+      `onclick="deployModel('${trEsc(neu.job_id)}')">Deploy newest model (${trPct(neu.metrics.val_acc)})</button>`;
+  }
+  if (dep.has_previous) {
+    const p = dep.prev_meta;
+    html += `<button class="btn btn-sm" ${st.active ? 'disabled' : ''} onclick="rollbackModel()">Switch back to previous model` +
+      (p ? ` (${trDate(p.job_id)}, ${trPct((p.metrics || {}).val_acc)})` : '') + '</button>';
+  }
+  html += '</div>';
+  if (cands.length > 1) {
+    html += `<details class="tr-subfold"><summary>Other trained models (${cands.length - 1})</summary><div class="tr-cand-list">` +
+      cands.slice(1).map(c => `<div class="tr-cand-row"><span>${trDate(c.job_id)} on ${trEsc(c.backend || '')}</span>` +
+        `<span>${trPct(c.metrics.val_acc)}</span><button class="btn btn-sm" ${st.active ? 'disabled' : ''} ` +
+        `onclick="deployModel('${trEsc(c.job_id)}')">Deploy</button></div>`).join('') + '</div></details>';
+  }
+  trEl('tr-model').innerHTML = html;
 }
 
 async function deployModel(jobId) {
-  jobId = jobId || (trainStatus && trainStatus.job && trainStatus.job.job_id);
-  if (!jobId || !confirm(`Deploy the model from job ${jobId}? The current model is kept for rollback.`)) return;
+  if (!jobId || !confirm(`Deploy the model trained ${trDate(jobId)}?\n\nThe current model is kept, so you can switch back.`)) return;
   const res = await trPost('/api/training/deploy', {job_id: jobId});
   trShow('tr-deploy-result', res.status === 'ok' ? 'ok' : 'err', res.message);
-  trainLastJobsKey = '';
+  trainLastJobsKey = ''; trModelKey = '';
   pollTraining();
 }
 
 async function rollbackModel() {
-  if (!confirm('Swap the deployed model with the previous one?')) return;
+  if (!confirm('Switch back to the previous model? (Pressing it again switches forward again.)')) return;
   const res = await trPost('/api/training/rollback');
   trShow('tr-deploy-result', res.status === 'ok' ? 'ok' : 'err', res.message);
-  trainLastJobsKey = '';
+  trainLastJobsKey = ''; trModelKey = '';
   pollTraining();
 }
 
 async function loadTrainingJobs(st) {
-  // Refresh history only when the current job changes state
-  const key = st && st.job ? st.job.job_id + st.job.stage + (st.job.deployed_at || '') : 'none';
+  // Refresh history only when the current job or the deployed model changes
+  const deployedId = st && st.deployed.meta ? st.deployed.meta.job_id : null;
+  const key = (st && st.job ? st.job.job_id + st.job.stage : 'none') + (deployedId || '') + st.active;
   if (key === trainLastJobsKey) return;
   trainLastJobsKey = key;
   const data = await trJson('/api/training/jobs');
-  const deployedId = st && st.deployed.meta ? st.deployed.meta.job_id : null;
-  const rows = data.jobs.map(j => `<tr><td class="mono">${trEsc(j.job_id)}</td>` +
-    `<td>${trEsc(JOB_KINDS[j.kind] || j.kind)}</td><td>${trEsc(j.backend)}</td>` +
-    `<td>${trEsc(j.stage)}${j.job_id === deployedId ? ' <span class="pill" style="--c:var(--success)">deployed</span>' : ''}</td>` +
-    `<td>${j.kind === 'crossval' ? (j.cv_mean != null ? trPct(j.cv_mean) + ' (CV mean)' : '--') : trPct(j.val_acc)}</td>` +
-    `<td><a href="/api/training/log/${encodeURIComponent(j.job_id)}" target="_blank">log</a>` +
-    (j.kind === 'crossval' && j.cv_mean != null
-      ? ` · <a href="#" onclick="showCvJob('${trEsc(j.job_id)}');return false">folds</a>` : '') +
-    (j.has_curves ? ` · <a href="#" onclick="showCurves('${trEsc(j.job_id)}');return false">curves</a>` : '') +
-    (j.candidate && !st.active && j.job_id !== deployedId
-      ? ` · <a href="#" onclick="deployModel('${trEsc(j.job_id)}');return false">deploy</a>` : '') +
-    `</td></tr>`).join('');
+  const rows = data.jobs.map(j => {
+    const failed = j.stage === 'failed' || j.stage === 'cancelled';
+    return `<tr><td title="${trEsc(j.job_id)}">${trDate(j.job_id)}</td>` +
+      `<td>${trEsc(JOB_KINDS[j.kind] || j.kind)}</td><td>${trEsc(j.backend)}</td>` +
+      `<td>${trEsc(j.stage)}${j.job_id === deployedId ? ' <span class="pill" style="--c:var(--success)">deployed</span>' : ''}` +
+      (failed && j.message ? `<div class="hint" style="color:var(--danger)">${trEsc(j.message)}</div>` : '') + '</td>' +
+      `<td>${j.kind === 'crossval' ? (j.cv_mean != null ? trPct(j.cv_mean) + ' (mean)' : '--') : trPct(j.val_acc)}</td>` +
+      `<td><a href="/api/training/log/${encodeURIComponent(j.job_id)}" target="_blank">log</a>` +
+      (j.kind === 'crossval' && j.cv_mean != null
+        ? ` · <a href="#" onclick="showCvJob('${trEsc(j.job_id)}');return false">folds</a>` : '') +
+      (j.has_curves ? ` · <a href="#" onclick="showCurves('${trEsc(j.job_id)}');return false">curves</a>` : '') +
+      (j.candidate && j.job_id !== deployedId
+        ? ` <button class="btn btn-sm" style="margin-left:6px" ${st.active ? 'disabled' : ''} onclick="deployModel('${trEsc(j.job_id)}')">Deploy</button>` : '') +
+      `</td></tr>`;
+  }).join('');
   trEl('tr-jobs').innerHTML = data.jobs.length
-    ? '<tr><th>Job</th><th>Kind</th><th>Backend</th><th>Status</th><th>Val acc</th><th></th></tr>' + rows
+    ? '<tr><th>Started</th><th>Kind</th><th>Backend</th><th>Status</th><th>Val acc</th><th></th></tr>' + rows
     : '<tr><td class="hint">No jobs yet.</td></tr>';
   updateCurveJobs(data.jobs);
 }
@@ -2301,7 +2185,8 @@ async function loadTrainingSettings(force) {
       } else {
         input = `<input type="number" id="${id}" value="${trEsc(v)}" min="${f.min}" max="${f.max}" step="${f.type === 'int' ? 1 : 'any'}">`;
       }
-      return `<div class="inference-row"${f.help ? ` title="${trEsc(f.help)}"` : ''}><label for="${id}">${trEsc(f.label)}</label>${input}</div>`;
+      return `<div class="inference-row"><label for="${id}">${trEsc(f.label)}</label>${input}</div>` +
+             (f.help ? `<div class="tr-shelp">${trEsc(f.help)}</div>` : '');
     }).join('') + '</fieldset>').join('');
   if (d.values.cv_folds) trEl('tr-cv-folds').value = d.values.cv_folds;
 }
@@ -2341,7 +2226,7 @@ function updateCurveJobs(jobs) {
   trCurveJobsKey = key;
   const sel = trEl('tr-curves-job'), cmp = trEl('tr-curves-cmp');
   const keep = sel.value, keepCmp = cmp.value;
-  const opt = j => `<option value="${trEsc(j.job_id)}">${trEsc(j.job_id)}` +
+  const opt = j => `<option value="${trEsc(j.job_id)}">${trEsc(trDate(j.job_id))}` +
     (j.val_acc != null ? ` (${trPct(j.val_acc)})` : '') + '</option>';
   sel.innerHTML = withCurves.map(opt).join('');
   cmp.innerHTML = '<option value="">(nothing)</option>' + withCurves.map(opt).join('');
@@ -2383,14 +2268,20 @@ function trSeries(m, phase) {
   if (phase === 'all') return {x: m.epochs, ...m, best: m.best_val_acc, bestEpoch: m.best_epoch};
   const p = m.phases_data[phase];
   if (!p) return null;
-  return {x: p.local_epochs, ...p, best: p.best_val_acc, bestEpoch: p.best_epoch_local};
+  // Whole-run epoch numbers, so a phase reads e.g. 61-70 rather than restarting at 1.
+  return {x: p.epochs || p.local_epochs, ...p, best: p.best_val_acc, bestEpoch: p.best_epoch || p.best_epoch_local};
 }
 
 function trLineChart(id, labels, datasets, pct) {
   if (trCharts[id]) trCharts[id].destroy();
   const grid = cssVar('--border'), txt = cssVar('--muted');
   const yTicks = {color: txt};
-  if (pct) yTicks.callback = v => Math.round(v * 100) + '%';
+  // Show decimals when the ticks are closer than a percentage point, so
+  // labels don't repeat ("99%, 99%") on a zoomed-in phase.
+  if (pct) yTicks.callback = (v, i, ticks) => {
+    const step = ticks.length > 1 ? Math.abs(ticks[1].value - ticks[0].value) : 1;
+    return (v * 100).toFixed(step < 0.001 ? 2 : step < 0.01 ? 1 : 0) + '%';
+  };
   trCharts[id] = new Chart(trEl(id), {
     type: 'line',
     data: {labels, datasets},
@@ -2434,8 +2325,9 @@ function drawCurves() {
   trEl('tr-curves-best').textContent = txt;
 }
 
-// ══ Annotate tab ═══════════════════════════════════════════
-// Bounding boxes live in the sidecar .json next to each image in data/raw.
+// ══ Label tab (formerly Review + Annotate) ════════════════
+// Which cat each image shows (its folder in data/raw) and where the cat is
+// (bounding box, in the sidecar .json next to the image).
 let annImages = [];
 let annIndex = 0;
 let annBbox = null;          // {cx, cy, w, h} normalized or null
@@ -2447,10 +2339,12 @@ let annDrawing = false;
 let annDrawStart = null;
 let annThumbEls = [];        // index-aligned with annImages
 let annGroupEls = {};        // folder -> <section>
-let annStatus = null;        // 'all' | 'missing' | 'done'
+let annStatus = null;        // 'review' | 'missing' | 'all'
 let annInstant = false;      // backend can auto-detect one image right away
 let annJobTimer = null;
 const annCats = new Set();   // folder filter; empty = all
+const annSel = new Set();    // selected image indices (multi-select)
+let annSelAnchor = null;     // for Shift-click ranges
 
 function annFolderLabel(folder) { return folder === 'unlabeled' ? 'Unlabeled' : folder; }
 function annUrl(kind, img) {
@@ -2461,6 +2355,7 @@ function annMsg(text, isErr) {
   el.textContent = text || '';
   el.className = 'ann-job' + (isErr ? ' err' : '');
 }
+function annItem(img) { return {cat: img.cat, filename: img.filename}; }
 
 async function loadAnnotateTab() {
   if (!annImages.length) {
@@ -2468,21 +2363,27 @@ async function loadAnnotateTab() {
     trEl('ann-progress').textContent = 'Loading...';
   }
   try {
+    await fetch('/api/review/rescan', {method: 'POST'});   // pick up new captures
     const d = await trJson('/api/annotate/images');
     const keep = annImages[annIndex];
     annImages = d.images || [];
     annInstant = !!d.instant_detect;
     trEl('ann-detect-btn').title = annInstant
       ? 'Ask the training PC for this image\'s bounding box'
-      : 'Instant auto-detect needs the Local PC backend; use "Auto-detect all missing" instead';
+      : 'Needs the Local PC training backend. "Auto-detect missing bounding boxes" works with any backend.';
+    trEl('ann-detect-btn').disabled = !annInstant;
     const kept = keep ? annImages.findIndex(i => i.cat === keep.cat && i.filename === keep.filename) : -1;
     const firstMissing = annImages.findIndex(img => !img.has_bbox);
-    annIndex = kept >= 0 ? kept : (firstMissing >= 0 ? firstMissing : 0);
+    const firstReview = annImages.findIndex(img => !img.reviewed);
     if (annStatus === null) {
       let saved = null;
       try { saved = localStorage.getItem('annStatus'); } catch(e) {}
-      annStatus = saved || (firstMissing >= 0 ? 'missing' : 'all');
+      annStatus = ['review', 'missing', 'all'].includes(saved) ? saved
+        : (firstReview >= 0 ? 'review' : (firstMissing >= 0 ? 'missing' : 'all'));
     }
+    const firstMatch = annImages.findIndex(annPasses);
+    annIndex = kept >= 0 ? kept : (firstMatch >= 0 ? firstMatch : 0);
+    annSel.clear();
     annBuildThumbs();
     annSyncStatusSeg();
     annApplyFilters();
@@ -2497,7 +2398,7 @@ function annBuildThumbs() {
   annThumbEls = [];
   annGroupEls = {};
   if (annImages.length === 0) {
-    el.innerHTML = '<div class="browser-empty">No images in data/raw yet.</div>';
+    el.innerHTML = '<div class="browser-empty">No captured images yet. Capture some on the Capture tab.</div>';
   }
   const grids = {};
   [...CATS, 'unlabeled'].forEach(folder => {
@@ -2517,8 +2418,9 @@ function annBuildThumbs() {
     b.className = 'thumb';
     b.title = img.cat + ' / ' + img.filename;
     b.innerHTML = '<img loading="lazy" decoding="async" alt="" src="' + annUrl('thumb', img) + '">' +
-      '<span class="thumb-box"></span><span class="thumb-badge">Missing</span>';
-    b.addEventListener('click', () => annSelect(idx));
+      '<span class="thumb-box"></span><span class="thumb-badge">No bounding box</span>';
+    b.addEventListener('click', (e) => annThumbClick(e, idx));
+    b.addEventListener('contextmenu', (e) => { e.preventDefault(); annToggleSel(idx); });
     annThumbEls[idx] = b;
     annSyncThumb(idx);
     if (grids[img.cat]) grids[img.cat].appendChild(b);
@@ -2556,7 +2458,9 @@ function annSyncThumb(idx) {
   const img = annImages[idx];
   if (!el || !img) return;
   el.classList.toggle('missing', !img.has_bbox);
+  el.classList.toggle('unreviewed', !img.reviewed);
   el.classList.toggle('active', idx === annIndex);
+  el.classList.toggle('selected', annSel.has(idx));
   el.querySelector('.thumb-badge').hidden = img.has_bbox;
   const box = el.querySelector('.thumb-box');
   const b = img.has_bbox ? img.bbox : null;
@@ -2570,7 +2474,7 @@ function annSyncThumb(idx) {
 }
 
 function annPasses(img) {
-  const okStatus = annStatus === 'all' || (annStatus === 'missing' ? !img.has_bbox : img.has_bbox);
+  const okStatus = annStatus === 'all' || (annStatus === 'missing' ? !img.has_bbox : !img.reviewed);
   return okStatus && (annCats.size === 0 || annCats.has(img.cat));
 }
 
@@ -2592,16 +2496,18 @@ function annUpdateProgress() {
   const total = annImages.length;
   const done = annImages.filter(i => i.has_bbox).length;
   const missing = total - done;
-  trEl('ann-progress').innerHTML =
-    '<strong>' + done.toLocaleString() + '</strong> / ' + total.toLocaleString() + ' with bounding box';
-  trEl('ann-meter').style.width = (total ? done / total * 100 : 0) + '%';
+  const toReview = annImages.filter(i => !i.reviewed).length;
+  trEl('ann-progress').innerHTML = total === 0 ? 'No images' :
+    `<span title="Saved automatically under the name the Pi gave them; nobody has confirmed the name yet. Checking is optional: training uses them either way, but a wrong name teaches the model the wrong ${W.animal}."><strong>${toReview.toLocaleString()}</strong> labels not checked (optional)</span> · ` +
+    `<span title="Training can only use images that have a bounding box."><strong>${missing.toLocaleString()}</strong> without bounding box</span>`;
+  trEl('ann-meter').style.width = (total ? (total - toReview) / total * 100 : 0) + '%';
   trEl('ann-cnt-all').textContent = total.toLocaleString();
   trEl('ann-cnt-missing').textContent = missing.toLocaleString();
-  trEl('ann-cnt-done').textContent = done.toLocaleString();
+  trEl('ann-cnt-review').textContent = toReview.toLocaleString();
   trEl('badge-annotate').textContent = missing > 0 ? missing.toLocaleString() : '';
   const allBtn = trEl('ann-auto-all');
   if (!annJobTimer) {
-    allBtn.textContent = missing > 0 ? 'Auto-detect ' + missing.toLocaleString() + ' missing' : 'Auto-detect all missing';
+    allBtn.textContent = missing > 0 ? 'Auto-detect ' + missing.toLocaleString() + ' bounding boxes' : 'Auto-detect missing bounding boxes';
     allBtn.disabled = missing === 0;
   }
   Object.entries(annGroupEls).forEach(([folder, g]) => {
@@ -2609,7 +2515,7 @@ function annUpdateProgress() {
     const miss = imgs.filter(i => !i.has_bbox).length;
     g.querySelector('.gh-count').textContent = imgs.length.toLocaleString();
     const m = g.querySelector('.gh-missing');
-    m.textContent = miss ? miss.toLocaleString() + ' missing' : 'All have one';
+    m.textContent = miss ? miss.toLocaleString() + ' without bounding box' : 'All have a bounding box';
     m.classList.toggle('ok', !miss);
   });
 }
@@ -2643,8 +2549,14 @@ async function annLoadImage() {
   }
   imgEl.hidden = false;
   const img = annImages[annIndex];
-  trEl('ann-img-info').textContent = img.cat + ' / ' + img.filename;
+  trEl('ann-img-info').textContent = annFolderLabel(img.cat) + ' / ' + img.filename;
   trEl('ann-dot').style.setProperty('--c', TR_CAT_COLORS[img.cat] || 'var(--muted)');
+  const rt = trEl('ann-reviewed-tag');
+  rt.hidden = false;
+  rt.textContent = img.reviewed ? 'Label checked' : 'Label not checked';
+  rt.title = img.reviewed ? `Someone confirmed which ${W.animal} this is.`
+    : 'Named automatically; press Looks right (Enter) if it is correct, or pick the right name.';
+  rt.className = 'tag' + (img.reviewed ? '' : ' unchecked');
   imgEl.onload = async () => {
     annResizeCanvas();
     await annFetchBbox(img);
@@ -2802,10 +2714,15 @@ async function annClearBbox() {
   if (annImages.length === 0) return;
   const img = annImages[annIndex];
   const d = await trJson(annUrl('bbox', img), {method: 'DELETE'});
-  if (d.result === 'kept_pi') {
-    annMsg('This bounding box came from the Pi capture and was kept. Draw a new one to replace it.');
-  }
+  const before = img.has_bbox;
   await annFetchBbox(img);
+  if (d.result === 'kept_pi') {
+    annMsg('This bounding box is the one the Pi saved; there is nothing to reset. Draw a new one to replace it.');
+  } else if (annBbox) {
+    annMsg('Restored the bounding box the Pi saved.');
+  } else if (before) {
+    annMsg('Bounding box removed.');
+  }
   annDrawBbox();
   annSyncThumb(annIndex);
   annUpdateProgress();
@@ -2815,6 +2732,7 @@ async function annClearBbox() {
 function annSelect(idx) {
   if (idx < 0 || idx >= annImages.length) return;
   annSave();
+  annMsg('');
   const prev = annIndex;
   annIndex = idx;
   annSyncThumb(prev);
@@ -2838,7 +2756,7 @@ function annPrev() { annStep(-1); }
 async function annAutoDetectCurrent() {
   if (annImages.length === 0) return;
   if (!annInstant) {
-    annMsg('Instant auto-detect needs the Local PC backend. "Auto-detect all missing" works with any backend.', true);
+    annMsg('Auto-detecting one image needs the Local PC training backend. "Auto-detect missing bounding boxes" works with any backend.', true);
     return;
   }
   const img = annImages[annIndex];
@@ -2861,9 +2779,139 @@ async function annAutoDetectCurrent() {
     } else if (d.status === 'error') {
       annMsg('Auto-detect failed: ' + d.message, true);
     } else {
-      annMsg('No cat found in this image');
+      annMsg(`No ${W.animal} found in this image`);
     }
   } finally { btn.disabled = false; }
+}
+
+// ── Labelling ──
+// After a label, keep or trash, show the next image that still matches the filter.
+function annAdvance(fromIdx) {
+  for (let i = fromIdx + 1; i < annImages.length; i++) if (annPasses(annImages[i])) { annSelect(i); return; }
+  for (let i = 0; i < fromIdx; i++) if (annPasses(annImages[i])) { annSelect(i); return; }
+  annSelect(Math.min(fromIdx, annImages.length - 1));
+  annApplyFilters();
+  annMsg(annStatus === 'review' ? 'Every label has been checked.' : 'No more images match the filter.');
+}
+
+// Apply a /api/label result to image idx: it may have moved to another folder.
+function annApplyLabel(idx, res) {
+  const img = annImages[idx];
+  if (!img || !res || res.status !== 'ok') return false;
+  img.reviewed = true;
+  if (res.label && res.label !== img.cat) {
+    img.cat = res.label;
+    img.filename = res.filename;
+    const el = annThumbEls[idx];
+    const g = annGroupEls[img.cat];
+    if (el && g) {
+      el.title = img.cat + ' / ' + img.filename;
+      el.querySelector('img').src = annUrl('thumb', img);
+      g.querySelector('.thumb-grid').prepend(el);
+    } else {
+      annNeedRebuild = true;          // first image of a cat: rebuild the groups
+    }
+  }
+  annSyncThumb(idx);
+  return true;
+}
+let annNeedRebuild = false;
+
+async function annLabelIdx(indices, label) {
+  const items = indices.map(i => annItem(annImages[i]));
+  const d = await trPost('/api/label', {items, label});
+  if (d.status !== 'ok') { annMsg(d.message || 'Could not label', true); return false; }
+  let failed = 0;
+  d.results.forEach((r, k) => { if (!annApplyLabel(indices[k], r)) failed++; });
+  if (annNeedRebuild) { annNeedRebuild = false; annBuildThumbs(); }
+  annUpdateProgress();
+  annApplyFilters();
+  if (failed) annMsg(`${failed} image(s) could not be labelled (moved or deleted meanwhile).`, true);
+  return true;
+}
+
+async function annLabel(cat) {
+  if (!annImages.length) return;
+  const idx = annIndex;
+  await annSave();
+  if (await annLabelIdx([idx], cat)) {
+    triggerFlash('ann-flash', 'label-flash');
+    annAdvance(idx);
+  }
+}
+
+// "Looks right": keep the label, mark it reviewed.
+async function annKeep() {
+  if (!annImages.length) return;
+  annLabel(annImages[annIndex].cat);
+}
+
+// Move images to the trash folder. Returns {count, cur}: cur is the new index
+// of the image that was showing, or -1 if it was trashed.
+async function annTrashIdx(indices) {
+  const items = indices.map(i => annItem(annImages[i]));
+  const d = await trPost('/api/label/trash', {items});
+  if (d.status !== 'ok') { annMsg(d.message || 'Could not move to trash', true); return null; }
+  const gone = new Set(indices.filter((i, k) => d.results[k] && d.results[k].status === 'ok'));
+  const shown = annImages[annIndex];
+  const firstGone = Math.min(...gone);
+  annImages = annImages.filter((_, i) => !gone.has(i));
+  annSel.clear();
+  const cur = annImages.indexOf(shown);
+  annIndex = cur >= 0 ? cur : Math.max(0, Math.min(firstGone, annImages.length - 1));
+  annBuildThumbs();
+  annApplyFilters();
+  annRefreshSel();
+  return {count: gone.size, cur};
+}
+
+async function annTrash() {
+  if (!annImages.length) return;
+  const r = await annTrashIdx([annIndex]);
+  if (!r) return;
+  triggerFlash('ann-flash', 'delete-flash');
+  if (!annImages.length) { annLoadImage(); return; }
+  annAdvance(annIndex - 1);       // annIndex now points at the image after the trashed one
+  annMsg('Moved to the trash folder.');
+}
+
+// ── Multi-select (Ctrl/Cmd-click, Shift-click, right-click) ──
+function annThumbClick(e, idx) {
+  if (e.shiftKey && annSelAnchor !== null) {
+    const vis = annImages.map((_, i) => i).filter(i => annThumbEls[i] && !annThumbEls[i].hidden);
+    const a = vis.indexOf(annSelAnchor), b = vis.indexOf(idx);
+    if (a >= 0 && b >= 0) vis.slice(Math.min(a, b), Math.max(a, b) + 1).forEach(i => annSel.add(i));
+    annRefreshSel();
+  } else if (e.ctrlKey || e.metaKey || annSel.size) {
+    annToggleSel(idx);
+  } else {
+    annSelect(idx);
+  }
+}
+function annToggleSel(idx) {
+  if (annSel.has(idx)) annSel.delete(idx); else annSel.add(idx);
+  annSelAnchor = idx;
+  annRefreshSel();
+}
+function annRefreshSel() {
+  annThumbEls.forEach((el, i) => el && el.classList.toggle('selected', annSel.has(i)));
+  trEl('ann-selection-bar').hidden = annSel.size === 0;
+  trEl('ann-sel-count').textContent = annSel.size + ' selected';
+}
+function annClearSelection() { annSel.clear(); annSelAnchor = null; annRefreshSel(); }
+async function annBatchLabel() {
+  const label = trEl('ann-batch-label').value;
+  const idx = [...annSel];
+  if (!idx.length || !confirm(`Label ${idx.length} image(s) as ${label}?`)) return;
+  if (await annLabelIdx(idx, label)) { annMsg(`${idx.length} image(s) labelled ${label}.`); annClearSelection(); }
+}
+async function annBatchTrash() {
+  const idx = [...annSel];
+  if (!idx.length || !confirm(`Move ${idx.length} image(s) to the trash folder (data/trash)?`)) return;
+  const r = await annTrashIdx(idx);
+  if (!r) return;
+  if (annImages.length) annSelect(annIndex); else annLoadImage();
+  annMsg(`${r.count} image(s) moved to the trash folder.`);
 }
 
 async function annAutoDetectAll() {
@@ -2937,10 +2985,13 @@ async function loadBackupTab() {
   trEl('bk-dest').innerHTML = '<option value="off">Off</option>' + ['local_pc', 'hf']
     .filter(n => bkCfg.destinations[n]).map(n => bkCfg.destinations[n])
     .map(d => `<option value="${trEsc(d.name)}">${trEsc(d.label)}</option>`).join('');
-  trEl('bk-dest').value = bkCfg.destination;
-  trEl('bk-time').value = bkCfg.time;
-  trEl('bk-keep').value = bkCfg.keep_days;
-  renderBackupForm();
+  if (!formDirty.bk) {             // keep the user's unsaved edits
+    trEl('bk-dest').value = bkCfg.destination;
+    trEl('bk-time').value = bkCfg.time;
+    trEl('bk-keep').value = bkCfg.keep_days;
+    renderBackupForm();
+    trClearDirty('bk');
+  }
   pollBackup();
   loadBackupSnapshots();
   if (!bkPollTimer) bkPollTimer = setInterval(() => { if (activeTab === 'backup') pollBackup(); }, 3000);
@@ -2973,11 +3024,18 @@ function collectBackupForm() {
   return {destination: name, time: trEl('bk-time').value, keep_days: trEl('bk-keep').value, values};
 }
 async function saveBackupConfig() {
-  const res = await trPost('/api/backup/config', collectBackupForm());
+  const form = collectBackupForm();
+  const wasOff = !bkCfg || bkCfg.destination === 'off';
+  const oldKeep = bkCfg ? Number(bkCfg.keep_days) : 0;
+  if (oldKeep && Number(form.keep_days) < oldKeep && form.destination !== 'off' &&
+      !confirm(`Keep snapshots for ${form.keep_days} days instead of ${oldKeep}?\n\nSnapshots older than ${form.keep_days} days are deleted at the next backup (the newest is always kept).`)) return;
+  const res = await trPost('/api/backup/config', form);
   if (res.status !== 'ok') { trShow('bk-test-result', 'err', res.message); return; }
   bkCfg = res;
+  trClearDirty('bk');
   renderBackupForm();
-  trShow('bk-test-result', 'ok', 'Saved.');
+  trShow('bk-test-result', 'ok', wasOff && form.destination !== 'off'
+    ? 'Saved. The first backup starts within a minute; then every night.' : 'Saved.');
   pollBackup();
   loadBackupSnapshots();
 }
@@ -3015,7 +3073,9 @@ async function pollBackup() {
   if (st.last_error && !st.running) rows.push(['Last error', `<span class="down">${trEsc(st.last_error)}</span>`]);
   trEl('bk-status').innerHTML = rows.map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
   trEl('bk-now-btn').disabled = st.running || st.destination === 'off';
+  trEl('bk-now-why').textContent = st.destination === 'off' ? 'Choose where to back up to and Save first.' : '';
   const log = trEl('bk-log');
+  log.hidden = !(st.log && st.log.length);
   const atEnd = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
   log.textContent = (st.log || []).join('\n');
   if (atEnd) log.scrollTop = log.scrollHeight;
@@ -3025,9 +3085,9 @@ async function pollBackup() {
 async function loadBackupSnapshots() {
   const t = trEl('bk-snapshots');
   const res = await trJson('/api/backup/snapshots');
-  if (res.status !== 'ok') { t.innerHTML = `<tr><td>${trEsc(res.message)}</td></tr>`; return; }
+  if (res.status !== 'ok') { t.innerHTML = `<tr><td class="hint" style="text-align:left">${trEsc(res.message)}</td></tr>`; return; }
   const snaps = (res.snapshots || []).slice().reverse();
-  if (!snaps.length) { t.innerHTML = '<tr><td>No snapshots yet.</td></tr>'; return; }
+  if (!snaps.length) { t.innerHTML = '<tr><td class="hint" style="text-align:left">No snapshots yet.</td></tr>'; return; }
   const sized = snaps.some(s => s.total_bytes !== undefined);
   t.innerHTML = '<tr><th>Snapshot</th><th>Taken</th>' + (sized ? '<th>Files</th><th>Size</th>' : '') + '</tr>' +
     snaps.map(s => `<tr><td class="mono">${trEsc(s.id)}</td><td>${bkTime(s.created)}</td>` +

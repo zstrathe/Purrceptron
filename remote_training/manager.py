@@ -589,15 +589,42 @@ class TrainingJobManager:
         prev = model.with_name(f"{model.stem}.prev{model.suffix}")
         return model, meta, prev, model.with_suffix(".prev.meta.json")
 
+    @staticmethod
+    def _read_json(path: Path) -> dict | None:
+        try:
+            return json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+
     def deployed_info(self) -> dict:
-        model, meta, prev, _ = self._model_paths()
-        info = {"exists": model.is_file(), "has_previous": prev.is_file(), "meta": None}
-        if model.is_file() and meta.is_file():
-            try:
-                info["meta"] = json.loads(meta.read_text())
-            except (OSError, json.JSONDecodeError):
-                pass
-        return info
+        """The deployed model and the one a rollback would bring back.
+        meta / prev_meta: {job_id, backend, deployed_at, metrics}, or None when
+        the model was installed some other way."""
+        model, meta, prev, prev_meta = self._model_paths()
+        return {
+            "exists": model.is_file(),
+            "has_previous": prev.is_file(),
+            "meta": self._read_json(meta) if model.is_file() else None,
+            "prev_meta": self._read_json(prev_meta) if prev.is_file() else None,
+        }
+
+    def candidates(self) -> list[dict]:
+        """Trained models that passed validation and aren't the deployed one,
+        newest first: [{job_id, created, backend, metrics}]."""
+        deployed = (self.deployed_info().get("meta") or {}).get("job_id")
+        out = []
+        if not self.candidates_dir.is_dir():
+            return out
+        for pte in sorted(self.candidates_dir.glob("*.pte"), reverse=True):
+            job_id = pte.stem
+            if job_id == deployed or not self._valid_job_id(job_id):
+                continue
+            job = self._read_json(self._job_dir(job_id) / "state.json") or {}
+            if not job.get("metrics"):
+                continue
+            out.append({"job_id": job_id, "created": job.get("created"),
+                        "backend": job.get("backend_label"), "metrics": job["metrics"]})
+        return out
 
     @staticmethod
     def _install(src: Path, dst: Path) -> None:
@@ -670,8 +697,8 @@ class TrainingJobManager:
 
     def _reload_hint(self) -> str:
         if not self._read_config().get("classifier", {}).get("enabled"):
-            return ("Model installed. The classifier is disabled; enable it on the "
-                    "Capture tab to use it.")
+            return ("Model installed. Cat identification is off; turn on "
+                    "\"Identify cats\" on the Capture tab to use it.")
         note = self._on_model_installed() if self._on_model_installed else None
         return note or "Detection restarts with the new model within a few seconds."
 
@@ -693,6 +720,7 @@ class TrainingJobManager:
             "log": log,
             "stages": STAGES[kind],
             "deployed": self.deployed_info(),
+            "candidates": self.candidates(),
         }
 
     def job_metrics(self, job_id: str) -> dict:

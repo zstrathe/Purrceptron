@@ -93,6 +93,26 @@ def get_cat_colors_hex(cats: list[str]) -> dict[str, str]:
     return {cat: CAT_COLOR_PALETTE_HEX[i % len(CAT_COLOR_PALETTE_HEX)] for i, cat in enumerate(cats)}
 
 
+def subject_words(config: dict) -> dict[str, str]:
+    """The words the dashboard uses for the animals being watched, so it reads
+    right for dogs or birds as well as cats.
+
+    From the optional ``subject`` block in project.yaml (animal, plural). The
+    animal defaults to the first detector label being tracked
+    (deployment.tracking_objects), the plural to animal + "s". Returns
+    lower-case and Capitalized forms plus "a"/"an".
+    """
+    subject = config.get("subject") or {}
+    tracked = (config.get("deployment") or {}).get("tracking_objects") or ["cat"]
+    animal = str(subject.get("animal") or tracked[0] or "cat").strip().lower()
+    plural = str(subject.get("plural") or (animal + "s")).strip().lower()
+    return {
+        "animal": animal, "animals": plural,
+        "Animal": animal.capitalize(), "Animals": plural.capitalize(),
+        "an_animal": ("an " if animal[:1] in "aeiou" else "a ") + animal,
+    }
+
+
 def get_cat_colors_bgr(cats: list[str]) -> dict[str, tuple[int, int, int]]:
     """Return {cat_name: (B, G, R)} for each cat, cycling the palette."""
     return {cat: CAT_COLOR_PALETTE_BGR[i % len(CAT_COLOR_PALETTE_BGR)] for i, cat in enumerate(cats)}

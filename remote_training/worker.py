@@ -23,7 +23,7 @@ Routes:
     POST /jobs/ID/cancel
     GET  /jobs/ID/results         results.tar.gz
     POST /detect                  body: one JPEG; returns {"bbox": {cx, cy, w, h,
-                                  confidence} | null} (Annotate tab's Auto-detect)
+                                  confidence} | null} (Label tab's Auto-detect)
 
 Backups from the Pi (remote_training/backup/), kept in the backup folder
 (--backup-dir; see remote_training/backup/store.py for the layout):

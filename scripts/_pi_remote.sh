@@ -204,7 +204,7 @@ step_system() {
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y dkms git rsync sqlite3 python3-venv python3-pip
         sudo DEBIAN_FRONTEND=noninteractive apt-get install -y hailo-h10-all
         # Installed earlier without dkms: build it again so dkms tracks it.
-        if ! sudo dkms status hailo1x_pci 2>/dev/null | grep -q "$(uname -r).*installed"; then
+        if ! /usr/sbin/dkms status hailo1x_pci 2>/dev/null | grep -q "$(uname -r).*installed"; then
             sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall h10-hailort-pcie-driver
         fi'
     if newer_kernel_installed || ! hailo_ok; then
@@ -250,7 +250,8 @@ step_service() {
         echo "[INFO] Skipped. Turn it on later with: bash scripts/install_service.sh (on the Pi)"
         return 0
     fi
-    rsh_tty "cd $(q "$REMOTE_DIR") && bash scripts/install_service.sh"
+    # --restart: the code was usually just copied over, so load it.
+    rsh_tty "cd $(q "$REMOTE_DIR") && bash scripts/install_service.sh --restart"
     SERVICE_ON=1
 }
 
@@ -281,7 +282,7 @@ if [ -e /dev/hailo0 ] && grep -q "Device Architecture" <<<"$out"; then
 else
     no "Hailo device doesn't answer (no driver for kernel $(uname -r)? see: sudo dkms status)"
 fi
-if sudo -n dkms status hailo1x_pci 2>/dev/null | grep -q "$(uname -r).*installed"; then
+if /usr/sbin/dkms status hailo1x_pci 2>/dev/null | grep -q "$(uname -r).*installed"; then
     ok "Hailo driver is built by dkms (rebuilt after kernel updates)"
 else
     no "Hailo driver isn't managed by dkms; the next kernel update would break it (run the system step)"

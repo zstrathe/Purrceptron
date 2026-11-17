@@ -12,6 +12,7 @@ set -euo pipefail
 # Runs on the Pi, after scripts/setup_pi.sh. Safe to run again.
 #
 # Usage: bash scripts/install_service.sh            install, enable and start
+#        bash scripts/install_service.sh --restart  same, and restart a running dashboard
 #        bash scripts/install_service.sh --remove   stop, disable and remove
 #
 # Installs three systemd services:
@@ -47,7 +48,12 @@ if [ "${1:-}" = --remove ]; then
     echo "[OK] Removed the $NAME services. Start the dashboard by hand from now on."
     exit 0
 fi
-[ $# -eq 0 ] || { sed -n '10,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1; }
+RESTART=0
+case "${1:-}" in
+    "") ;;
+    --restart) RESTART=1 ;;     # restart a running dashboard (new code)
+    *) sed -n '10,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac
 
 [ "$(id -u)" != 0 ] || { echo "[ERROR] Run this as your normal user, not with sudo" >&2; exit 1; }
 [ -f "$PROJECT_ROOT/hailo-apps/setup_env.sh" ] \
@@ -63,14 +69,17 @@ EOF
 )
 [ "$LOCAL_NAME" = - ] && LOCAL_NAME=""
 
-install_unit() {    # install_unit SERVICE TEXT -> writes, enables; says whether it changed
+UNIT_CHANGED=0
+install_unit() {    # install_unit SERVICE TEXT -> writes, enables; sets UNIT_CHANGED=1 if it changed
     local unit="$UNIT_DIR/$1.service"
+    UNIT_CHANGED=0
     if sudo test -f "$unit" && [ "$(sudo cat "$unit")" = "$2" ]; then
         echo "[OK] $1 service already installed"
     else
         printf '%s\n' "$2" | sudo tee "$unit" > /dev/null
         sudo systemctl daemon-reload
         echo "[INFO] Installed the $1 service"
+        UNIT_CHANGED=1
     fi
     sudo systemctl enable "$1" 2>/dev/null
 }
@@ -78,7 +87,10 @@ install_unit() {    # install_unit SERVICE TEXT -> writes, enables; says whether
 # ── Port 80 -> the dashboard's port ─────────────────────────────────
 # A redirect instead of a web server: nothing else to run or update, and the
 # dashboard's own port keeps working.
-if ss -Hltn "sport = :80" 2>/dev/null | grep -q .; then
+if ! command -v nft >/dev/null && [ ! -x /usr/sbin/nft ]; then
+    echo "[WARN] nftables is not installed; the dashboard stays on port $PORT (sudo apt install nftables, then run this again)."
+    remove_unit "$NAME-port80"
+elif ss -Hltn "sport = :80" 2>/dev/null | grep -q .; then
     echo "[WARN] Something already listens on port 80; not forwarding it to the dashboard."
     remove_unit "$NAME-port80"
 else
@@ -109,8 +121,12 @@ ExecStop=/usr/sbin/nft delete table inet cat_dashboard
 
 [Install]
 WantedBy=multi-user.target"
-    sudo systemctl restart "$NAME-port80"
-    echo "[OK] Port 80 goes to the dashboard"
+    if sudo systemctl restart "$NAME-port80"; then
+        echo "[OK] Port 80 goes to the dashboard"
+    else
+        echo "[WARN] Could not forward port 80 (see: journalctl -u $NAME-port80); the dashboard stays on port $PORT."
+        remove_unit "$NAME-port80"
+    fi
 fi
 
 # ── Second network name ─────────────────────────────────────────────
@@ -133,8 +149,11 @@ RestartSec=10
 
 [Install]
 WantedBy=multi-user.target"
-    sudo systemctl restart "$NAME-name"
-    echo "[OK] This Pi also answers to $LOCAL_NAME.local"
+    if sudo systemctl restart "$NAME-name"; then
+        echo "[OK] This Pi also answers to $LOCAL_NAME.local"
+    else
+        echo "[WARN] Could not announce $LOCAL_NAME.local (see: journalctl -u $NAME-name)."
+    fi
     URL="http://$LOCAL_NAME.local"
 else
     remove_unit "$NAME-name"
@@ -149,6 +168,11 @@ systemctl is-active --quiet "$NAME-port80" 2>/dev/null || URL="$URL:$PORT"
 mkdir -p "$(dirname "$LOG")"
 touch "$LOG"
 
+# GStreamer warns without a runtime dir. It exists while the user is logged
+# in (or has lingering on); the desktop image logs in at boot.
+XDG_LINE=""
+[ -d "/run/user/$(id -u)" ] && XDG_LINE="Environment=XDG_RUNTIME_DIR=/run/user/$(id -u)"
+
 install_unit "$NAME" "[Unit]
 Description=Cat detection dashboard (pi_dashboard.py)
 Wants=network-online.target
@@ -160,6 +184,7 @@ User=$(id -un)
 Group=$(id -gn)
 WorkingDirectory=$PROJECT_ROOT
 Environment=PYTHONUNBUFFERED=1
+$XDG_LINE
 # setup_env.sh finds the venv relative to the folder it's sourced from.
 ExecStart=/bin/bash -c 'cd hailo-apps && source setup_env.sh && cd .. && exec python pi_dashboard.py'
 StandardOutput=append:$LOG
@@ -175,9 +200,14 @@ WantedBy=multi-user.target"
 echo "[OK] The dashboard starts at boot"
 
 if systemctl is-active --quiet "$NAME"; then
-    echo "[OK] $NAME is running (restart it with: sudo systemctl restart $NAME)"
-    echo "[OK] Dashboard: $URL"
-    exit 0
+    if [ "$RESTART" = 1 ] || [ "$UNIT_CHANGED" = 1 ]; then
+        echo "[INFO] Restarting the dashboard to load the new code and settings..."
+        sudo systemctl stop "$NAME"
+    else
+        echo "[OK] $NAME is running (restart it with: sudo systemctl restart $NAME)"
+        echo "[OK] Dashboard: $URL"
+        exit 0
+    fi
 fi
 
 # A dashboard started by hand would hold the port, and the service would fail.

@@ -116,12 +116,12 @@ if [[ " $STEPS " == *" setup "* ]] && [ "$rc" = 0 ]; then
     dashboard_howto
     cat <<'EOF'
 Next, in the dashboard (the README's Quick start has the details):
-  - Capture tab: turn on Auto-save under Detection Capture, or use the Auto button,
-    until each cat has 300 or more images.
-  - Review tab: label anything unlabeled. Annotate tab: give images without a
+  - Capture tab: turn on "Save images automatically", or use Auto-capture, until each
+    cat has 300 or more images.
+  - Label tab: check which cat each image shows, and give images without a
     bounding box one.
-  - Training tab: choose Local PC (run scripts/worker.sh on this PC) or Hugging Face
-    Jobs, press Test connection and Save, then Start training and Deploy.
+  - Training tab: set up where training runs (Local PC: run scripts/worker.sh on
+    this PC; or Hugging Face Jobs), Start training, then "Deploy newest model".
   - Backup tab: choose where nightly backups go.
 EOF
 elif [ "$rc" = 0 ]; then

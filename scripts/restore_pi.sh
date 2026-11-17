@@ -162,6 +162,24 @@ EOF
     echo "[OK] Data restored"
 }
 
+# The fan curve (dtparam=fan_temp*) from the old Pi's /boot/firmware/config.txt.
+# The rest of config.txt stays the new image's: it can hold settings that
+# don't fit the new setup (e.g. dtoverlay=disable-wifi on a Pi now on Wi-Fi).
+restore_fan_curve() {
+    local tgz="$FROM/snapshots/pi_system_config.tgz" lines
+    [ -f "$tgz" ] || return 0
+    lines=$(tar xzf "$tgz" -O boot/firmware/config.txt 2>/dev/null | grep -E '^dtparam=fan_temp' || true)
+    [ -n "$lines" ] || return 0
+    if rsh 'grep -q "^dtparam=fan_temp" /boot/firmware/config.txt'; then
+        echo "[OK] The Pi already has a fan curve in config.txt; left as it is"
+        return 0
+    fi
+    { echo ""; echo "# Fan curve from the old Pi (restore_pi.sh)"; echo "$lines"; } \
+        | rsh 'sudo cp /boot/firmware/config.txt /boot/firmware/config.txt.before-restore &&
+               sudo tee -a /boot/firmware/config.txt >/dev/null'
+    echo "[OK] Fan curve restored ($(wc -l <<<"$lines") lines in /boot/firmware/config.txt; applies after a reboot)"
+}
+
 step_home() {
     needs_from home
     if [ -z "$HOME_SRC" ]; then
@@ -189,6 +207,7 @@ step_home() {
              mv authorized_keys.new authorized_keys && rm -f authorized_keys.from-backup'
         echo "[OK] SSH keys that could log in before can log in again"
     fi
+    restore_fan_curve
     echo "[INFO] Left in the backup on purpose: desktop settings (.config), the Cloudflare" \
          "tunnel for Frigate (.cloudflared, snapshots/etc_cloudflared.tgz) and Wi-Fi profiles" \
          "(Imager sets Wi-Fi). See docs/frigate.md to bring Frigate back."

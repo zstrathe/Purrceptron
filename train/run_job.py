@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -151,7 +152,15 @@ def main() -> int:
                "--output", str(output_dir / "detections.json")]
     print(f"[run_job] stage=training task={task}", flush=True)
     start = time.time()
-    rc = subprocess.call(cmd, cwd=str(work / "code"))
+    # Library deprecation notices repeat in every data-loader worker and
+    # bury the progress lines in the dashboard's log; nothing to act on.
+    # (Message prefixes only: PYTHONWARNINGS splits entries on commas.)
+    quiet = ["ignore:`isinstance(treespec:FutureWarning",
+             "ignore:torch.ao.quantization is deprecated:DeprecationWarning",
+             "ignore:ShiftScaleRotate is a special case of Affine:UserWarning"]
+    env = dict(os.environ)
+    env["PYTHONWARNINGS"] = ",".join(filter(None, [env.get("PYTHONWARNINGS", "")] + quiet))
+    rc = subprocess.call(cmd, cwd=str(work / "code"), env=env)
     duration = round(time.time() - start, 1)
 
     proof_ok = (output_dir / proof).is_file()

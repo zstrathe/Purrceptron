@@ -12,6 +12,7 @@ from utils.config import (
     resolve_path,
     get_cat_colors_hex,
     get_cat_colors_bgr,
+    subject_words,
 )
 from utils.display import (
     print_info,

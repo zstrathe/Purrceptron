@@ -63,12 +63,7 @@ a { color: var(--info); }
   padding: 10px var(--gutter);
 }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; white-space: nowrap; }
-.brand-mark {
-  width: 22px; height: 22px; border-radius: 6px; background: var(--accent-soft);
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); position: relative;
-}
-.brand-mark::after { content: ""; position: absolute; inset: 5px; border: 2px solid var(--accent); border-radius: 2px; }
-.brand-sub { color: var(--muted); font-weight: 400; }
+.brand img { display: block; height: 36px; width: auto; }
 
 .seg, .tab-bar {
   display: inline-flex; gap: 2px; padding: 3px;

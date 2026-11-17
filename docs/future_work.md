@@ -234,7 +234,7 @@ affordable. A few crops per visit is.
    and stability checks often enough to matter; count them in the trashed captures
    first.
 2. **Labeling help** (no live-pipeline cost). Embed all captures to group
-   near-duplicates in the Annotate tab, pre-suggest which cat a crop is, and search
+   near-duplicates in the Label tab, pre-suggest which cat a crop is, and search
    captures by text ("Cat1 at night").
 3. **Bowl state and behaviour** without bounding boxes: classify the bowl ROI as "a cat
    eating from a bowl" against "a cat sitting next to a bowl", or "an empty bowl"

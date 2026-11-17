@@ -37,7 +37,7 @@ Design points:
 The same approach applies to other animals in the COCO classes (dogs, birds,
 horses): set `deployment.tracking_objects` to the detector label and list the
 individuals under `cats:`. Animals outside those classes, such as rabbits, would
-need a different detector, and the Annotate tab's auto-detect currently looks for
+need a different detector, and the Label tab's auto-detect currently looks for
 cats only.
 
 > **License notice:** source-available for noncommercial use only. No redistribution,
@@ -89,7 +89,7 @@ flowchart TB
         UNK --> REFINE
         REFINE["Optional: keep saving training images<br/>to refine the next model.<br/>Images are saved under the cat's name once the visit<br/>is confirmed; earlier images from the visit are renamed then.<br/>Images taken while crops are rejected<br/>stay unlabeled for review"] --> CAP
     end
-    CAP --> LABEL["Pi dashboard: label cats (Review tab),<br/>add or fix bounding boxes (Annotate tab;<br/>auto-detect fills in missing ones)"]
+    CAP --> LABEL["Pi dashboard, Label tab: check which cat<br/>each image shows, add or fix bounding boxes<br/>(auto-detect fills in missing ones)"]
     LABEL --> PREP["Pi: crop each bounding box, resize to 224x224,<br/>split train/val by capture session<br/>so near-duplicate frames stay on one side"]
     subgraph PC["Training backend: your PC or Hugging Face Jobs (CUDA)"]
         TRAIN["Fine-tune MobileNetV2 on the labeled crops:<br/>head warmup, partial fine-tune, quantization-aware training.<br/>Export INT8 ExecuTorch program + class list +<br/>energy threshold (99th percentile of validation energies)"]
@@ -230,10 +230,10 @@ cp configs/project.yaml.example configs/project.yaml
 # add it to the Pi, and save the Pi's address in .env for the other scripts.
 # Then open http://<pi-hostname>:5003
 
-# In the browser: turn on "Auto-save" under Detection Capture, or use the
-# Auto button to capture a chosen cat every few seconds. Aim for 300+ images
-# per cat. Label anything in "unlabeled" on the Review tab, and give images
-# without a bounding box one on the Annotate tab.
+# In the browser: turn on "Save images automatically" on the Capture tab, or use
+# Auto-capture to save a chosen cat every few seconds. Aim for 300+ images
+# per cat. On the Label tab, check the cat's name on the images ("Label not checked") and
+# give images without a bounding box one.
 
 # ── Back on the training machine (for the Local PC backend) ─────────────
 echo "WORKER_TOKEN=$(openssl rand -hex 24)" >> .env
@@ -245,9 +245,9 @@ scripts/worker.sh                       # GPU worker in Docker on port 5004; sho
 # ── In the Pi dashboard ─────────────────────────────────────────────────
 # Training tab: choose Local PC, enter the PC's address, the port (5004, or
 # 5005 through the WSL port forward) and the token, press Test connection,
-# then Save. Press Start training, wait for Ready, compare the accuracy, and
-# press Deploy. Then turn on "Enable classifier" on the Capture tab: the
-# identity bar shows who is at the bowl.
+# then Save. Press Start training and wait for it to finish; then press
+# "Deploy newest model" at the top of the tab. Turn on "Identify cats" on the
+# Capture tab: the banner under the live view shows who is there.
 ```
 
 `sync_to_pi.sh` pushes `configs/project.yaml` too, so edit it on the training machine.
@@ -289,8 +289,9 @@ systemctl status cat-dashboard-name cat-dashboard-port80   # the name and port 8
 
 `pi_dashboard.py` runs on the Pi and serves on port 5003. It starts `deploy/detect.py`
 as a subprocess from inside `hailo-apps/` with `setup_env.sh` sourced, restarts it if
-it crashes, and restarts it when a new classifier model is copied over (provided the
-classifier was enabled when the dashboard started).
+it crashes, and restarts it when the classifier model file is created or replaced
+(Deploy, Switch back, or a copy by hand) while cat identification is on. The tabs
+are Capture, Label, Training and Backup.
 
 ```bash
 python pi_dashboard.py --no-camera        # review only, no detection pipeline
@@ -300,88 +301,94 @@ python pi_dashboard.py --config alt.yaml
 
 ### Capture tab
 
-The live feed is a JPEG preview that the browser polls about 15 times a second.
-Bounding boxes are drawn with the detector label, confidence and tracker ID. Around it:
+Built for watching, with everything you set up one click away.
 
-- Detection Mode: pipeline status, the tail of the detector log, and a viewer for
-  the log files in `logs/detection/`.
-- Detection Capture: an auto-save toggle, the minimum seconds between saves per
-  cat, and "Save labeled only", which skips captures the classifier has not
-  identified. Changes take effect immediately.
-- Cat Classifier (Stage 2): an enable toggle (restarts the pipeline with the
-  model), model status, confidence threshold, and the bowl region. Drag on the
-  preview to set the region, show or hide it, and set the overlap percentage that
-  counts as being at the bowl. Changes take effect immediately and are saved to
-  `runtime.yaml`.
-- The identity bar shows the current result with vote counts (for example
-  `Cat1:6 Cat2:2 / 10`), "Unknown" for rejected crops, and "Waiting for detection in
-  ROI..." between visits.
-- Auto capture: a toggle and a target-cat dropdown. While on, a full frame is saved
-  under that cat every `collection.auto_capture_interval_sec` seconds (default 3),
-  with a bounding-box sidecar whenever the detector saw a cat in the frame.
+**Always shown:**
 
-### Review tab
+- **The live view** (a JPEG preview the browser polls about 15 times a second, with
+  bounding boxes on detected cats), and under it **who is in view**: the cat's
+  name with how many of the recent frames agreed (`Cat1 · 9 of the last 10 frames`),
+  "Cat1?" while it is still unsure, "Unknown cat" when the model rejects the crop,
+  or "Waiting for a cat...". When detection isn't running, the view
+  says so instead of showing the last frame.
+- **Three status chips:** Detection (with a Restart button when it has stopped),
+  Identification (and which model is deployed), and Saving (whether images are
+  being saved; Auto-capture shows here so it isn't left on by accident). Clicking a
+  chip opens its section of the controls.
+- **Today** (sidebar): each cat's time in view and the day's visits from
+  `classifier_log.db`. The arrows step through earlier days.
 
-A split view: the current image and its controls on the left, and a resizable,
-full-height image browser on the right. There is one label button per cat, plus
-Delete (moves the file to `data/trash/`), Prev and Skip. Skip marks the image as
-reviewed. Unreviewed images are queued newest first; the browser shows every image,
-with reviewed ones dimmed.
+**Controls** (the button at the right of the chips; the page remembers whether you
+left it open, and starts closed once a model is deployed):
 
-In the browser, click opens an image, Ctrl/Cmd-click or right-click selects, and
-Shift-click selects a range. Selected images can be labeled or deleted together.
-The browser sorts by newest or by label and filters with chips for All, Unlabeled
-and each cat. Thumbnails are generated once and cached under `data/raw/.thumbnails/`.
+- **Collect Training Images:** "Save images automatically" saves an image whenever a
+  cat is in the region of interest, at most one image per cat every N seconds ("Time
+  between images"). With cat identification on they are saved under
+  the identified cat's name, or as Unlabeled when unsure ("Only identified cats"
+  skips those). **Auto-capture** saves an image under a chosen cat every
+  `collection.auto_capture_interval_sec` seconds (default 3), but only while a cat
+  is in the region of interest; use it when you know who is there. Below are the images per
+  cat against `collection.min_images_per_cat` (the target, default 300; training
+  itself needs far fewer).
+- **Identification:** on/off (restarts detection), which model is deployed and its
+  accuracy, and the **region of interest**: the part of the picture to watch (a food
+  bowl here; a bed or a feeder works the same way). Draw drags a rectangle on the
+  live view, Show overlays it, and "Bounding box overlap" sets how much of the
+  region a detected bounding box must cover to count as being in it. Not drawn means the whole picture. "Certainty needed" is how sure the model
+  must be to name a cat (applies after detection restarts). Saved to `runtime.yaml`.
+- **Detection:** status, Restart detection, and View log (the latest lines, and
+  earlier logs from `logs/detection/`).
 
-Keyboard shortcuts: `1` to `9` label as that cat, `d` delete, `n` or `→` skip, `p` or
-`←` previous, `Esc` closes the log viewer.
+The wording follows the animal you watch: the optional `subject` block in
+`configs/project.yaml` sets it and its plural (default: the first of
+`deployment.tracking_objects`, so `cat`). For dogs, set `tracking_objects: [dog]`;
+the dashboard then says "Identify dogs", "Waiting for a dog...", and so on.
 
-### Annotate tab
+### Label tab
 
-Lists every image in the cat folders and `unlabeled/`, grouped by folder, with each
-saved bounding box drawn on its thumbnail and a "Missing" badge on those without
-one. A status filter (All, Missing, Has one) and per-cat chips narrow the list; it
-opens on Missing. Only images with a bounding box can be cropped for training, so
-this is where images that arrived without one (phone photos, captures the detector
-missed) get one: drag on the image to draw it, or press Auto-detect.
+Checks which cat each image shows and where it is (its bounding box). The image is
+on the left, a resizable image browser on the right, grouped by folder (each cat,
+and Unlabeled), with each bounding box drawn on its thumbnail.
 
-Auto-detect runs a COCO-pretrained torchvision Faster R-CNN (ResNet50 FPN v2), which
-is too heavy for the Pi, on the training backend:
+- **Which cat:** one button per cat (keys `1` to `9`) moves the image to that cat's
+  folder; **Looks right** (`Enter`) keeps the label; **Move to trash** (`x`) moves the
+  image and its sidecar to `data/trash/`. Each marks the image reviewed and shows
+  the next one.
+- **Where:** drag on the image to draw a bounding box; it is saved at once, in the
+  same sidecar format the Pi's capture writes. Only images with a bounding box can be
+  used for training. **Reset bounding box** (`r`) removes one you drew or
+  auto-detected, bringing back the one the Pi saved, if any.
+- **Auto-detect:** runs a COCO-pretrained torchvision Faster R-CNN (ResNet50 FPN v2),
+  too heavy for the Pi, on the training backend. With the Local PC backend,
+  "Auto-detect bounding box" (`a`) asks `train_worker.py` for the current image's
+  bounding box (the first request loads the model, about 20 seconds). "Auto-detect
+  missing bounding boxes" sends every image without one as a single job, on either
+  backend; an image you annotate while it runs is left alone.
+- **Filters:** "Label not checked" (images saved automatically whose name nobody has
+  confirmed, marked with a dot; checking is optional, training uses them either way), "No
+  bounding box", "All", and chips per folder. `n`/`p` or the arrow keys step through
+  the filtered list.
+- **Several at once:** Ctrl/Cmd-click or right-click thumbnails to select them,
+  Shift-click for a range, then label them or move them to the trash together.
 
-- With the Local PC backend, Auto-detect asks `train_worker.py` for the current
-  image's bounding box and shows it within a second (the first request loads the
-  model, about 20 seconds).
-- "Auto-detect all missing" sends every image without a bounding box as one job, on
-  either backend. On Hugging Face Jobs that takes a few minutes, mostly container
-  start-up. The results are saved as auto-detected; an image you annotate while the
-  job runs is left alone.
-
-Bounding boxes are saved as soon as they are drawn, in the same sidecar format the
-Pi's detection capture writes. Editing a Pi-generated bounding box keeps a backup,
-and Clear restores it. Keyboard shortcuts: `a` auto-detect, `d` clear, `n`/`p` or
-the arrow keys step through the filtered list.
+Thumbnails are generated once and cached under `data/raw/.thumbnails/`.
 
 ### Training tab
 
-Runs training from the Pi: picks where jobs run (your PC or Hugging Face Jobs),
-checks there are enough labeled images, packages them, sends the job, shows its
-progress and log, and deploys or rolls back the returned model. It also edits the
-training settings, runs cross-validation, and charts each job's loss and accuracy
-curves, optionally against an earlier job. See
+Starts with the **Identification Model** card: the deployed model and its
+accuracy per cat, and **Deploy newest model** when a newer trained model is waiting,
+with a side-by-side comparison. Older trained models are listed under it, and
+"Switch back to the previous model" swaps the deployed model with the one before.
+Next to it, **Train a New Model** shows the images per cat, Start training, and (folded)
+cross-validation. Below: the newest job's progress and log, where training runs
+(folded once set up), the training settings, each job's loss and accuracy curves
+(optionally against an earlier job), and the job history. See
 [Training from the Pi](#training-from-the-pi).
 
 ### Backup tab
 
 Sets up nightly backups of the Pi's data to the PC or Hugging Face, shows the last
 result and the snapshots, and runs a backup on demand. See [Backups](#backups).
-
-### Sidebar
-
-Shown on the Capture tab: image counts per cat against
-`collection.min_images_per_cat`, session counters, pipeline status, recent
-detections, and, when the classifier is enabled, the day's identified visits from
-`classifier_log.db` with total tracked time per cat. Arrow buttons step through
-earlier days.
 
 ## Training from the Pi
 
@@ -414,10 +421,11 @@ flowchart LR
 3. **Check (on the Pi).** The returned model must load with the Pi's ExecuTorch
    runtime, embed the configured cat names and an energy threshold, and produce
    one output per cat. A model that fails is never offered for deployment.
-4. **Deploy.** The tab compares the new model's validation accuracy, overall and
-   per cat, with the deployed one, then installs it on request. The current model
-   is kept as `models/cat_classifier.prev.pte`; Roll back swaps the two (pressing it
-   again swaps back). Detection restarts with the new model within seconds.
+4. **Deploy.** The Identification Model card compares the newest model's
+   validation accuracy, overall and per cat, with the deployed one, and Deploy newest
+   model installs it. The current model is kept as `models/cat_classifier.prev.pte`;
+   "Switch back to the previous model" swaps the two (pressing it again swaps back).
+   Detection restarts with the new model within seconds.
    Models are ExecuTorch `.pte` files; an older TorchScript `cat_classifier.pt` is
    not used, so after the switch there is nothing to roll back to until a second
    `.pte` has been deployed.
@@ -425,7 +433,7 @@ flowchart LR
 The same path runs two other kinds of job: **cross-validation** (the Training tab's
 "Run cross-validation"; it sends the crops unsplit, trains one model per fold with
 `train/cross_validate.py`, and shows the per-fold table) and **auto-detect** (the
-Annotate tab's "Auto-detect all missing"; it sends the images that have no
+Label tab's "Auto-detect missing bounding boxes"; it sends the images that have no
 bounding box and writes the results into their sidecars).
 
 **Settings.** The Training Settings panel edits the `classifier_training` values
@@ -833,8 +841,8 @@ a key is omitted, it is noted.
 | **Classifier (Stage 2)** | | |
 | `classifier.enabled` | false | Run the identity classifier. |
 | `classifier.model_path` | `models/cat_classifier.pte` | ExecuTorch model the classifier runs. |
-| `classifier.bowl_roi` | `[760, 390, 1160, 790]` (code fallback: full frame) | Bowl region `[x_min, y_min, x_max, y_max]` in frame pixels. Set it by dragging in the dashboard. |
-| `classifier.roi_overlap_threshold` | 0.01 | Fraction of the bowl region a bounding box must cover to count. |
+| `classifier.bowl_roi` | `[760, 390, 1160, 790]` (code fallback: full frame) | Region of interest `[x_min, y_min, x_max, y_max]` in frame pixels (the key keeps its old name). Set it by dragging in the dashboard. |
+| `classifier.roi_overlap_threshold` | 0.01 | Fraction of the region of interest a bounding box must cover to count. |
 | `classifier.stability_frames` | 5 | Consecutive in-region frames before classifying (also gates detection capture). |
 | `classifier.miss_tolerance` | not in template; code default 15 | Missed frames tolerated before a cat counts as departed. |
 | `classifier.classify_interval_seconds` | 1.0 | Minimum time between crops sent to the classifier. |
@@ -997,8 +1005,8 @@ load on the Pi. It is independent of the detector's frame rate. Reducing
 
 Classifier shows "No model found" or never activates: the model must be at
 `models/cat_classifier.pte` on the Pi (the Deploy step copies it there), and
-"Enable classifier" must be on, which restarts the pipeline. The classifier only
-runs for detections inside the bowl region, so check the region with "Show ROI" and
+"Identify cats" on the Capture tab must be on, which restarts detection. The classifier only
+runs for detections inside the region of interest, so check it with "Show" and
 lower `roi_overlap_threshold` if detections rarely qualify.
 
 Identity flips, or takes too long to confirm: raise `vote_window_size` for steadier
@@ -1020,7 +1028,7 @@ curves, and run cross-validation. Collect more images of the weak cat in varied 
 lengthening phase 2 first.
 
 Images "without bounding box" on the Training tab: they cannot be cropped. Give them
-one on the Annotate tab (Auto-detect all missing does them in one job).
+one on the Label tab ("Auto-detect missing bounding boxes" does them in one job).
 
 Dashboard not reachable: the dashboard binds to all interfaces. Check the Pi's
 firewall for port 5003, and use the IP address if `.local` names do not resolve.

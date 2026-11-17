@@ -65,13 +65,14 @@ def read_training_metrics(run_dir: Path) -> dict:
         if ph not in phases_data:
             phases_data[ph] = {
                 "label": phase_labels.get(ph, ph),
-                "local_epochs": [], "train_loss": [], "val_loss": [],
+                "local_epochs": [], "epochs": [], "train_loss": [], "val_loss": [],
                 "train_acc": [], "val_acc": [], "per_class": {},
-                "best_val_acc": 0, "best_epoch_local": 0,
+                "best_val_acc": 0, "best_epoch_local": 0, "best_epoch": 0,
             }
         pd = phases_data[ph]
         local_ep = len(pd["local_epochs"]) + 1
         pd["local_epochs"].append(local_ep)
+        pd["epochs"].append(epochs[i])          # epoch number in the whole run
         pd["train_loss"].append(train_loss[i])
         pd["val_loss"].append(val_loss[i])
         pd["train_acc"].append(train_acc[i])
@@ -81,6 +82,7 @@ def read_training_metrics(run_dir: Path) -> dict:
         if val_acc[i] > pd["best_val_acc"]:
             pd["best_val_acc"] = round(val_acc[i], 4)
             pd["best_epoch_local"] = local_ep
+            pd["best_epoch"] = epochs[i]
 
     return {
         "available": True,
