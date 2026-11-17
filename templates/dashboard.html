@@ -71,6 +71,22 @@
   #chip-restart { height: 32px; }
 
   /* Drawer rows: labels in one column, controls in the next, hints under the control */
+  /* Label tab: capture dates, faint over the image corners */
+  .thumb-date {
+    position: absolute; left: 4px; bottom: 4px; padding: 0 5px; border-radius: 3px; pointer-events: none;
+    font-size: 10.5px; line-height: 16px; font-variant-numeric: tabular-nums;
+    background: rgba(0, 0, 0, .45); color: rgba(255, 255, 255, .78);
+  }
+  .stage-date {
+    position: absolute; padding: 2px 8px; border-radius: 4px; pointer-events: none; z-index: 3;
+    font-size: 12px; font-variant-numeric: tabular-nums;
+    background: rgba(0, 0, 0, .45); color: rgba(255, 255, 255, .85);
+  }
+  .stage-date:empty { display: none; }
+  .ann-time-row { gap: 6px 8px; font-size: 12px; color: var(--muted); }
+  .ann-time-row select, .ann-time-row input[type="date"] { font-size: 12.5px; padding: 3px 6px; height: 28px; }
+  .ann-time-row select { margin-right: 6px; }
+  .date-range { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
   .cap-row { display: grid; grid-template-columns: 184px 1fr; column-gap: 12px; row-gap: 4px; align-items: center; margin-bottom: 12px; }
   .cap-row > label:first-child { font-size: 13px; color: var(--text); }
   .cap-row > .ctl { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 32px; }
@@ -718,6 +734,7 @@
             <img id="ann-img" alt="">
             <canvas id="ann-canvas" aria-label="Drag on the image to draw a bounding box"></canvas>
             <div class="flash" id="ann-flash"></div>
+            <div class="stage-date" id="ann-date"></div>
             <div class="stage-note" id="ann-note" hidden>No bounding box yet. Drag around the {{ w.animal }} to draw one.</div>
           </div>
           <div class="review-controls" id="ann-label-row">
@@ -744,7 +761,22 @@
                 <button data-s="missing" title="Images without a bounding box can't be used for training">No bounding box<span class="n" id="ann-cnt-missing"></span></button>
                 <button data-s="all">All<span class="n" id="ann-cnt-all"></span></button>
               </div>
+            </div>
+            <div class="browser-head-row ann-time-row">
+              <select id="ann-sort" onchange="annSetSort(this.value); this.blur()" aria-label="Sort by date">
+                <option value="new">Newest first</option>
+                <option value="old">Oldest first</option>
+              </select>
               <label class="size-ctl" for="ann-thumb-size">Size <input type="range" id="ann-thumb-size" min="96" max="260" value="132"></label>
+            </div>
+            <div class="browser-head-row ann-time-row">
+              <span class="date-range">
+                <label for="ann-from">From</label>
+                <input type="date" id="ann-from" onchange="annSetDates()">
+                <label for="ann-to">to</label>
+                <input type="date" id="ann-to" onchange="annSetDates()">
+              </span>
+              <button class="btn btn-sm btn-ghost" id="ann-dates-clear" onclick="annClearDates()" hidden>Clear</button>
             </div>
             <div class="chips" id="ann-cat-chips"></div>
           </div>
@@ -2415,6 +2447,63 @@ function annMsg(text, isErr) {
 }
 function annItem(img) { return {cat: img.cat, filename: img.filename}; }
 
+// Capture time (seconds since 1970; the file's time, in local time here).
+function annFmtDate(t, full) {
+  if (!t) return '';
+  const d = new Date(t * 1000);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return full
+    ? d.toLocaleString(undefined, {weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
+                                   hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false})
+    : d.toLocaleString(undefined, {month: 'short', day: 'numeric', ...(sameYear ? {} : {year: '2-digit'}),
+                                   hour: '2-digit', minute: '2-digit', hour12: false});
+}
+
+// Sorting: within each folder group (the browser shows groups), so that
+// Next/Prev follow the order on screen.
+let annSort = 'new';
+try { if (localStorage.getItem('annSort') === 'old') annSort = 'old'; } catch(e) {}
+function annSortImages() {
+  const order = [...CATS, 'unlabeled'];
+  const dir = annSort === 'old' ? 1 : -1;
+  annImages.sort((a, b) => (order.indexOf(a.cat) - order.indexOf(b.cat)) || dir * ((a.t || 0) - (b.t || 0)));
+}
+function annSetSort(v) {
+  annSort = v === 'old' ? 'old' : 'new';
+  try { localStorage.setItem('annSort', annSort); } catch(e) {}
+  const cur = annImages[annIndex];
+  annSortImages();
+  annIndex = Math.max(0, annImages.indexOf(cur));
+  annSel.clear();
+  annBuildThumbs();
+  annApplyFilters();
+  const el = annThumbEls[annIndex];
+  if (el) el.scrollIntoView({block: 'nearest'});
+}
+
+// Date range filter (inclusive days, local time).
+let annFrom = null, annTo = null;      // seconds, or null
+function annSetDates() {
+  const f = trEl('ann-from').value, t = trEl('ann-to').value;
+  annFrom = f ? new Date(f + 'T00:00:00').getTime() / 1000 : null;
+  annTo = t ? new Date(t + 'T00:00:00').getTime() / 1000 + 86400 : null;
+  trEl('ann-dates-clear').hidden = !(f || t);
+  annApplyFilters();
+  annUpdateProgress();
+  // Show the first matching image if the current one is outside the range.
+  if (annImages.length && !annPasses(annImages[annIndex])) {
+    const i = annImages.findIndex(annPasses);
+    if (i >= 0) annSelect(i);
+  }
+}
+function annClearDates() {
+  trEl('ann-from').value = ''; trEl('ann-to').value = '';
+  annSetDates();
+}
+function annInDates(img) {
+  return (annFrom === null || img.t >= annFrom) && (annTo === null || img.t < annTo);
+}
+
 async function loadAnnotateTab() {
   if (!annImages.length) {
     trEl('ann-thumbs').innerHTML = '<div class="browser-empty">Loading images...</div>';
@@ -2425,6 +2514,14 @@ async function loadAnnotateTab() {
     const d = await trJson('/api/annotate/images');
     const keep = annImages[annIndex];
     annImages = d.images || [];
+    annSortImages();
+    trEl('ann-sort').value = annSort;
+    // Limit the date pickers to the days that have images.
+    if (annImages.length) {
+      const ts = annImages.map(i => i.t).filter(Boolean);
+      const day = t => { const d = new Date(t * 1000); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+      ['ann-from', 'ann-to'].forEach(id => { trEl(id).min = day(Math.min(...ts)); trEl(id).max = day(Math.max(...ts)); });
+    }
     annInstant = !!d.instant_detect;
     trEl('ann-detect-btn').title = annInstant
       ? 'Ask the training PC for this image\'s bounding box'
@@ -2476,7 +2573,8 @@ function annBuildThumbs() {
     b.className = 'thumb';
     b.title = img.cat + ' / ' + img.filename;
     b.innerHTML = '<img loading="lazy" decoding="async" alt="" src="' + annUrl('thumb', img) + '">' +
-      '<span class="thumb-box"></span><span class="thumb-badge">No bounding box</span>';
+      '<span class="thumb-box"></span><span class="thumb-badge">No bounding box</span>' +
+      '<span class="thumb-date">' + annFmtDate(img.t) + '</span>';
     b.addEventListener('click', (e) => annThumbClick(e, idx));
     b.addEventListener('contextmenu', (e) => { e.preventDefault(); annToggleSel(idx); });
     annThumbEls[idx] = b;
@@ -2533,7 +2631,7 @@ function annSyncThumb(idx) {
 
 function annPasses(img) {
   const okStatus = annStatus === 'all' || (annStatus === 'missing' ? !img.has_bbox : !img.reviewed);
-  return okStatus && (annCats.size === 0 || annCats.has(img.cat));
+  return okStatus && (annCats.size === 0 || annCats.has(img.cat)) && annInDates(img);
 }
 
 function annApplyFilters() {
@@ -2559,9 +2657,11 @@ function annUpdateProgress() {
     `<span title="Saved automatically under the name the Pi gave them; nobody has confirmed the name yet. Checking is optional: training uses them either way, but a wrong name teaches the model the wrong ${W.animal}."><strong>${toReview.toLocaleString()}</strong> labels not checked (optional)</span> · ` +
     `<span title="Training can only use images that have a bounding box."><strong>${missing.toLocaleString()}</strong> without bounding box</span>`;
   trEl('ann-meter').style.width = (total ? (total - toReview) / total * 100 : 0) + '%';
-  trEl('ann-cnt-all').textContent = total.toLocaleString();
-  trEl('ann-cnt-missing').textContent = missing.toLocaleString();
-  trEl('ann-cnt-review').textContent = toReview.toLocaleString();
+  // The filter counts follow the date range, if one is set.
+  const inRange = (annFrom === null && annTo === null) ? annImages : annImages.filter(annInDates);
+  trEl('ann-cnt-all').textContent = inRange.length.toLocaleString();
+  trEl('ann-cnt-missing').textContent = inRange.filter(i => !i.has_bbox).length.toLocaleString();
+  trEl('ann-cnt-review').textContent = inRange.filter(i => !i.reviewed).length.toLocaleString();
   trEl('badge-annotate').textContent = missing > 0 ? missing.toLocaleString() : '';
   const allBtn = trEl('ann-auto-all');
   if (!annJobTimer) {
@@ -2569,7 +2669,7 @@ function annUpdateProgress() {
     allBtn.disabled = missing === 0;
   }
   Object.entries(annGroupEls).forEach(([folder, g]) => {
-    const imgs = annImages.filter(i => i.cat === folder);
+    const imgs = annImages.filter(i => i.cat === folder && annInDates(i));
     const miss = imgs.filter(i => !i.has_bbox).length;
     g.querySelector('.gh-count').textContent = imgs.length.toLocaleString();
     const m = g.querySelector('.gh-missing');
@@ -2608,6 +2708,7 @@ async function annLoadImage() {
   imgEl.hidden = false;
   const img = annImages[annIndex];
   trEl('ann-img-info').textContent = annFolderLabel(img.cat) + ' / ' + img.filename;
+  trEl('ann-date').textContent = annFmtDate(img.t, true);
   trEl('ann-dot').style.setProperty('--c', TR_CAT_COLORS[img.cat] || 'var(--muted)');
   const rt = trEl('ann-reviewed-tag');
   rt.hidden = false;
@@ -2651,6 +2752,10 @@ function annResizeCanvas() {
   canvas.height = imgRect.height;
   canvas.style.left = (imgRect.left - wrapRect.left - wrap.clientLeft) + 'px';
   canvas.style.top = (imgRect.top - wrapRect.top - wrap.clientTop) + 'px';
+  // The date sits in the picture's bottom-right corner (the picture is letterboxed).
+  const dateEl = trEl('ann-date');
+  dateEl.style.right = (wrapRect.right - imgRect.right - wrap.clientLeft + 8) + 'px';
+  dateEl.style.bottom = (wrapRect.bottom - imgRect.bottom - wrap.clientTop + 8) + 'px';
 }
 
 function annDrawBbox() {

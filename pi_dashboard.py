@@ -1229,9 +1229,16 @@ def create_app(
                 continue
             for img in sorted(d.glob("*.jpg")):
                 bbox = _bbox_json(sidecars.read_sidecar(img))
+                try:
+                    # When it was captured: the file's time, which moves,
+                    # relabels and restores keep (filename times mix UTC and
+                    # local time, and sidecars can be written later).
+                    taken = img.stat().st_mtime
+                except OSError:
+                    continue
                 images.append({"cat": folder, "filename": img.name,
                                "has_bbox": bbox is not None, "bbox": bbox,
-                               "reviewed": reviewer.is_reviewed(img)})
+                               "reviewed": reviewer.is_reviewed(img), "t": taken})
         backend = training_mgr.settings()["backend"]
         return jsonify({
             "images": images,

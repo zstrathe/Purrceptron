@@ -384,6 +384,11 @@ and Unlabeled), with each bounding box drawn on its thumbnail.
   confirmed, marked with a dot; checking is optional, training uses them either way), "No
   bounding box", "All", and chips per folder. `n`/`p` or the arrow keys step through
   the filtered list.
+- **Dates:** every thumbnail shows when it was captured, faintly in its corner, and
+  the large image shows the full date and time. Sort newest or oldest first (within
+  each folder group), and limit the list to a date range with From / to; the filter
+  counts follow the range. The time is the image file's, which moves, relabels and
+  restores keep (filename timestamps mix UTC and local time).
 - **Several at once:** Ctrl/Cmd-click or right-click thumbnails to select them,
   Shift-click for a range, then label them or move them to the trash together.
 
