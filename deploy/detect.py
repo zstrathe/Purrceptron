@@ -523,6 +523,7 @@ if HAILO_AVAILABLE:
             self.classifier_gate: ClassifierGate | None = None
             self.classifier_process: multiprocessing.Process | None = None
             self.classifier_queue = None  # multiprocessing.Queue
+            self.reload_config = None     # () -> current config (project + runtime)
             self.save_which: str = "all"      # all / identified / unidentified
             self.bowl_roi: tuple = (0, 0, 1920, 1080)
             self.roi_overlap_threshold: float = 0.01
@@ -595,19 +596,25 @@ if HAILO_AVAILABLE:
             if cmd:
                 if cmd.get("cmd") == "capture":
                     _handle_capture_command(element, buffer, user_data, cmd, frame_detections)
+                elif cmd.get("cmd") == "set_classifier":
+                    _switch_classifier(user_data, restart=False)
+                elif cmd.get("cmd") == "reload_classifier":
+                    _switch_classifier(user_data, restart=True)
                 elif cmd.get("cmd") == "set_detection_capture":
                     _handle_set_detection_capture(user_data, cmd)
                 elif cmd.get("cmd") == "set_bowl_roi":
                     roi = cmd.get("bowl_roi", [0, 0, 1920, 1080])
                     user_data.bowl_roi = tuple(roi)
-                    if user_data.classifier_gate:
-                        user_data.classifier_gate._bowl_roi = tuple(roi)
+                    gate = user_data.classifier_gate
+                    if gate:
+                        gate._bowl_roi = tuple(roi)
                     print(f"[classifier-gate] ROI updated: {roi}", flush=True)
                 elif cmd.get("cmd") == "set_roi_overlap_threshold":
                     t = cmd.get("roi_overlap_threshold", 0.01)
                     user_data.roi_overlap_threshold = t
-                    if user_data.classifier_gate:
-                        user_data.classifier_gate._roi_overlap_threshold = t
+                    gate = user_data.classifier_gate
+                    if gate:
+                        gate._roi_overlap_threshold = t
                     print(f"[classifier-gate] Overlap threshold: {t:.0%}", flush=True)
 
         # Feed into session tracker (with tracker IDs)
@@ -631,10 +638,13 @@ if HAILO_AVAILABLE:
         # ── Classifier gate (Stage 2) ──────────────────────────────────
         needs_classify = False
         classify_bbox = None
-        if user_data.classifier_gate:
-            needs_classify = user_data.classifier_gate.update(frame_detections)
+        # One read per frame: the classifier can be switched off (gate set to
+        # None) from another thread at any moment.
+        clf_gate = user_data.classifier_gate
+        if clf_gate:
+            needs_classify = clf_gate.update(frame_detections)
             if needs_classify:
-                classify_bbox = user_data.classifier_gate.pending_bbox
+                classify_bbox = clf_gate.pending_bbox
 
         # ── Decide what needs a frame BEFORE extracting (extraction is expensive) ──
         from deploy.detection_capturer import FrameExtractor
@@ -695,7 +705,7 @@ if HAILO_AVAILABLE:
 
         # Classifier crop (using shared frame)
         if frame is not None and needs_classify and classify_bbox is not None:
-            user_data.classifier_gate.put_crop(frame, classify_bbox)
+            clf_gate.put_crop(frame, classify_bbox)
 
         # Detection-triggered capture (using shared frame)
         if frame is not None and needs_capture:
@@ -919,6 +929,8 @@ if HAILO_AVAILABLE:
             print(f"[capture] Visit confirmed as '{cat}': labeling "
                   f"{len(paths)} earlier capture(s)", flush=True)
         gate = user_data.classifier_gate
+        if gate is None:            # switched off meanwhile
+            return
         expired = user_data.backlabeler.expire(gate.visit_start, now, last_hit=gate.last_hit)
         if expired and user_data.save_which == "identified":
             capturer.delete(expired)
@@ -1016,6 +1028,90 @@ if HAILO_AVAILABLE:
                 user_data.detection_capturer = None
             user_data.capture_mode = None
             print_info("Detection capture disabled")
+
+
+def _start_classifier(user_data, cfg: dict, ctx) -> None:
+    """Start the classifier subprocess and the gate that feeds it crops.
+
+    ctx is the multiprocessing context: "fork" at startup, before GStreamer
+    starts its threads; "spawn" afterwards, because forking a process that
+    runs threads is unsafe (spawn starts a fresh interpreter instead).
+    """
+    classifier_cfg = cfg.get("classifier", {})
+    camera_cfg = cfg.get("camera", {})
+    tracking_objects = cfg.get("deployment", {}).get("tracking_objects", ["cat"])
+    bowl_roi = tuple(classifier_cfg.get("bowl_roi", [0, 0, 1920, 1080]))
+    CLASSIFIER_STATUS_PATH.unlink(missing_ok=True)      # stale status of an earlier run
+
+    from deploy.cat_classifier import classifier_worker
+    resolved = {**classifier_cfg, "cats": cfg["cats"]}
+    for key in ("model_path", "db_path"):
+        if key in resolved:
+            resolved[key] = str(resolve_path(resolved[key], PROJECT_ROOT))
+    q = ctx.Queue(maxsize=5)
+    proc = ctx.Process(target=classifier_worker, args=(q, resolved), daemon=True,
+                       name="cat_classifier")
+    proc.start()
+    print_info(f"Classifier process started (pid={proc.pid})")
+    gate = ClassifierGate(
+        queue=q,
+        bowl_roi=bowl_roi,
+        frame_w=camera_cfg.get("width", 1920),
+        frame_h=camera_cfg.get("height", 1080),
+        stability_frames=classifier_cfg.get("stability_frames", 5),
+        classify_interval=classifier_cfg.get("classify_interval_seconds", 1.0),
+        crop_padding=classifier_cfg.get("crop_padding", 0.20),
+        roi_overlap_threshold=classifier_cfg.get("roi_overlap_threshold", 0.01),
+        trigger_labels=set(tracking_objects),
+        miss_tolerance=classifier_cfg.get("miss_tolerance", 15),
+    )
+    # Publish the gate last: the frame callback starts feeding it at once.
+    user_data.classifier_queue = q
+    user_data.classifier_process = proc
+    user_data.classifier_gate = gate
+    print_info(f"Classifier gate active — ROI={bowl_roi}")
+
+
+def _stop_classifier(user_data) -> None:
+    """Stop feeding the classifier, let it close the current visit, end it."""
+    proc, q = user_data.classifier_process, user_data.classifier_queue
+    if proc is None:
+        return
+    user_data.classifier_gate = None          # the frame callback stops at once
+    user_data.classifier_process = None
+    user_data.classifier_queue = None
+    if proc and proc.is_alive():
+        try:
+            q.put(None, timeout=1)            # sentinel: drop an unfinished visit, exit
+        except Exception:
+            pass
+        proc.join(timeout=5)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=2)
+    print_info("Classifier stopped")
+
+
+_classifier_switch_lock = threading.Lock()
+
+
+def _switch_classifier(user_data, restart: bool) -> None:
+    """Apply the classifier settings in the (re-read) config without touching
+    the camera: on, off, or restarted with a new model or certainty. Runs in
+    a thread so the frame callback never waits for it."""
+    def work():
+        with _classifier_switch_lock:
+            cfg = user_data.reload_config()
+            enabled = bool(cfg.get("classifier", {}).get("enabled"))
+            running = user_data.classifier_process is not None
+            if running and (restart or not enabled):
+                _stop_classifier(user_data)
+                running = False
+            if enabled and not running:
+                _start_classifier(user_data, cfg, multiprocessing.get_context("spawn"))
+            elif not enabled:
+                CLASSIFIER_STATUS_PATH.unlink(missing_ok=True)
+    threading.Thread(target=work, daemon=True, name="classifier-switch").start()
 
 
 def main():
@@ -1129,47 +1225,12 @@ def main():
     user_data.frame_h = camera_cfg.get("height", 1080)
 
     # ── Classifier setup (BEFORE GStreamer init — fork safety) ───────────
+    # Later switches (dashboard: identification on/off, a new model, a new
+    # certainty) restart only the classifier, never the camera; see
+    # _switch_classifier.
+    user_data.reload_config = lambda: get_config_with_args(args)
     if classifier_cfg.get("enabled", False):
-        bowl_roi = tuple(classifier_cfg.get("bowl_roi", [0, 0, 1920, 1080]))
-        classifier_q = multiprocessing.Queue(maxsize=5)
-
-        # Clear stale classifier status from previous runs
-        status_file = CLASSIFIER_STATUS_PATH
-        if status_file.exists():
-            status_file.unlink(missing_ok=True)
-
-        classifier_proc = None
-        if classifier_cfg.get("enabled", False):
-            from deploy.cat_classifier import classifier_worker
-            classifier_cfg_resolved = {**classifier_cfg, "cats": cfg["cats"]}
-            if "model_path" in classifier_cfg_resolved:
-                classifier_cfg_resolved["model_path"] = str(resolve_path(classifier_cfg_resolved["model_path"], PROJECT_ROOT))
-            if "db_path" in classifier_cfg_resolved:
-                classifier_cfg_resolved["db_path"] = str(resolve_path(classifier_cfg_resolved["db_path"], PROJECT_ROOT))
-            classifier_proc = multiprocessing.Process(
-                target=classifier_worker,
-                args=(classifier_q, classifier_cfg_resolved),
-                daemon=True,
-                name="cat_classifier",
-            )
-            classifier_proc.start()   # fork happens here, BEFORE GStreamer init
-            print_info(f"Classifier process started (pid={classifier_proc.pid})")
-
-        user_data.classifier_queue = classifier_q
-        user_data.classifier_process = classifier_proc
-        user_data.classifier_gate = ClassifierGate(
-            queue=classifier_q,
-            bowl_roi=bowl_roi,
-            frame_w=camera_cfg.get("width", 1920),
-            frame_h=camera_cfg.get("height", 1080),
-            stability_frames=classifier_cfg.get("stability_frames", 5),
-            classify_interval=classifier_cfg.get("classify_interval_seconds", 1.0),
-            crop_padding=classifier_cfg.get("crop_padding", 0.20),
-            roi_overlap_threshold=classifier_cfg.get("roi_overlap_threshold", 0.01),
-            trigger_labels=set(tracking_objects),
-            miss_tolerance=classifier_cfg.get("miss_tolerance", 15),
-        )
-        print_info(f"Classifier gate active — ROI={bowl_roi}")
+        _start_classifier(user_data, cfg, multiprocessing.get_context("fork"))
 
     # Create the detection app (Hailo parses sys.argv for --hef-path, --input, etc.)
     app = GStreamerDetectionApp(app_callback, user_data)
@@ -1292,14 +1353,7 @@ def main():
         app.run()
     finally:
         # Classifier shutdown (graceful: send stop sentinel, then terminate if needed)
-        if user_data.classifier_process and user_data.classifier_process.is_alive():
-            try:
-                user_data.classifier_queue.put(None, timeout=1)  # flush final event
-            except Exception:
-                pass
-            user_data.classifier_process.join(timeout=5)
-            if user_data.classifier_process.is_alive():
-                user_data.classifier_process.terminate()
+        _stop_classifier(user_data)
 
         # Cleanup preview on shutdown
         if user_data.preview_writer:

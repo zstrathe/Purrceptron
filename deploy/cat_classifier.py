@@ -147,6 +147,12 @@ class FeedingEventLogger:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
             conn.execute(self._CREATE_SQL)
+            # Visits left open by a crash, a power cut or a restart mid-visit
+            # never got an end: drop them, as a shutdown mid-visit does.
+            cur = conn.execute("DELETE FROM classifier_events WHERE in_progress=1")
+            if cur.rowcount:
+                print(f"[classifier] Dropped {cur.rowcount} unfinished visit(s) of an earlier run",
+                      flush=True)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self._db_path))
@@ -188,6 +194,20 @@ class FeedingEventLogger:
             return
         self._confidence_sum += confidence
         self._frame_count += 1
+
+    def abandon(self) -> None:
+        """Drop the visit in progress (identification stopped before the cat
+        left): no end was seen, so it isn't logged at all."""
+        if self._active_row_id is None:
+            return
+        with self._connect() as conn:
+            conn.execute("DELETE FROM classifier_events WHERE id=? AND in_progress=1",
+                         (self._active_row_id,))
+        print("[classifier] Stopped during a visit: not logging it", flush=True)
+        self._active_row_id = None
+        self._start_time = None
+        self._confidence_sum = 0.0
+        self._frame_count = 0
 
     def on_departure(self, end_time: float | None = None) -> None:
         """Finalise the active event row and reset state.
@@ -402,10 +422,16 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
 
         # Queue items: (crop, visit_start) | ("departed", last_seen) | None (shutdown)
         # A bare ndarray (older sender) is treated as a crop with no timestamp.
-        if item is None or (isinstance(item, tuple) and isinstance(item[0], str)
-                             and item[0] == "departed"):
+        if item is None:
+            # Shutdown (identification off, a new model, detect.py stopping)
+            # in the middle of a visit: drop it rather than log a visit
+            # whose end was never seen, then exit.
+            logger.abandon()
+            _write_status({"prediction": None, "confirmed_visits": list(confirmed_visits)})
+            return
+        if isinstance(item, tuple) and isinstance(item[0], str) and item[0] == "departed":
             # Departure -- finalise active event at the last-seen time, reset votes
-            end_visit(item[1] if item is not None else None)
+            end_visit(item[1])
             continue
 
         if isinstance(item, tuple):

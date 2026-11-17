@@ -700,7 +700,7 @@ class TrainingJobManager:
             return ("Model installed. Cat identification is off; turn on "
                     "\"Identify cats\" on the Capture tab to use it.")
         note = self._on_model_installed() if self._on_model_installed else None
-        return note or "Detection restarts with the new model within a few seconds."
+        return note or "The new model loads within a few seconds (the camera keeps running)."
 
 
     # ═════════════════════════════════════════════════════════════

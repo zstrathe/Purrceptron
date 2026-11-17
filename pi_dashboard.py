@@ -475,8 +475,9 @@ class DetectionPipelineManager:
             enabled = bool((cfg.get("classifier") or {}).get("enabled"))
             if sig is None or not enabled or not self.is_running():
                 continue    # removed, or nothing to reload; the next start loads it
-            print("[model-watcher] Model file changed, restarting detection...", flush=True)
-            self.restart()
+            # Only the classifier reloads; the camera keeps running.
+            print("[model-watcher] Model file changed, reloading the classifier...", flush=True)
+            self.send_command({"cmd": "reload_classifier"})
 
     def restart(self) -> dict:
         """Stop and restart the pipeline with a delay for device release."""
@@ -1008,7 +1009,18 @@ def create_app(
         data = request.get_json()
         if not data:
             return jsonify({"status": "error", "message": "No data"}), 400
+        before = config_mgr.read().get("classifier", {})
         config_mgr.update_inference_settings(data)
+        # Identification on/off, or a new certainty: restart only the
+        # classifier inside detect.py. The camera keeps running, so its
+        # IR-cut filter doesn't click.
+        if "classifier" in data:
+            clf = data["classifier"]
+            if "enabled" in clf and bool(clf["enabled"]) != bool(before.get("enabled")):
+                pipeline_mgr.send_command({"cmd": "set_classifier"})
+            elif ("confidence_threshold" in clf
+                  and clf["confidence_threshold"] != before.get("confidence_threshold")):
+                pipeline_mgr.send_command({"cmd": "reload_classifier"})
         # Push detection capture changes to running detect.py process
         if "detection_capture" in data:
             dc = data["detection_capture"]

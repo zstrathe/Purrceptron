@@ -296,8 +296,9 @@ systemctl status cat-dashboard-name cat-dashboard-port80   # the name and port 8
 
 `pi_dashboard.py` runs on the Pi and serves on port 5003. It starts `deploy/detect.py`
 as a subprocess from inside `hailo-apps/` with `setup_env.sh` sourced, restarts it if
-it crashes, and restarts it when the classifier model file is created or replaced
-(Deploy, Switch back, or a copy by hand) while cat identification is on. The tabs
+it crashes, and has it reload just the identification worker when the model file is
+created or replaced (Deploy, Switch back, or a copy by hand); the camera keeps
+running. The tabs
 are Capture, Label, Training and Backup.
 
 ```bash
@@ -346,12 +347,16 @@ left it open, and starts closed once a model is deployed):
   exactly the images the model struggles with, the most useful ones to label for
   the next model. Then the images per cat against `collection.min_images_per_cat`
   (the target, default 300; training itself needs far fewer).
-- **Identification:** on/off (restarts detection), which model is deployed and its
+- **Identification:** on/off (only the identification worker starts or stops; the
+  camera keeps running, so its IR-cut filter doesn't click), which model is deployed and its
   accuracy, and the **region of interest**: the part of the picture to watch (a food
   bowl here; a bed or a feeder works the same way). Draw drags a rectangle on the
   live view, Show overlays it, and "Bounding box overlap" sets how much of the
   region a detected bounding box must cover to count as being in it. Not drawn means the whole picture. "Certainty needed" is how sure the model
-  must be to name a cat (applies after detection restarts). Saved to `runtime.yaml`.
+  must be to name a cat (applies within seconds). Saved to `runtime.yaml`. A visit
+  in progress when identification stops (switched off, or a new model loading) is
+  dropped rather than logged without an end; so are visits left open by a restart,
+  crash or power cut.
 - **Detection:** status, Restart detection, and View log (the latest lines, and
   earlier logs from `logs/detection/`).
 
@@ -446,7 +451,7 @@ flowchart LR
    validation accuracy, overall and per cat, with the deployed one, and Deploy newest
    model installs it. The current model is kept as `models/cat_classifier.prev.pte`;
    "Switch back to the previous model" swaps the two (pressing it again swaps back).
-   Detection restarts with the new model within seconds.
+   The new model loads within seconds; the camera keeps running.
    Models are ExecuTorch `.pte` files; an older TorchScript `cat_classifier.pt` is
    not used, so after the switch there is nothing to roll back to until a second
    `.pte` has been deployed.
@@ -1030,7 +1035,7 @@ load on the Pi. It is independent of the detector's frame rate. Reducing
 
 Classifier shows "No model found" or never activates: the model must be at
 `models/cat_classifier.pte` on the Pi (the Deploy step copies it there), and
-"Identify cats" on the Capture tab must be on, which restarts detection. The classifier only
+"Identify cats" on the Capture tab must be on. The classifier only
 runs for detections inside the region of interest, so check it with "Show" and
 lower `roi_overlap_threshold` if detections rarely qualify.
 

@@ -558,7 +558,7 @@
                      onchange="saveClassifierSettings()">
               <span class="unit">0 to 1</span>
             </div>
-            <div class="fhint">How sure the model must be before it names {{ w.an_animal }}. Applies after detection restarts.</div>
+            <div class="fhint">How sure the model must be before it names {{ w.an_animal }}.</div>
           </div>
         </section>
 
@@ -1037,8 +1037,8 @@ async function pollClassifierIdentity() {
         votesEl.textContent = `No model yet, so tap its name here when one comes: its images are saved under that name.`;
         action.hidden = false;
       } else if (data.error) {
-        // The worker reported a problem; a model deployed since then loads
-        // when detection restarts (the model watcher does that).
+        // The worker reported a problem; a newly deployed model replaces it
+        // within seconds (the model watcher reloads the classifier).
         show(/not found|not an ExecuTorch/.test(data.error)
                ? 'Loading the new model...' : 'Identification failed: ' + data.error,
              cssVar(/not found|not an ExecuTorch/.test(data.error) ? '--muted' : '--danger'), true);
@@ -1124,8 +1124,9 @@ async function fetchTrackedEvents() {
         tr.innerHTML =
           '<td style="padding:2px 4px;color:' + color + ';font-weight:700">' + ev.cat_name + '</td>' +
           '<td class="dim">' + formatTime(ev.start_time) + '</td>' +
-          '<td class="dim">' + formatTime(ev.end_time) + '</td>' +
-          '<td class="dim">' + formatDuration(ev.duration_seconds) + '</td>';
+          (ev.in_progress
+            ? '<td style="color:var(--success)">now</td><td class="dim">--</td>'
+            : '<td class="dim">' + formatTime(ev.end_time) + '</td><td class="dim">' + formatDuration(ev.duration_seconds) + '</td>');
         tbody.appendChild(tr);
       }
     }
@@ -1639,12 +1640,11 @@ async function saveClassifierSettings() {
         }
       })
     });
-    // Turning identification on or off restarts detection.
+    // The server switches only the classifier; the camera keeps running.
     if (_lastClfEnabled !== null && enabled !== _lastClfEnabled) {
-      toast((enabled ? 'Turning identification on' : 'Turning identification off') + '; detection restarts (about 10 s).');
-      await fetch('/api/pipeline/restart', { method: 'POST' });
+      toast(enabled ? 'Identification turning on (the model loads in a few seconds).' : 'Identification off.');
     } else {
-      toast('Saved. Certainty applies after detection restarts; the rest applies now.');
+      toast('Saved.');
     }
     _lastClfEnabled = enabled;
     updateCaptureHints();
