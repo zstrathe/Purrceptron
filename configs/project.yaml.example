@@ -47,7 +47,7 @@ detection_capture:
   - cat
   min_interval_seconds: 15
   max_captures_per_session: 0
-  save_labeled_only: false
+  save_which: all                    # all / identified / unidentified (needs identification)
   jpeg_quality: 95
   csv_logging: true
 label_review:

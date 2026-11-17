@@ -468,14 +468,34 @@ def classifier_capture_label(status: dict | None,
     return None, True
 
 
+SAVE_WHICH = ("all", "identified", "unidentified")
+
+
+def save_which_from(cfg: dict) -> str:
+    """detection_capture.save_which, or the older save_labeled_only flag."""
+    which = cfg.get("save_which")
+    if which in SAVE_WHICH:
+        return which
+    return "identified" if cfg.get("save_labeled_only") else "all"
+
+
 def capture_plan(status: dict | None, visit_start: float | None, classifier_on: bool,
-                 save_labeled_only: bool) -> tuple[str | None, bool, bool]:
-    """(label, backlabel_eligible, skip) for an unlabeled_classes detection."""
-    if classifier_on:
-        label, eligible = classifier_capture_label(status, visit_start)
+                 save_which: str) -> tuple[str | None, bool, bool]:
+    """(label, backlabel_eligible, skip) for an unlabeled_classes detection.
+
+    save_which applies only while the classifier runs (without it nothing is
+    identified): "identified" skips images that can never be named,
+    "unidentified" skips images already named (the ones worth labeling by
+    hand are the ones the model can't name)."""
+    if not classifier_on:
+        return None, False, False
+    label, eligible = classifier_capture_label(status, visit_start)
+    if save_which == "identified":
+        skip = label is None and not eligible
+    elif save_which == "unidentified":
+        skip = label is not None
     else:
-        label, eligible = None, False
-    skip = label is None and save_labeled_only and not eligible
+        skip = False
     return label, eligible, skip
 
 
@@ -503,7 +523,7 @@ if HAILO_AVAILABLE:
             self.classifier_gate: ClassifierGate | None = None
             self.classifier_process: multiprocessing.Process | None = None
             self.classifier_queue = None  # multiprocessing.Queue
-            self.save_labeled_only: bool = False
+            self.save_which: str = "all"      # all / identified / unidentified
             self.bowl_roi: tuple = (0, 0, 1920, 1080)
             self.roi_overlap_threshold: float = 0.01
             self.stability_frames: int = 5
@@ -633,7 +653,7 @@ if HAILO_AVAILABLE:
                 gate = user_data.classifier_gate
                 _, _, classified_skip = capture_plan(
                     user_data._status, gate.visit_start if gate else None,
-                    gate is not None, user_data.save_labeled_only)
+                    gate is not None, user_data.save_which)
                 for cat in detected_cats:
                     if _is_classified(user_data, cat) and classified_skip:
                         continue
@@ -823,8 +843,8 @@ if HAILO_AVAILABLE:
         configured threshold. For unlabeled_classes detections the label comes
         from capture_plan(): the cat the current visit was confirmed as, or
         unlabeled/. Unlabeled images taken before the vote decided are registered
-        for back-labeling. With ``save_labeled_only``, unlabeled images that can
-        never be named are skipped.
+        for back-labeling. save_which "identified" skips unlabeled images that
+        can never be named; "unidentified" skips named ones.
 
         Args:
             user_data: CatDetectionCallback with detection_capturer
@@ -838,7 +858,7 @@ if HAILO_AVAILABLE:
         if gate:
             user_data._status = read_classifier_status()
         confirmed, backlabel_eligible, skip = capture_plan(
-            user_data._status, visit, gate is not None, user_data.save_labeled_only)
+            user_data._status, visit, gate is not None, user_data.save_which)
         for cat in detected_cats:
             # Filter to detections in the ROI with stable presence
             roi_dets = None
@@ -860,7 +880,7 @@ if HAILO_AVAILABLE:
             classified = _is_classified(user_data, cat)
             save_label = cat
             if classified:
-                # With save_labeled_only, an image that may still be named once the
+                # With save_which "identified", an image that may still be named once the
                 # visit is confirmed is kept for now and deleted if it never is.
                 if skip:
                     continue
@@ -886,32 +906,39 @@ if HAILO_AVAILABLE:
 
     def _apply_backlabels(user_data, now: float) -> None:
         """Name the captures of visits the classifier has confirmed; with
-        save_labeled_only, delete those of visits that ended unconfirmed."""
+        save_which "identified", delete those of visits that ended unconfirmed
+        ("unidentified" deletes the confirmed ones instead)."""
         if not user_data.backlabeler:
             return
         capturer = user_data.detection_capturer
         for paths, cat in user_data.backlabeler.poll(confirmed_visits(user_data._status)):
+            if user_data.save_which == "unidentified":
+                capturer.delete(paths)      # it was identified after all
+                continue
             capturer.relabel(paths, cat)
             print(f"[capture] Visit confirmed as '{cat}': labeling "
                   f"{len(paths)} earlier capture(s)", flush=True)
         gate = user_data.classifier_gate
         expired = user_data.backlabeler.expire(gate.visit_start, now, last_hit=gate.last_hit)
-        if expired and user_data.save_labeled_only:
+        if expired and user_data.save_which == "identified":
             capturer.delete(expired)
 
 
     def _flush_backlabels(user_data) -> None:
         """Before the capturer stops: name what is already confirmed, then drop the
-        rest (deleted under save_labeled_only, otherwise left in unlabeled/)."""
+        rest (deleted under save_which "identified", otherwise left in unlabeled/)."""
         capturer = user_data.detection_capturer
         if not capturer or not user_data.backlabeler:
             return
         if user_data.classifier_gate:
             user_data._status = read_classifier_status()
             for paths, cat in user_data.backlabeler.poll(confirmed_visits(user_data._status)):
-                capturer.relabel(paths, cat)
+                if user_data.save_which == "unidentified":
+                    capturer.delete(paths)
+                else:
+                    capturer.relabel(paths, cat)
         leftover = user_data.backlabeler.drain()
-        if leftover and user_data.save_labeled_only:
+        if leftover and user_data.save_which == "identified":
             capturer.delete(leftover)
 
 
@@ -950,7 +977,7 @@ if HAILO_AVAILABLE:
         """Handle live toggle of detection capture from the dashboard."""
         enabled = cmd.get("enabled", False)
         interval = cmd.get("min_interval_seconds", 15.0)
-        save_labeled_only = cmd.get("save_labeled_only", False)
+        save_which = save_which_from(cmd)
 
         if enabled:
             if not user_data.detection_capturer:
@@ -980,8 +1007,8 @@ if HAILO_AVAILABLE:
                 user_data.detection_capturer.min_interval = interval
 
             user_data.capture_mode = "detections"
-            user_data.save_labeled_only = save_labeled_only
-            print_info(f"Detection capture enabled (interval={interval}s, labeled_only={save_labeled_only})")
+            user_data.save_which = save_which
+            print_info(f"Detection capture enabled (interval={interval}s, saving {save_which})")
         else:
             if user_data.detection_capturer:
                 _flush_backlabels(user_data)
@@ -1232,7 +1259,7 @@ def main():
             PROJECT_ROOT,
         )
         interval = capture_cfg.get("min_interval_seconds", 15.0)
-        user_data.save_labeled_only = capture_cfg.get("save_labeled_only", False)
+        user_data.save_which = save_which_from(capture_cfg)
         user_data.detection_capturer = DetectionCapturer(
             output_dir=capture_dir,
             cats=cfg.get("cats", []),

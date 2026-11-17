@@ -223,9 +223,19 @@ step_system() {
     fi
 }
 
+DEPS_CHANGED=0
 step_code() {
     echo "[INFO] Copying the code from this PC to $TARGET:$REMOTE_DIR ..."
     rsh "mkdir -p $(q "$REMOTE_DIR")"
+    # Python packages are installed by the setup step, not by copying code:
+    # note when the Pi's requirements are about to change.
+    local mine theirs
+    mine=$(sha256sum "$PROJECT_ROOT/requirements-pi.txt" | cut -d' ' -f1)
+    theirs=$(rsh "sha256sum $(q "$REMOTE_DIR")/requirements-pi.txt 2>/dev/null" | cut -d' ' -f1 || true)
+    if [ -n "$theirs" ] && [ "$mine" != "$theirs" ]; then
+        # shellcheck disable=SC2034  # read by update_pi.sh
+        DEPS_CHANGED=1
+    fi
     # Same as sync_to_pi.sh. go-w: files on /mnt/c look world-writable to rsync.
     rsync -az --delete --chmod=go-w --exclude-from="$PROJECT_ROOT/.syncignore" \
         -e "$RSYNC_SSH" "$PROJECT_ROOT/" "$TARGET:$REMOTE_DIR/"
@@ -245,7 +255,16 @@ step_setup() {
     rm -f "$log"
 }
 
+service_installed() { rsh 'test -f /etc/systemd/system/cat-dashboard.service' 2>/dev/null; }
+
 step_service() {
+    # Already set up: just update it and load the new code, no question.
+    if service_installed; then
+        echo "[INFO] Updating the dashboard service and restarting it with the new code..."
+        rsh_tty "cd $(q "$REMOTE_DIR") && bash scripts/install_service.sh --restart"
+        SERVICE_ON=1
+        return 0
+    fi
     if ! ask "Start the dashboard automatically when the Pi boots (systemd service cat-dashboard)?"; then
         echo "[INFO] Skipped. Turn it on later with: bash scripts/install_service.sh (on the Pi)"
         return 0

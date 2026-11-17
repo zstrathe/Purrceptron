@@ -42,6 +42,7 @@ scripts/transfer_model.sh
 scripts/sync_to_pi.sh
 scripts/restore_pi.sh
 scripts/install_pi.sh
+scripts/update_pi.sh
 scripts/_pi_remote.sh
 scripts/pull_dataset.sh
 scripts/push_labels_to_pi.py

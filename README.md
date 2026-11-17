@@ -252,7 +252,13 @@ scripts/worker.sh                       # GPU worker in Docker on port 5004; sho
 ```
 
 `sync_to_pi.sh` pushes `configs/project.yaml` too, so edit it on the training machine.
-Restart the dashboard afterwards to load the new code (see "Starting at boot").
+Restart the dashboard afterwards to load the new code (see "Starting at boot"), or
+push and restart in one go:
+
+```bash
+./scripts/update_pi.sh          # copy the code, restart the dashboard, check it answers
+./scripts/update_pi.sh --deps   # also install new Python packages (when requirements-pi.txt changed)
+```
 Settings changed in the Pi dashboard are stored separately in `configs/runtime.yaml`
 on the Pi, which is never synced, so they survive the next push.
 
@@ -334,11 +340,12 @@ left it open, and starts closed once a model is deployed):
 
 - **Collect Training Images:** "Save images automatically" saves an image whenever a
   cat is in the region of interest, at most one image per cat every N seconds ("Time
-  between images"). With cat identification on they are saved under
-  the identified cat's name, or as Unlabeled when unsure ("Only identified cats"
-  skips those). Below it, a note on naming visits; then the images per
-  cat against `collection.min_images_per_cat` (the target, default 300; training
-  itself needs far fewer).
+  between images"). With identification on they are saved under the identified
+  cat's name, or as Unlabeled when unsure. **Which to save** (needs identification)
+  keeps All, only Identified, or only Unidentified images; Unidentified collects
+  exactly the images the model struggles with, the most useful ones to label for
+  the next model. Then the images per cat against `collection.min_images_per_cat`
+  (the target, default 300; training itself needs far fewer).
 - **Identification:** on/off (restarts detection), which model is deployed and its
   accuracy, and the **region of interest**: the part of the picture to watch (a food
   bowl here; a bed or a feeder works the same way). Draw drags a rectangle on the
@@ -797,9 +804,11 @@ the bowl to the last.
   visit. When the visit is confirmed, these images and their sidecars are moved to
   the cat's folder and renamed `<cat>_<UTC timestamp>.jpg`, with a new line in
   `capture_log.csv`. A visit confirmed on its last crop, after the cat has gone,
-  still counts. With `save_labeled_only`, they are deleted instead if the visit is
-  not confirmed within 30 s of its last frame at the bowl, or when capture is
-  switched off or detect.py stops.
+  still counts. With `save_which: identified`, they are deleted instead if the visit
+  is not confirmed within 30 s of its last frame at the bowl, or when capture is
+  switched off or detect.py stops. With `save_which: unidentified`, it is the other
+  way round: images of a visit that gets confirmed are deleted, and named images are
+  never saved.
 
 While detection capture is off, nothing is saved, renamed or deleted.
 
@@ -866,7 +875,8 @@ a key is omitted, it is noted.
 | `detection_capture.enabled` | false | Save stable in-region detections automatically. |
 | `detection_capture.output_dir` | `data/raw` | Where captures go (also used for manual captures). |
 | `detection_capture.unlabeled_classes` | `[cat]` (code fallback `[]`) | Detector labels saved as `unlabeled/`, or under the classifier's confirmed name. |
-| `detection_capture.save_labeled_only` | false | Keep only named captures. Images waiting for the visit to be confirmed are kept until it is and deleted if it never is. |
+| `detection_capture.save_which` | `all` | `all`, `identified` or `unidentified` ("Which to save"). Replaces `save_labeled_only` (still read: true means `identified`). |
+| `detection_capture.save_labeled_only` | false | Older form of `save_which: identified`: keep only named captures. Images waiting for the visit to be confirmed are kept until it is and deleted if it never is. |
 | `detection_capture.min_interval_seconds` | 15 | Minimum seconds between saves. `unlabeled_classes` labels share one interval; other labels each have their own. |
 | `detection_capture.max_captures_per_session` | 0 | Cap per saved label per run; 0 is unlimited. |
 | `detection_capture.jpeg_quality` | 95 | JPEG quality. |
@@ -967,6 +977,7 @@ Purrceptron/
 │   └── cross_validate.py           # Session-aware stratified k-fold
 ├── scripts/
 │   ├── install_pi.sh               # Set up a freshly flashed Pi (runs on the PC, over SSH)
+│   ├── update_pi.sh                # Push code changes to a set-up Pi and restart the dashboard
 │   ├── setup_pi.sh                 # Pi setup: hailo-apps, Python deps, SD card write settings
 │   ├── install_service.sh          # Start the dashboard at boot, at http://cats.local (on the Pi)
 │   ├── publish_local_name.sh       # Announces web_ui.local_name (run by its service)

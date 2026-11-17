@@ -103,7 +103,7 @@
   .vname .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
   .vname kbd { margin-left: 2px; }
   .vname[aria-pressed="true"] { background: color-mix(in srgb, var(--c) 30%, var(--surface)); border-color: var(--c); box-shadow: 0 0 0 2px color-mix(in srgb, var(--c) 35%, transparent); }
-  .cap-note { font-size: 12.5px; line-height: 1.5; color: var(--muted); margin: 0 0 4px; }
+  #cap-which-row.off .seg { opacity: .45; pointer-events: none; }
   .log-tail-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
   .modal.modal-wide { max-width: 760px; }
   .inference-panel h3, .settings-group h4 {
@@ -472,6 +472,17 @@
             </div>
             <div class="fhint" id="cap-status-hint"></div>
           </div>
+          <div class="cap-row" id="cap-which-row">
+            <label>Which to save</label>
+            <div class="ctl">
+              <div class="seg seg-sm" id="cap-which" role="group" aria-label="Which images to save">
+                <button data-v="all" onclick="setSaveWhich('all')">All</button>
+                <button data-v="identified" onclick="setSaveWhich('identified')">Identified</button>
+                <button data-v="unidentified" onclick="setSaveWhich('unidentified')">Unidentified</button>
+              </div>
+            </div>
+            <div class="fhint" id="cap-which-hint"></div>
+          </div>
           <div class="cap-row">
             <label for="cap-interval">Time between images</label>
             <div class="ctl">
@@ -479,21 +490,6 @@
               <span class="unit">seconds, per {{ w.animal }}</span>
             </div>
           </div>
-          <div class="cap-row" id="cap-labeled-only-row">
-            <label for="cap-labeled-only">Only identified {{ w.animals }}</label>
-            <div class="ctl">
-              <label class="toggle-switch">
-                <input type="checkbox" id="cap-labeled-only" onchange="saveCaptureSettings()">
-                <span class="toggle-slider"></span>
-              </label>
-            </div>
-            <div class="fhint">Off: {{ w.animals }} it couldn't name are saved as Unlabeled.</div>
-          </div>
-          <div class="cap-sub">Naming visits</div>
-          <p class="cap-note">Before a model can tell your {{ w.animals }} apart (or when it is unsure), the live view
-            asks who is in view. Tap the name, or press 1&ndash;{{ cats|length }}: an image is saved under that name every
-            <span id="visit-every">3</span> s, and the visit's Unlabeled images move to it. It stops by itself when the
-            {{ w.animal }} leaves, so nothing is saved under the wrong name later.</p>
           <div class="cap-sub">Images per {{ w.animal }} <span class="faint">(target {{ min_images }})</span></div>
           {% for i, cat in cats %}
           <div class="cat-stat">
@@ -982,7 +978,7 @@ async function pollClassifierIdentity() {
         el.classList.toggle('pending', !!pending);
         el.style.display = 'flex';
       };
-      confEl.textContent = ''; votesEl.textContent = ''; action.hidden = true;
+      confEl.textContent = ''; votesEl.textContent = ''; votesEl.title = ''; action.hidden = true;
       const v = lastStatus && lastStatus.visit;
       modelNamesIt = !!(clfEnabled && clf && clf.model_exists && !data.error && data.prediction && data.confirmed);
       if (v && v.named && lastStatus.pipeline && lastStatus.pipeline.running) {
@@ -994,13 +990,19 @@ async function pollClassifierIdentity() {
       } else if (v && v.in_view && !modelNamesIt && lastStatus.pipeline && lastStatus.pipeline.running) {
         show(data.prediction && clfEnabled ? `Who is this? The model thinks ${data.prediction}.` : 'Who is this?',
              cssVar('--info'), false);
-        votesEl.textContent = `Tap the name to save this visit's images under it.`;
+        votesEl.textContent = `Tap the name: images are saved under it until the ${W.animal} leaves.`;
+        votesEl.title = `Naming a visit: an image is saved under that name every ${v.interval || 3} s while ` +
+          `${W.an_animal} is in the region of interest, images saved as Unlabeled earlier in the visit move to it, ` +
+          `and all of them count as checked. It stops by itself once no ${W.animal} has been in view for ` +
+          `${v.end_after || 10} s. Tap another name to correct it; Stop ends it early.`;
       } else if (lastStatus && lastStatus.pipeline && !lastStatus.pipeline.running) {
         show('Detection is not running.', cssVar('--muted'), true);
       } else if (!clfEnabled) {
-        show('Identification is off.', cssVar('--muted'), true);
+        show(`Waiting for ${W.an_animal}...`, cssVar('--muted'), true);
+        votesEl.textContent = `Identification is off. When one comes, tap its name here to save its images under that name.`;
       } else if (clf && !clf.model_exists) {
-        show('No model deployed yet: train one and deploy it on the Training tab.', cssVar('--warn'), true);
+        show(`Waiting for ${W.an_animal}...`, cssVar('--muted'), true);
+        votesEl.textContent = `No model yet, so tap its name here when one comes: its images are saved under that name.`;
         action.hidden = false;
       } else if (data.error) {
         // The worker reported a problem; a model deployed since then loads
@@ -1426,8 +1428,8 @@ function renderStatusChips(d) {
   else if (!p.running) setChip('chip-ident', '', 'Identification paused');
   else if (notLoaded) setChip('chip-ident', 'busy', 'Identification starting');
   else setChip('chip-ident', 'on', `Identifying ${W.animals}` +
-    (c.model ? ` <span class="faint">· model ${trDate(c.model.job_id)}` +
-      (c.model.val_acc != null ? `, ${trPct(c.model.val_acc)}` : '') + '</span>' : ''));
+    (c.model ? ` <span class="faint">· model from ${trDate(c.model.job_id)}` +
+      (c.model.val_acc != null ? `, ${trPct(c.model.val_acc)} accuracy` : '') + '</span>' : ''));
 
   const saving = document.getElementById('cap-enabled').checked;
   if (d.visit && d.visit.named) setChip('chip-saving', 'warn', `Saving this visit as <b>${trEsc(d.visit.named)}</b>`);
@@ -1496,7 +1498,6 @@ function renderVisit() {
   box.hidden = !show;
   box.querySelectorAll('.vname').forEach(b => b.setAttribute('aria-pressed', !!(v && v.named === b.dataset.cat)));
   document.getElementById('visit-stop').hidden = !(v && v.named);
-  if (v && v.interval) document.getElementById('visit-every').textContent = v.interval;
 }
 
 // Say once when a named visit has ended.
@@ -1512,24 +1513,32 @@ function noteVisitEnd(v) {
 }
 
 // ── Detection Capture Settings ─────────────────────────────
+// Which images "Save images automatically" keeps. Only meaningful while a
+// model identifies them; otherwise every image is saved as Unlabeled.
+let saveWhich = 'all';
+function identificationLive() {
+  const c = lastStatus && lastStatus.classifier;
+  return !!(document.getElementById('clf-enabled')?.checked && (!c || c.model_exists));
+}
 function updateCaptureHints() {
-  const clfOn = document.getElementById('clf-enabled')?.checked || false;
-  const labeledOnly = document.getElementById('cap-labeled-only');
-  const hint = document.getElementById('cap-status-hint');
-  const labeledRow = document.getElementById('cap-labeled-only-row');
-  if (!hint || !labeledOnly || !labeledRow) return;
-  labeledOnly.disabled = !clfOn;
-  labeledRow.style.opacity = clfOn ? '1' : '0.4';
   const on = document.getElementById('cap-enabled').checked;
-  if (!on) {
-    hint.textContent = `Off. When on, an image is saved whenever ${W.an_animal} is in the region of interest.`;
-  } else if (!clfOn) {
-    hint.textContent = 'Saved as Unlabeled (identification is off); label them on the Label tab.';
-  } else if (labeledOnly.checked) {
-    hint.textContent = `Saved under the identified ${W.animal}'s name; unidentified ${W.animals} are skipped.`;
-  } else {
-    hint.textContent = `Saved under the identified ${W.animal}'s name, or as Unlabeled when unsure.`;
-  }
+  const live = identificationLive();
+  document.getElementById('cap-status-hint').textContent = !on
+    ? `Off. When on, an image is saved whenever ${W.an_animal} is in the region of interest.`
+    : (live ? `Saved under the name the model gives, or as Unlabeled when it is unsure.`
+            : `Saved as Unlabeled (no identification); name visits as they happen, or label them on the Label tab.`);
+  document.querySelectorAll('#cap-which button').forEach(b => b.classList.toggle('on', b.dataset.v === saveWhich));
+  document.getElementById('cap-which-row').classList.toggle('off', !live);
+  document.getElementById('cap-which-hint').textContent = !live
+    ? 'Needs identification: without a model, nothing is identified, so every image is saved as Unlabeled.'
+    : {all: `Every image, named or Unlabeled.`,
+       identified: `Only images the model names; ${W.animals} it is unsure about are skipped.`,
+       unidentified: `Only images the model can't name, saved as Unlabeled: the ones worth labeling to improve the next model.`}[saveWhich];
+}
+
+function setSaveWhich(v) {
+  saveWhich = v;
+  saveCaptureSettings();
 }
 
 async function loadCaptureSettings() {
@@ -1539,7 +1548,8 @@ async function loadCaptureSettings() {
     const dc = settings.detection_capture || {};
     document.getElementById('cap-enabled').checked = dc.enabled || false;
     document.getElementById('cap-interval').value = dc.min_interval_seconds || 15;
-    document.getElementById('cap-labeled-only').checked = dc.save_labeled_only || false;
+    saveWhich = ['all', 'identified', 'unidentified'].includes(dc.save_which) ? dc.save_which
+      : (dc.save_labeled_only ? 'identified' : 'all');
     updateCaptureHints();
   } catch(e) { console.error(e); }
 }
@@ -1547,13 +1557,13 @@ async function loadCaptureSettings() {
 async function saveCaptureSettings() {
   const enabled = document.getElementById('cap-enabled').checked;
   const interval = parseFloat(document.getElementById('cap-interval').value) || 15;
-  const save_labeled_only = document.getElementById('cap-labeled-only').checked;
   try {
     await fetch('/api/inference/settings', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
-        detection_capture: { enabled, min_interval_seconds: interval, save_labeled_only }
+        detection_capture: { enabled, min_interval_seconds: interval, save_which: saveWhich,
+                             save_labeled_only: saveWhich === 'identified' }
       })
     });
     updateCaptureHints();
@@ -1684,11 +1694,11 @@ async function pollStatus() {
         const statusEl = document.getElementById('clf-model-status');
         const notLoaded = c.worker_error && /not found|not an ExecuTorch/.test(c.worker_error);
         // "<model id> · 99.0% · Nov 14, 21:19", or a note when it wasn't deployed from the Training tab
-        // The model's id is when it was trained (20261114-211947 = Nov 14, 21:19:47).
+        // Models are known by when they were trained (job 20261114-211947 = Nov 14, 21:19:47).
         const model = c.model
-          ? `<b>${trEsc(c.model.job_id)}</b>` + (c.model.val_acc != null ? ` · ${trPct(c.model.val_acc)}` : '')
+          ? `from <b>${trDate(c.model.job_id)}</b>` + (c.model.val_acc != null ? ` · ${trPct(c.model.val_acc)} accuracy` : '')
           : 'installed by hand';
-        statusEl.title = c.model ? `Trained ${trDate(c.model.job_id)}` +
+        statusEl.title = c.model ? `Training job ${c.model.job_id}` +
           (c.model.deployed_at ? `, deployed ${trDate(c.model.deployed_at)}` : '') : '';
         let html;
         if (!c.model_exists) {
@@ -1700,7 +1710,7 @@ async function pollStatus() {
         } else if (!d.pipeline.running) {
           html = `Paused (detection stopped) · ${model}`;
         } else if (notLoaded) {
-          html = `Loading model ${model}...`;
+          html = `Loading the model ${model}...`;
         } else {
           html = `<span style="color:var(--success)">Loaded model</span> ${model}`;
         }
@@ -1710,6 +1720,7 @@ async function pollStatus() {
 
     renderStatusChips(d);
     renderVisit();
+    updateCaptureHints();
     noteVisitEnd(d.visit);
   } catch(e) {}
 }

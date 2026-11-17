@@ -622,7 +622,7 @@ class ConfigManager:
     _RUNTIME_KEYS: dict[str, tuple[str, ...]] = {
         "deployment": ("hef_path", "labels_json", "track_all", "tracking_objects"),
         "detection_capture": ("enabled", "unlabeled_classes", "min_interval_seconds",
-                              "max_captures_per_session", "save_labeled_only"),
+                              "max_captures_per_session", "save_labeled_only", "save_which"),
         "feeding": ("enabled", "cooldown_seconds", "min_detection_frames"),
         "classifier": ("enabled", "confidence_threshold", "stability_frames",
                         "classify_interval_seconds", "bowl_roi",
@@ -1017,6 +1017,7 @@ def create_app(
                 "enabled": dc.get("enabled", False),
                 "min_interval_seconds": dc.get("min_interval_seconds", 15),
                 "save_labeled_only": dc.get("save_labeled_only", False),
+                "save_which": dc.get("save_which") or ("identified" if dc.get("save_labeled_only") else "all"),
             })
         # Push bowl_roi changes live to classifier gate
         if "classifier" in data and "bowl_roi" in data["classifier"]:
