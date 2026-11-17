@@ -319,9 +319,12 @@ Built for watching, with everything you set up one click away.
   "Cat1?" while it is still unsure, "Unknown cat" when the model rejects the crop,
   or "Waiting for a cat...". When detection isn't running, the view
   says so instead of showing the last frame.
-- **"Who is this?"** While a cat is in the region of interest and nothing names it
-  (no model yet, identification off, or the model is unsure), the footer shows a
-  button per cat. Tapping one (or pressing `1` to `9`) names the visit: an image is
+- **"Who is this?"** While a cat is in the region of interest and no model names it,
+  the footer shows a button per cat. With no model yet, or identification off, it
+  asks as soon as a cat is in view. While a model is working it asks only once the
+  model gives up on the visit: its crops are rejected ("Unknown cat"), or a full
+  vote window (10 crops, about 10 seconds) passes with no winner. Until then it
+  shows the model's guess ("Cat1?"). Tapping one (or pressing `1` to `9`) names the visit: an image is
   saved under that name every `collection.auto_capture_interval_sec` seconds
   (default 3) while a cat is in the region, images saved as Unlabeled earlier in
   the visit move to that name, and they all count as checked on the Label tab. It
@@ -782,7 +785,11 @@ which the dashboard polls twice a second.
 Vote window: a prediction is confirmed when one class holds more than half of
 `vote_window_size` votes (6 of 10 by default) and the average confidence of those
 votes is at least `confidence_threshold`. Rejected crops do not vote. "Unknown" is
-reported after half a window of consecutive rejections.
+reported after half a window of consecutive rejections. The status file's `unknown`
+flag says the model has given up on the current visit (that rejection, or a full
+window of crops with no winner); it stays set until the visit ends or a name is
+confirmed, and the dashboard asks "Who is this?" only then. A visit already named
+keeps its name when later crops are rejected.
 
 Event log: `classifier_log.db`, table `classifier_events`, with `cat_name`,
 `start_time`, `end_time` (UTC), `duration_seconds`, `confidence_avg` and

@@ -1012,16 +1012,22 @@ async function pollClassifierIdentity() {
       };
       confEl.textContent = ''; votesEl.textContent = ''; votesEl.title = ''; action.hidden = true;
       const v = lastStatus && lastStatus.visit;
-      modelNamesIt = !!(clfEnabled && clf && clf.model_exists && !data.error && data.prediction && data.confirmed);
+      // While a model is working it names the animal itself; "Who is this?" is
+      // asked only once it gives up on this visit (data.unknown: its crops are
+      // rejected, or a full vote passed with no winner).
+      modelHandlesIt = !!(clfEnabled && clf && clf.model_exists && !data.error && !data.unknown);
       if (v && v.named && lastStatus.pipeline && lastStatus.pipeline.running) {
         // A person named this visit: that name wins over the model.
         show(v.named, DET_COLORS[v.named] || DET_DEFAULT_COLOR, false, true);
         const n = v.saved + v.moved;
         votesEl.textContent = `named by you · ${n} image${n === 1 ? '' : 's'} saved · ` +
           (v.in_view ? `stops when the ${W.animal} leaves` : `stopping (no ${W.animal} in view)`);
-      } else if (v && v.in_view && !modelNamesIt && lastStatus.pipeline && lastStatus.pipeline.running) {
-        show(data.prediction && clfEnabled ? `Who is this? The model thinks ${data.prediction}.` : 'Who is this?',
-             cssVar('--info'), false);
+      } else if (v && v.in_view && !modelHandlesIt && lastStatus.pipeline && lastStatus.pipeline.running) {
+        const ask = !data.unknown ? 'Who is this?'
+          : data.ood_rejected ? `Unknown ${W.animal}. Who is this?`
+          : data.prediction ? `Who is this? The model thinks ${data.prediction}, but is not sure.`
+          : 'Who is this?';
+        show(ask, cssVar(data.unknown ? '--warn' : '--info'), false);
         votesEl.textContent = `Tap the name: images are saved under it until the ${W.animal} leaves.`;
         votesEl.title = `Naming a visit: an image is saved under that name every ${v.interval || 3} s while ` +
           `${W.an_animal} is in the region of interest, images saved as Unlabeled earlier in the visit move to it, ` +
@@ -1042,6 +1048,10 @@ async function pollClassifierIdentity() {
         show(/not found|not an ExecuTorch/.test(data.error)
                ? 'Loading the new model...' : 'Identification failed: ' + data.error,
              cssVar(/not found|not an ExecuTorch/.test(data.error) ? '--muted' : '--danger'), true);
+      } else if (data.ood_rejected && data.visit_cat) {
+        // Named earlier in this visit; the latest crops are unclear (turned away).
+        show(data.visit_cat, DET_COLORS[data.visit_cat] || DET_DEFAULT_COLOR, false, true);
+        votesEl.textContent = 'unclear right now';
       } else if (data.prediction) {
         const name = data.confirmed_cat || data.prediction;
         const color = DET_COLORS[name] || DET_DEFAULT_COLOR;
@@ -1519,15 +1529,15 @@ async function stopVisit() {
 }
 
 // The name buttons under the live view: shown while an animal is in view and
-// nothing names it (no model yet, identification off, or the model is unsure),
-// and while a visit is named (the current name stays highlighted; tapping
-// another one corrects it).
-let modelNamesIt = false;           // set by pollClassifierIdentity
+// no model names it (no model yet, identification off, or the model has given
+// up on this visit), and while a visit is named (the current name stays
+// highlighted; tapping another one corrects it).
+let modelHandlesIt = false;         // set by pollClassifierIdentity
 function renderVisit() {
   const v = lastStatus && lastStatus.visit;
   const box = document.getElementById('visit-names');
   const running = lastStatus && lastStatus.pipeline && lastStatus.pipeline.running;
-  const show = !!(running && v && (v.named || (v.in_view && !modelNamesIt)));
+  const show = !!(running && v && (v.named || (v.in_view && !modelHandlesIt)));
   box.hidden = !show;
   box.querySelectorAll('.vname').forEach(b => b.setAttribute('aria-pressed', !!(v && v.named === b.dataset.cat)));
   document.getElementById('visit-stop').hidden = !(v && v.named);

@@ -393,6 +393,12 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
     consecutive_ood = 0
     visit_start: float | None = None  # detector time of the visit's first frame
     visit_cat: str | None = None      # first confirmed cat this visit (= event log row)
+    # The model has given up on naming this visit: its crops are rejected, or a
+    # full vote window passed with no winner. Only then does the dashboard ask
+    # "Who is this?" while a model is working. It sticks until the visit ends
+    # or a name is confirmed, so the question does not flicker.
+    visit_crops = 0
+    visit_unknown = False
     # Recent visits with their confirmed cat, [[visit_start, cat], ...], included in
     # every status write. detect.py uses it to name a visit's early captures; it
     # survives the departure write, so a confirmation is never missed between
@@ -405,12 +411,14 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
     last_status: dict = {"prediction": None}
 
     def end_visit(end_time: float | None) -> None:
-        nonlocal visit_start, visit_cat, consecutive_ood, last_status
+        nonlocal visit_start, visit_cat, consecutive_ood, last_status, visit_crops, visit_unknown
         vote_window.reset()
         logger.on_departure(end_time=end_time)
         visit_start = None
         visit_cat = None
         consecutive_ood = 0
+        visit_crops = 0
+        visit_unknown = False
         last_status = {"prediction": None, "confirmed_visits": list(confirmed_visits)}
         _write_status(last_status)
 
@@ -447,6 +455,7 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
         else:
             crop = item
 
+        visit_crops += 1
         tensor = _preprocess(crop)
         logits = forward.execute([tensor])[0]
 
@@ -455,6 +464,8 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
         if energy_ood_enabled and energy_threshold is not None and energy > energy_threshold:
             consecutive_ood += 1
             # Only show "Unknown" after sustained rejection, not isolated noisy frames
+            if consecutive_ood >= ood_consecutive_min and visit_cat is None:
+                visit_unknown = True
             if consecutive_ood >= ood_consecutive_min:
                 vote_counts = vote_window.get_counts()
                 _write_status({
@@ -468,11 +479,15 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
                     "ood_rejected": True,
                     "last_crop_rejected": True,
                     "visit_start": visit_start,
+                    "visit_cat": visit_cat,
+                    "unknown": visit_unknown,
                     "confirmed_visits": list(confirmed_visits),
                 })
             else:
                 _write_status({**last_status, "last_crop_rejected": True,
                                "visit_start": visit_start,
+                               "visit_cat": visit_cat,
+                               "unknown": visit_unknown,
                                "confirmed_visits": list(confirmed_visits)})
             continue
 
@@ -493,6 +508,10 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
                 print(f"[classifier] Confirmed: {confirmed_cat} ({result[1]:.1%})", flush=True)
         elif logger._active_row_id is not None:
             logger.on_vote(confidence)
+        if visit_cat is not None:
+            visit_unknown = False
+        elif visit_crops >= vote_window._window_size:
+            visit_unknown = True        # a full window and still no winner
 
         # Write live status for dashboard and for capture labeling in detect.py
         vote_counts = vote_window.get_counts()
@@ -507,6 +526,8 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
             "ood_rejected": False,
             "last_crop_rejected": False,
             "visit_start": visit_start,
+            "visit_cat": visit_cat,
+            "unknown": visit_unknown,
             "confirmed_visits": list(confirmed_visits),
         }
         _write_status(last_status)
