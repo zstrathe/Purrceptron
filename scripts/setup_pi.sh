@@ -26,15 +26,28 @@ HAILO_APPS_DIR="$PROJECT_ROOT/hailo-apps"
 # from the Raspberry Pi apt repository). Newer commits may expect a newer
 # HailoRT; override with HAILO_APPS_COMMIT=<commit> if you upgrade both.
 HAILO_APPS_COMMIT="${HAILO_APPS_COMMIT:-29acd11a8e641b2b61c3df45c95c97a775878e9f}"
-if [ ! -d "$HAILO_APPS_DIR" ]; then
-    echo "[INFO] Installing hailo-apps (commit ${HAILO_APPS_COMMIT:0:7})..."
-    git clone https://github.com/hailo-ai/hailo-apps.git "$HAILO_APPS_DIR"
-    git -C "$HAILO_APPS_DIR" checkout -q "$HAILO_APPS_COMMIT"
+# Marks a finished install, so an install that failed part way (for example
+# with no Hailo driver loaded) is run again instead of skipped.
+HAILO_APPS_DONE="$HAILO_APPS_DIR/.cat_detection_installed"
+if [ -f "$HAILO_APPS_DONE" ]; then
+    echo "[INFO] hailo-apps already installed at $HAILO_APPS_DIR"
+else
+    if [ ! -d "$HAILO_APPS_DIR" ]; then
+        echo "[INFO] Installing hailo-apps (commit ${HAILO_APPS_COMMIT:0:7})..."
+        git clone https://github.com/hailo-ai/hailo-apps.git "$HAILO_APPS_DIR"
+        git -C "$HAILO_APPS_DIR" checkout -q "$HAILO_APPS_COMMIT"
+    else
+        echo "[INFO] Running the hailo-apps installer again (no finished install recorded)..."
+    fi
+    if [ ! -e /dev/hailo0 ]; then
+        echo "[ERROR] No Hailo device (/dev/hailo0); hailo-apps' installer needs it." >&2
+        echo "        Install the driver first: sudo apt install dkms hailo-h10-all, then reboot." >&2
+        exit 1
+    fi
     cd "$HAILO_APPS_DIR"
     sudo ./install.sh
     cd "$PROJECT_ROOT"
-else
-    echo "[INFO] hailo-apps already installed at $HAILO_APPS_DIR"
+    touch "$HAILO_APPS_DONE"
 fi
 
 # ── Install project dependencies into hailo-apps venv ─────────────────
@@ -113,7 +126,7 @@ else
     echo "       sudo systemctl enable tmp.mount && sudo reboot"
 fi
 
-# Dashboard output log (when started with: ... > logs/pi_dashboard.out):
+# Dashboard output log (the cat-dashboard service, or ... > logs/pi_dashboard.out):
 # rotated at 10 MB, 5 compressed copies kept. copytruncate lets the running
 # dashboard keep writing to the same open file.
 if write_if_changed /etc/logrotate.d/cat-detection \
@@ -158,11 +171,11 @@ echo ""
 echo "[OK] Pi setup complete!"
 echo ""
 echo "To start the dashboard (includes live detection + review):"
-echo "  cd $PROJECT_ROOT"
-echo "  source hailo-apps/setup_env.sh"
+echo "  cd $PROJECT_ROOT/hailo-apps && source setup_env.sh && cd .."
 echo "  python pi_dashboard.py"
 echo ""
 echo "Use --no-camera for review-only mode without the detection pipeline."
+echo "To start it at every boot instead: bash scripts/install_service.sh"
 if [ "$NEED_REBOOT" = 1 ]; then
     echo ""
     echo "[INFO] Reboot once to apply the swap setting: sudo reboot"

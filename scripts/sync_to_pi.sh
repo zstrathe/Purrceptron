@@ -24,16 +24,23 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
 PI_TARGET="${1:-${PI_USER:?Set PI_USER in .env}@${PI_HOST:?Set PI_HOST in .env}}"
 REMOTE_DIR="${2:-${PI_REMOTE_DIR:-~/Repos/cat_detection}}"
 
+pi_ssh_target "$PI_TARGET"
+RSH=(ssh "${PI_SSH_ALIAS[@]}")
+
 echo "[INFO] Syncing project to $PI_TARGET:$REMOTE_DIR ..."
 
-rsync -avz --delete \
+# go-w: files on /mnt/c look world-writable to rsync.
+rsync -avz --delete --chmod=go-w \
     --exclude-from="$PROJECT_ROOT/.syncignore" \
+    -e "${RSH[*]}" \
     "$PROJECT_ROOT/" \
-    "$PI_TARGET:$REMOTE_DIR/"
+    "$PI_SSH_DEST:$REMOTE_DIR/"
 
 echo ""
 echo "[OK] Sync complete!"
-echo ""
-echo "On the Pi:"
-echo "  cd $REMOTE_DIR"
-echo "  pip install -r requirements-pi.txt   # first time only"
+if "${RSH[@]}" "$PI_SSH_DEST" test -f /etc/systemd/system/cat-dashboard.service 2>/dev/null; then
+    echo "The dashboard service still runs the old code. To load the new code:"
+    echo "  ssh $PI_SSH_DEST sudo systemctl restart cat-dashboard"
+else
+    echo "Restart the dashboard on the Pi to load the new code."
+fi

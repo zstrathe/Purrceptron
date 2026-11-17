@@ -16,8 +16,8 @@ Everything is driven from one web dashboard on the Pi:
   pay-per-minute cloud GPU). The trained model comes back to the Pi, which checks it
   and installs it when you click Deploy.
 
-`scripts/sync_to_pi.sh` pushes the code from your development machine to the Pi over
-SSH.
+`scripts/install_pi.sh` sets up a freshly flashed Pi from your development machine
+over SSH, and `scripts/sync_to_pi.sh` pushes code changes after that.
 
 Design points:
 
@@ -172,15 +172,16 @@ writes low:
 
 **Pi**
 
-- 64-bit Raspberry Pi OS with the AI HAT+ 2 drivers installed
-  (`sudo apt install hailo-h10-all`) as described in the Raspberry Pi documentation.
-  `scripts/setup_pi.sh` does not install the Hailo runtime; it expects it to be there.
+- 64-bit Raspberry Pi OS (trixie) with the AI HAT+ 2 drivers (`hailo-h10-all` from
+  the Raspberry Pi apt repository). `scripts/install_pi.sh` installs them;
+  `scripts/setup_pi.sh` run on its own expects them to be there.
 - [hailo-apps](https://github.com/hailo-ai/hailo-apps). `setup_pi.sh` clones it into
   `hailo-apps/` inside the project, checks out the commit this project runs on
   (29acd11, with HailoRT 5.1.1), and runs its installer. To use a newer hailo-apps
   with a newer HailoRT, set `HAILO_APPS_COMMIT` when running `setup_pi.sh`.
 - Everything runs in the single Python virtual environment that hailo-apps creates
-  (`hailo-apps/venv_hailo_apps`), activated with `source hailo-apps/setup_env.sh`.
+  (`hailo-apps/venv_hailo_apps`), activated with `cd hailo-apps && source setup_env.sh`
+  (it finds the venv relative to the folder it's sourced from).
   `setup_pi.sh` installs `requirements-pi.txt` (Flask, OpenCV, NumPy, PyTorch, PyYAML)
   and the ExecuTorch runtime the classifier uses into it. ExecuTorch is installed
   without its declared dependencies, which are only needed for exporting models;
@@ -216,23 +217,18 @@ bash scripts/setup_training.sh          # creates venv_train, reports your GPU
 cp configs/project.yaml.example configs/project.yaml
 # Edit configs/project.yaml: list the cat names under "cats:", set camera.device.
 
-ssh-keygen -t ed25519                   # skip if you already have a key
-ssh-copy-id <user>@<pi-hostname>
+# ── Flash the Pi's card ─────────────────────────────────────────────────
+# Raspberry Pi Imager: Raspberry Pi OS (64-bit). In its settings set a hostname,
+# user name, Wi-Fi and the Wi-Fi country, and turn on SSH: either paste this
+# machine's ~/.ssh/id_ed25519.pub for key login, or use a password. Boot the Pi.
 
-cat > .env << 'EOF'
-PI_USER=<user>
-PI_HOST=<pi-hostname>
-PI_REMOTE_DIR=~/Repos/cat_detection
-EOF
-
-./scripts/sync_to_pi.sh                 # rsync the project (including project.yaml) to the Pi
-
-# ── On the Pi ───────────────────────────────────────────────────────────
-ssh <user>@<pi-hostname>
-cd ~/Repos/cat_detection
-bash scripts/setup_pi.sh                # one time: hailo-apps, Python deps, data dirs
-source hailo-apps/setup_env.sh
-python pi_dashboard.py                  # open http://<pi-ip>:5003
+# ── Back on the training machine ────────────────────────────────────────
+./scripts/install_pi.sh <user>@<pi-hostname>
+# Updates the OS, installs the Hailo runtime, copies the project (including
+# project.yaml), runs setup_pi.sh, reboots when needed, starts the dashboard at
+# every boot (asks first) and checks the result. It offers to create an SSH key,
+# add it to the Pi, and save the Pi's address in .env for the other scripts.
+# Then open http://<pi-hostname>:5003
 
 # In the browser: turn on "Auto-save" under Detection Capture, or use the
 # Auto button to capture a chosen cat every few seconds. Aim for 300+ images
@@ -255,8 +251,39 @@ scripts/worker.sh                       # GPU worker in Docker on port 5004; sho
 ```
 
 `sync_to_pi.sh` pushes `configs/project.yaml` too, so edit it on the training machine.
+Restart the dashboard afterwards to load the new code (see "Starting at boot").
 Settings changed in the Pi dashboard are stored separately in `configs/runtime.yaml`
 on the Pi, which is never synced, so they survive the next push.
+
+**By hand instead of `install_pi.sh`:** on the Pi, `sudo apt install hailo-h10-all`
+and reboot. On the training machine, `ssh-copy-id <user>@<pi-hostname>`, put
+`PI_USER`, `PI_HOST` and `PI_REMOTE_DIR` in `.env`, and run
+`./scripts/sync_to_pi.sh`. Then on the Pi, in the project folder,
+`bash scripts/setup_pi.sh` (reboot once when it says so, then run it again), and
+either `bash scripts/install_service.sh` or start the dashboard yourself:
+`cd hailo-apps && source setup_env.sh && cd .. && python pi_dashboard.py`.
+
+### Starting at boot
+
+`install_pi.sh` and `restore_pi.sh` offer to install the systemd service
+`cat-dashboard` (`scripts/install_service.sh` on the Pi does the same). It runs
+`pi_dashboard.py` in the hailo-apps venv as your user, restarts it if it crashes,
+and appends its output to `logs/pi_dashboard.out`.
+
+It also makes the dashboard reachable at **http://cats.local**: the Pi announces
+a second name on the network (`web_ui.local_name`, through Avahi, like its own
+hostname) and forwards port 80 to the dashboard (an nftables rule). The usual
+`http://<hostname>.local:5003` keeps working. Some devices don't resolve
+`.local` names at all (WSL among them); use the Pi's IP address there. On the Pi:
+
+```bash
+systemctl status cat-dashboard                # running?
+tail -f logs/pi_dashboard.out                 # its output
+sudo systemctl restart cat-dashboard          # load new code after sync_to_pi.sh
+sudo systemctl stop cat-dashboard             # stop until the next boot
+bash scripts/install_service.sh --remove      # go back to starting it by hand
+systemctl status cat-dashboard-name cat-dashboard-port80   # the name and port 80
+```
 
 ## Pi dashboard
 
@@ -606,8 +633,9 @@ HF_TOKEN=hf_... python scripts/restore_backup.py --source hf --bucket you/cat-ba
 ```
 
 **Rebuilding the Pi** (a new SD card): flash 64-bit Raspberry Pi OS with Raspberry
-Pi Imager, using the old hostname and user name, SSH with public-key login (paste
-the training machine's public key) and Wi-Fi. Then, on the training machine:
+Pi Imager, using the old hostname and user name, Wi-Fi and the Wi-Fi country, and
+SSH (public-key login with the training machine's key, or a password; the script
+offers `ssh-copy-id`). Then, on the training machine:
 
 ```bash
 ./scripts/restore_pi.sh --from ~/restored     # or a manual copy with repo/, home/, snapshots/
@@ -615,10 +643,11 @@ the training machine's public key) and Wi-Fi. Then, on the training machine:
 
 It checks the Pi, updates the OS and installs the Hailo runtime, copies the code
 from this machine and the data, models, logs and Pi-only settings from the backup,
-runs `setup_pi.sh`, reboots when needed, and finally compares every restored file
-with the backup. It never deletes data on the Pi and refuses to mix a backup into
+runs `setup_pi.sh`, reboots when needed, offers to start the dashboard at boot,
+and finally compares every restored file with the backup. It never deletes data on the Pi and refuses to mix a backup into
 a Pi that already has new images. `--steps` runs only some steps (see
 `--help`). Tokens aren't in cloud backups; enter them again on the dashboard.
+A new Pi without a backup is set up with `install_pi.sh` (see Quick start).
 
 ## How training works
 
@@ -791,6 +820,7 @@ a key is omitted, it is noted.
 | `collection.auto_capture_interval_sec` | 3 | Seconds between frames in auto-capture mode. |
 | **Web UI** | | |
 | `web_ui.host` / `port` | `0.0.0.0` / 5003 | Pi dashboard bind address and port. Required. |
+| `web_ui.local_name` | `cats` | With the boot service, the Pi also answers to `<name>.local`, and port 80 goes to the dashboard: `http://cats.local`. Blank: only `http://<hostname>.local:<port>`. Run `scripts/install_service.sh` again after changing it. |
 | `web_ui.preview_width` / `height` | 960 / 540 | Preview frame size. |
 | **Deployment** | | |
 | `deployment.hailo_apps_dir` | `./hailo-apps` | hailo-apps checkout, relative to the project root. |
@@ -919,7 +949,10 @@ Purrceptron/
 │   ├── train_classifier.py         # Four-phase MobileNetV2 training and ExecuTorch INT8 export
 │   └── cross_validate.py           # Session-aware stratified k-fold
 ├── scripts/
+│   ├── install_pi.sh               # Set up a freshly flashed Pi (runs on the PC, over SSH)
 │   ├── setup_pi.sh                 # Pi setup: hailo-apps, Python deps, SD card write settings
+│   ├── install_service.sh          # Start the dashboard at boot, at http://cats.local (on the Pi)
+│   ├── publish_local_name.sh       # Announces web_ui.local_name (run by its service)
 │   ├── restore_backup.py           # Restore a backup snapshot into a new folder
 │   ├── restore_pi.sh               # Rebuild a Pi on a new card from a backup (runs on the PC)
 │   ├── setup_training.sh           # Training venv and GPU check (Linux / WSL2)
@@ -929,7 +962,8 @@ Purrceptron/
 │   ├── pull_dataset.sh             # rsync data/raw/ from the Pi (command-line path)
 │   ├── transfer_model.sh           # scp a model to the Pi (command-line path)
 │   ├── push_labels_to_pi.py        # One-time: copy labels from an old PC version to the Pi
-│   └── _common.sh                  # Shared helpers (.env loading)
+│   ├── _pi_remote.sh               # Shared steps of install_pi.sh and restore_pi.sh
+│   └── _common.sh                  # Shared helpers (.env loading, Pi address lookup)
 ├── utils/
 │   ├── config.py                   # Config loading, runtime.yaml merge, path resolution, cat colors
 │   ├── secrets.py                  # configs/secrets.yaml store for backend tokens
@@ -990,6 +1024,13 @@ one on the Annotate tab (Auto-detect all missing does them in one job).
 
 Dashboard not reachable: the dashboard binds to all interfaces. Check the Pi's
 firewall for port 5003, and use the IP address if `.local` names do not resolve.
+If it runs as a service, `systemctl status cat-dashboard` and
+`tail -50 logs/pi_dashboard.out` on the Pi show why it stopped.
+
+`Could not resolve hostname raspberrypi.local` from WSL: WSL often can't look up
+`.local` names even when Windows can. `install_pi.sh`, `restore_pi.sh` and
+`sync_to_pi.sh` look the name up once (asking Windows if needed) and use the
+address; for other commands, use the Pi's IP address.
 
 ## Known limitations
 
