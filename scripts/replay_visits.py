@@ -7,7 +7,7 @@
 """Replay a detections recording through the visit tracker and list the visits.
 
 Record on the Pi (bounding boxes only, at most 15 minutes):
-    curl -X POST http://cats.local/api/debug/record-detections -H 'Content-Type: application/json' -d '{"seconds": 600}'
+    curl -X POST http://<hostname>.local:5003/api/debug/record-detections -H 'Content-Type: application/json' -d '{"seconds": 600}'
 The file appears in logs/detection/frames_<time>.jsonl. Then, anywhere:
     python scripts/replay_visits.py logs/detection/frames_<time>.jsonl [--gap 0.5] [--hold 2.5]
 

@@ -380,7 +380,7 @@ dashboard_howto() {
     url="http://$PI_NAME:$port"
     [ "$PI_NAME" = "${TARGET#*@}" ] || url="$url  (or http://${TARGET#*@}:$port)"
     if [ "$SERVICE_ON" = 1 ] || rsh 'test -f /etc/systemd/system/cat-dashboard.service' 2>/dev/null; then
-        name=$(web_ui_setting local_name cats)
+        name=$(web_ui_setting local_name "")
         name="${name%.local}"
         rsh 'systemctl is-active --quiet cat-dashboard-port80' 2>/dev/null && [ -n "$name" ] \
             && url="http://$name.local  (or $url)"

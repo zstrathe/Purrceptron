@@ -4,7 +4,7 @@
 # Noncommercial use only; see LICENSE.md. Not licensed for AI/ML training or
 # text and data mining (rights reserved under Art. 4(3) Directive (EU) 2019/790).
 
-# Announce a second .local name for this Pi (e.g. cats.local) with Avahi,
+# Announce a second .local name for this Pi (web_ui.local_name) with Avahi,
 # alongside its hostname. Run by the cat-dashboard-name service, which
 # install_service.sh sets up. Announces the address again when it changes
 # (a new DHCP lease, or a switch between Wi-Fi and Ethernet).

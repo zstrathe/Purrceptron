@@ -7,8 +7,8 @@
 set -euo pipefail
 
 # ═══════════════════════════════════════════════════════════════
-# Start the dashboard at boot, at http://<web_ui.local_name>.local (default
-# http://cats.local) as well as http://<hostname>.local:<port>.
+# Start the dashboard at boot, at http://<hostname>.local (port 80) as well as
+# http://<hostname>.local:<port>, and at http://<web_ui.local_name>.local when set.
 # Runs on the Pi, after scripts/setup_pi.sh. Safe to run again.
 #
 # Usage: bash scripts/install_service.sh            install, enable and start
@@ -60,10 +60,10 @@ esac
     || { echo "[ERROR] hailo-apps is not installed; run scripts/setup_pi.sh first" >&2; exit 1; }
 
 # web_ui.port and web_ui.local_name from project.yaml ("-" when blank).
-read -r PORT LOCAL_NAME < <(python3 - "$PROJECT_ROOT/configs/project.yaml" <<'EOF' 2>/dev/null || echo "5003 cats"
+read -r PORT LOCAL_NAME < <(python3 - "$PROJECT_ROOT/configs/project.yaml" <<'EOF' 2>/dev/null || echo "5003 -"
 import sys, yaml
 web = (yaml.safe_load(open(sys.argv[1])) or {}).get("web_ui") or {}
-name = str(web.get("local_name", "cats") or "").strip().removesuffix(".local")
+name = str(web.get("local_name", "") or "").strip().removesuffix(".local")
 print(int(web.get("port", 5003)), name or "-")
 EOF
 )

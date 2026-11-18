@@ -282,10 +282,10 @@ either `bash scripts/install_service.sh` or start the dashboard yourself:
 `pi_dashboard.py` in the hailo-apps venv as your user, restarts it if it crashes,
 and appends its output to `logs/pi_dashboard.out`.
 
-It also makes the dashboard reachable at **http://cats.local**: the Pi announces
-a second name on the network (`web_ui.local_name`, through Avahi, like its own
-hostname) and forwards port 80 to the dashboard (an nftables rule). The usual
-`http://<hostname>.local:5003` keeps working. Some devices don't resolve
+It also forwards port 80 to the dashboard (an nftables rule), so it is reachable
+at **http://\<hostname\>.local**, and `http://<hostname>.local:5003` keeps working.
+With `web_ui.local_name` set, the Pi also announces that second name on the
+network (through Avahi, like its own hostname): `http://<local_name>.local`. Some devices don't resolve
 `.local` names at all (WSL among them); use the Pi's IP address there. On the Pi:
 
 ```bash
@@ -820,7 +820,7 @@ To test the tracker on real visits, record the detector's bounding boxes for up 
 15 minutes (no images or names are stored) and replay them on any computer:
 
 ```bash
-curl -X POST http://cats.local/api/debug/record-detections \
+curl -X POST http://<hostname>.local:5003/api/debug/record-detections \
      -H 'Content-Type: application/json' -d '{"seconds": 600}'
 # -> logs/detection/frames_<time>.jsonl on the Pi
 python scripts/replay_visits.py frames_<time>.jsonl     # lists the visits
@@ -955,7 +955,7 @@ a key is omitted, it is noted.
 | `collection.auto_capture_interval_sec` | 3 | Seconds between images while a visit is named ("Who is this?" on the Capture tab). |
 | **Web UI** | | |
 | `web_ui.host` / `port` | `0.0.0.0` / 5003 | Pi dashboard bind address and port. Required. |
-| `web_ui.local_name` | `cats` | With the boot service, the Pi also answers to `<name>.local`, and port 80 goes to the dashboard: `http://cats.local`. Blank: only `http://<hostname>.local:<port>`. Run `scripts/install_service.sh` again after changing it. |
+| `web_ui.local_name` | blank | With the boot service, the Pi also answers to `<local_name>.local`. Blank: only its hostname. Run `scripts/install_service.sh` again after changing it. |
 | `web_ui.preview_width` / `height` | 960 / 540 | Preview frame size. |
 | **Deployment** | | |
 | `deployment.hailo_apps_dir` | `./hailo-apps` | hailo-apps checkout, relative to the project root. |
@@ -1093,7 +1093,7 @@ Purrceptron/
 │   ├── install_pi.sh               # Set up a freshly flashed Pi (runs on the PC, over SSH)
 │   ├── update_pi.sh                # Push code changes to a set-up Pi and restart the dashboard
 │   ├── setup_pi.sh                 # Pi setup: hailo-apps, Python deps, SD card write settings
-│   ├── install_service.sh          # Start the dashboard at boot, at http://cats.local (on the Pi)
+│   ├── install_service.sh          # Start the dashboard at boot, on port 80 too (on the Pi)
 │   ├── publish_local_name.sh       # Announces web_ui.local_name (run by its service)
 │   ├── restore_backup.py           # Restore a backup snapshot into a new folder
 │   ├── restore_pi.sh               # Rebuild a Pi on a new card from a backup (runs on the PC)

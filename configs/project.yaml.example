@@ -21,7 +21,7 @@ collection:
 web_ui:
   host: 0.0.0.0
   port: 5003
-  local_name: cats          # with the boot service: http://cats.local (blank: hostname only)
+  local_name:               # with the boot service, also answer at http://<local_name>.local (blank: hostname only)
   preview_width: 960
   preview_height: 540
 deployment:
