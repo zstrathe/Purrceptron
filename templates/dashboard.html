@@ -314,6 +314,11 @@
   .tracked-table th { color: var(--muted); text-align: left; font-weight: 500; padding: 3px 4px; }
   .tracked-table td { padding: 3px 4px; }
   .tracked-table td.dim { color: var(--muted); }
+  /* The visits scroll in their own box (about 12 rows), headings kept in view. */
+  .tracked-scroll { max-height: 300px; overflow: auto; }
+  .tracked-scroll thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+  .tracked-scroll.more { -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+                         mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent); }
   .tracked-total { display: flex; justify-content: space-between; padding: 3px 0; font-size: 13px; }
   .visits-cats { flex-wrap: wrap; margin: 4px 0 8px; }
   .visits-cats[hidden] { display: none; }
@@ -912,7 +917,7 @@
       </div>
       <div class="cap-sub">Visits</div>
       <div class="seg seg-sm visits-cats" id="tracked-cats" role="group" aria-label="Whose visits" hidden></div>
-      <div style="overflow-x:auto">
+      <div class="tracked-scroll" id="tracked-scroll">
         <table class="tracked-table">
           <thead>
             <tr><th id="tracked-cat-th">{{ w.Animal }}</th><th>Start</th><th>End</th><th>Duration</th></tr>
@@ -1121,6 +1126,34 @@ let trackedEvents = [];
 let visitsCat = null;                     // null = All
 try { visitsCat = localStorage.getItem('visitsCat'); } catch(e) {}
 let trackedCatsKey = null;
+let trackedViewKey = null;                // day and animal shown: a change starts at the top
+function updateTrackedFade() {
+  const box = document.getElementById('tracked-scroll');
+  box.classList.toggle('more', box.scrollTop + box.clientHeight < box.scrollHeight - 2);
+}
+// Side by side (wide screens), the day card ends level with the camera card:
+// the visits box takes the height left over. Stacked, it keeps the CSS height.
+function fitTrackedList() {
+  const box = document.getElementById('tracked-scroll');
+  const card = document.getElementById('tracked-card');
+  const stage = document.querySelector('.stage-card');
+  box.style.maxHeight = '';
+  card.style.minHeight = '';
+  if (stage && card.offsetParent && stage.offsetParent
+      && Math.abs(card.getBoundingClientRect().top - stage.getBoundingClientRect().top) < 40) {
+    const s = stage.getBoundingClientRect(), c = card.getBoundingClientRect();
+    box.style.maxHeight = Math.max(120, box.clientHeight + s.bottom - c.bottom) + 'px';
+    card.style.minHeight = (s.bottom - c.top) + 'px';     // a short list: the card still ends level
+  }
+  updateTrackedFade();
+}
+window.addEventListener('resize', () => requestAnimationFrame(fitTrackedList));
+if (window.ResizeObserver) {
+  addEventListener('DOMContentLoaded', () => {
+    const stage = document.querySelector('.stage-card');
+    if (stage) new ResizeObserver(() => fitTrackedList()).observe(stage);
+  });
+}
 function chooseVisitsCat(name) {
   visitsCat = name;
   try { name === null ? localStorage.removeItem('visitsCat') : localStorage.setItem('visitsCat', name); } catch(e) {}
@@ -1174,6 +1207,11 @@ function renderTrackedVisits() {
         : '<td class="dim">' + formatTime(ev.end_time) + '</td><td class="dim">' + formatDuration(ev.duration_seconds) + '</td>');
     tbody.appendChild(tr);
   });
+  const box = document.getElementById('tracked-scroll');
+  const viewKey = trackedDate.toDateString() + '|' + shown;
+  if (viewKey !== trackedViewKey) { trackedViewKey = viewKey; box.scrollTop = 0; }
+  if (!box.dataset.fade) { box.dataset.fade = '1'; box.addEventListener('scroll', updateTrackedFade, {passive: true}); }
+  requestAnimationFrame(fitTrackedList);      // after the card is shown, so it has a height
 }
 
 async function fetchTrackedEvents() {
