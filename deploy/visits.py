@@ -268,11 +268,20 @@ class DetectionRecorder:
 
     Line format: {"t": wall time, "dets": [[label, confidence, xmin, ymin, w, h,
     track_id], ...]}; the first line is {"frame_size": [w, h]}.
+
+    With frame_every > 0, the caller also saves the camera frame every that
+    many seconds while a visit is in progress, whether or not the frame had a
+    detection, to frames_<time>/<wall time>_visit.jpg; with idle_every > 0,
+    also every that many seconds with no visit, to <wall time>_idle.jpg (see
+    frame_due and frame_path). Frames picked by the clock, not by the
+    detector, are a fair test set for comparing detectors: visit frames for
+    missed animals, idle frames for false alarms. About 0.3 MB a frame.
     """
 
     FLUSH_EVERY = 5.0
 
-    def __init__(self, folder, seconds: float, frame_size=(1920, 1080)):
+    def __init__(self, folder, seconds: float, frame_size=(1920, 1080),
+                 frame_every: float = 0.0, idle_every: float = 0.0):
         from datetime import datetime
         from pathlib import Path
         folder = Path(folder)
@@ -281,6 +290,28 @@ class DetectionRecorder:
         self._until = time.monotonic() + seconds
         self._lines: list[str] = [json.dumps({"frame_size": list(frame_size)})]
         self._last_flush = time.monotonic()
+        self.frame_every = max(0.0, float(frame_every))
+        self.idle_every = max(0.0, float(idle_every))
+        self.frames_dir = folder / self.path.stem
+        self._next_frame = {"visit": 0.0, "idle": 0.0}
+
+    def frame_due(self, visit_open: bool) -> str | None:
+        """"visit" or "idle" when a frame should be saved now (then not
+        again for that kind's interval), else None."""
+        kind = "visit" if visit_open else "idle"
+        every = self.frame_every if visit_open else self.idle_every
+        if not every:
+            return None
+        mono = time.monotonic()
+        if mono < self._next_frame[kind]:
+            return None
+        self._next_frame[kind] = mono + every
+        return kind
+
+    def frame_path(self, kind: str = "visit", now: float | None = None):
+        """Where to save the frame taken now; creates the folder."""
+        self.frames_dir.mkdir(parents=True, exist_ok=True)
+        return self.frames_dir / f"{time.time() if now is None else now:.3f}_{kind}.jpg"
 
     def add(self, detections: list[dict], now: float | None = None) -> bool:
         """Record one frame. Returns False once the time is up (file closed)."""

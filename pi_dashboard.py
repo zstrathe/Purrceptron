@@ -926,15 +926,25 @@ def create_app(
     @flask_app.route("/api/debug/record-detections", methods=["POST"])
     def api_record_detections():
         """Record each frame's bounding boxes for a while (at most 15 min) to
-        logs/detection/frames_<time>.jsonl, for scripts/replay_visits.py."""
+        logs/detection/frames_<time>.jsonl, for scripts/replay_visits.py.
+        With frame_every, also save a camera frame that often during visits;
+        with idle_every, that often when there is no visit."""
         data = request.get_json(silent=True) or {}
         try:
             secs = min(900.0, max(1.0, float(data.get("seconds", 600))))
+            # Also save the camera frame every this many seconds during visits
+            frame_every = min(60.0, max(0.0, float(data.get("frame_every", 0) or 0)))
+            # ... and every this many seconds with no visit (false-alarm tests)
+            idle_every = min(600.0, max(0.0, float(data.get("idle_every", 0) or 0)))
         except (TypeError, ValueError):
-            return jsonify({"status": "error", "message": "seconds must be a number"}), 400
-        if not pipeline_mgr.send_command({"cmd": "record_detections", "seconds": secs}):
+            return jsonify({"status": "error",
+                            "message": "seconds, frame_every and idle_every must be numbers"}), 400
+        if not pipeline_mgr.send_command({"cmd": "record_detections", "seconds": secs,
+                                          "frame_every": frame_every,
+                                          "idle_every": idle_every}):
             return jsonify({"status": "error", "message": "Detection is not running"}), 503
-        return jsonify({"status": "ok", "seconds": secs})
+        return jsonify({"status": "ok", "seconds": secs, "frame_every": frame_every,
+                        "idle_every": idle_every})
 
     # ── Classifier ─────────────────────────────────────────────────
     @flask_app.route("/api/classifier/current")

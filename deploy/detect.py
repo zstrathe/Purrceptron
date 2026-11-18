@@ -601,7 +601,9 @@ if HAILO_AVAILABLE:
                         user_data.recorder.close()
                     user_data.recorder = DetectionRecorder(
                         PROJECT_ROOT / "logs" / "detection", secs,
-                        frame_size=(user_data.frame_w, user_data.frame_h))
+                        frame_size=(user_data.frame_w, user_data.frame_h),
+                        frame_every=float(cmd.get("frame_every", 0) or 0),
+                        idle_every=float(cmd.get("idle_every", 0) or 0))
                     print(f"[visits] Recording detections for {secs:.0f} s to "
                           f"{user_data.recorder.path}", flush=True)
 
@@ -663,9 +665,19 @@ if HAILO_AVAILABLE:
                         break
 
         # Extract frame AT MOST ONCE, shared between preview, capture, and classify
+        record_frame_kind = (user_data.recorder.frame_due(bool(visits))
+                             if user_data.recorder else None)
+        needs_record_frame = record_frame_kind is not None
+
         frame = None
-        if needs_preview or needs_capture or needs_classify:
+        if needs_preview or needs_capture or needs_classify or needs_record_frame:
             frame = FrameExtractor.extract_frame(buffer, element)
+
+        # A frame for the detection recording, picked by the clock (before the
+        # preview writer draws on it)
+        if frame is not None and needs_record_frame:
+            cv2.imwrite(str(user_data.recorder.frame_path(record_frame_kind)), frame,
+                        [cv2.IMWRITE_JPEG_QUALITY, 95])
 
         # Write preview frame with bounding boxes (async — non-blocking)
         if frame is not None and needs_preview:

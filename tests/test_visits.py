@@ -219,6 +219,29 @@ def test_recording_round_trip(tmp_path):
     assert frames[0][1][0]["bbox_norm"] == (0.4, 0.4, 0.2, 0.2)
 
 
+def test_recording_frames_by_the_clock(tmp_path, monkeypatch):
+    from deploy import visits as visits_mod
+    clock = [500.0]
+    monkeypatch.setattr(visits_mod.time, "monotonic", lambda: clock[0])
+    off = visits_mod.DetectionRecorder(tmp_path, 60)
+    assert off.frame_due(True) is None and off.frame_due(False) is None  # off by default
+    rec = visits_mod.DetectionRecorder(tmp_path, 60, frame_every=1.0)
+    assert rec.frame_due(False) is None                  # no idle frames unless asked
+    assert rec.frame_due(True) == "visit"
+    clock[0] += 0.5
+    assert rec.frame_due(True) is None                   # not again within 1 s
+    clock[0] += 0.6
+    assert rec.frame_due(True) == "visit"
+    p = rec.frame_path("visit", now=1234.5)
+    assert p.parent.is_dir() and p.parent.name == rec.path.stem and p.name == "1234.500_visit.jpg"
+    both = visits_mod.DetectionRecorder(tmp_path, 60, frame_every=1.0, idle_every=30.0)
+    assert both.frame_due(False) == "idle" and both.frame_due(True) == "visit"
+    clock[0] += 10
+    assert both.frame_due(False) is None                 # idle interval is its own
+    clock[0] += 21
+    assert both.frame_due(False) == "idle"
+
+
 def test_replay_script(tmp_path):
     import subprocess, sys as _sys
     from deploy.visits import DetectionRecorder
