@@ -1042,6 +1042,17 @@ def _switch_classifier(user_data, restart: bool) -> None:
     threading.Thread(target=work, daemon=True, name="classifier-switch").start()
 
 
+def _disable_video_window() -> None:
+    """Make hailo-apps' detection pipeline end in a fakesink instead of its
+    display branch (overlay, videoconvert and a video window). Must run
+    before GStreamerDetectionApp is created, which builds the pipeline."""
+    import hailo_apps.python.pipeline_apps.detection.detection_pipeline as det_pipeline
+    # Not named hailo_display: hailo-apps hooks an FPS signal onto that name.
+    det_pipeline.DISPLAY_PIPELINE = (
+        lambda *args, **kwargs: "fakesink name=no_display sync=false async=false")
+    print_info("No screen: video window off")
+
+
 def main():
     if not HAILO_AVAILABLE:
         print_error("Hailo libraries not available.")
@@ -1172,6 +1183,13 @@ def main():
     user_data.reload_config = lambda: get_config_with_args(args)
     if classifier_cfg.get("enabled", False):
         _start_classifier(user_data, cfg, multiprocessing.get_context("fork"))
+
+    # Without a screen (the systemd service has none), hailo-apps' video window
+    # was still drawn, with OpenGL on the CPU: a whole core for a picture nobody
+    # sees, and it held the callback (and so the visits) to about 8 frames a
+    # second. Send the frames to a sink that drops them instead.
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        _disable_video_window()
 
     # Create the detection app (Hailo parses sys.argv for --hef-path, --input, etc.)
     app = GStreamerDetectionApp(app_callback, user_data)
