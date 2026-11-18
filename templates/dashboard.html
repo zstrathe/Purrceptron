@@ -50,10 +50,12 @@
   .status-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
   .status-row .spacer { flex: 1; }
   .schip {
-    display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border-radius: 999px;
+    display: inline-flex; align-items: center; gap: 8px; min-height: 32px; padding: 6px 12px; border-radius: 16px;
     background: var(--surface); border: 1px solid var(--border); color: var(--muted);
-    font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap;
+    font: inherit; font-size: 13px; line-height: 1.35; cursor: pointer; max-width: 100%; box-sizing: border-box;
+    text-align: left; flex-shrink: 0;
   }
+  /* A chip too long for the screen wraps onto a second line instead of running off it. */
   .schip:hover { border-color: var(--border-strong); color: var(--text); }
   .schip .stext b { color: var(--text); font-weight: 600; }
   .sdot { width: 9px; height: 9px; flex-shrink: 0; border-radius: 50%; border: 2px solid var(--faint); box-sizing: border-box; }
@@ -313,6 +315,9 @@
   .tracked-table td { padding: 3px 4px; }
   .tracked-table td.dim { color: var(--muted); }
   .tracked-total { display: flex; justify-content: space-between; padding: 3px 0; font-size: 13px; }
+  .visits-cats { flex-wrap: wrap; margin: 4px 0 8px; }
+  .visits-cats[hidden] { display: none; }
+  .visits-cats .vdot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
 
   /* ── Training tab ── */
   body[data-tab="training"] .sidebar, body[data-tab="backup"] .sidebar { display: none; }
@@ -906,10 +911,11 @@
         <div id="tracked-totals"></div>
       </div>
       <div class="cap-sub">Visits</div>
+      <div class="seg seg-sm visits-cats" id="tracked-cats" role="group" aria-label="Whose visits" hidden></div>
       <div style="overflow-x:auto">
         <table class="tracked-table">
           <thead>
-            <tr><th>{{ w.Animal }}</th><th>Start</th><th>End</th><th>Duration</th></tr>
+            <tr><th id="tracked-cat-th">{{ w.Animal }}</th><th>Start</th><th>End</th><th>Duration</th></tr>
           </thead>
           <tbody id="tracked-tbody"></tbody>
         </table>
@@ -1110,6 +1116,66 @@ function formatDuration(sec) {
   return m > 0 ? m + 'm ' + s + 's' : s + 's';
 }
 
+// Visits for one animal at a time, or All. The choice is remembered in the browser.
+let trackedEvents = [];
+let visitsCat = null;                     // null = All
+try { visitsCat = localStorage.getItem('visitsCat'); } catch(e) {}
+let trackedCatsKey = null;
+function chooseVisitsCat(name) {
+  visitsCat = name;
+  try { name === null ? localStorage.removeItem('visitsCat') : localStorage.setItem('visitsCat', name); } catch(e) {}
+  renderTrackedVisits();
+}
+function renderTrackedVisits() {
+  const events = trackedEvents;
+  const counts = {};
+  for (const ev of events) counts[ev.cat_name] = (counts[ev.cat_name] || 0) + 1;
+  // Configured animals first, in config order, then any other names.
+  const names = CATS.filter(c => counts[c]).concat(Object.keys(counts).filter(c => !CATS.includes(c)).sort());
+  // A saved animal with no visits this day shows All, and stays saved for other days.
+  const shown = (visitsCat !== null && counts[visitsCat]) ? visitsCat : null;
+
+  const seg = document.getElementById('tracked-cats');
+  seg.hidden = events.length === 0;
+  const key = JSON.stringify([names.map(n => [n, counts[n]]), shown]);
+  if (key !== trackedCatsKey) {           // rebuild only when something changed
+    trackedCatsKey = key;
+    seg.innerHTML = '';
+    const add = (label, value, color) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = value === shown ? 'on' : '';
+      b.setAttribute('aria-pressed', value === shown ? 'true' : 'false');
+      b.innerHTML = (color ? `<span class="vdot" style="background:${color}"></span>` : '') +
+        trEsc(label) + `<span class="n">${value === null ? events.length : counts[value]}</span>`;
+      b.onclick = () => chooseVisitsCat(value);
+      seg.appendChild(b);
+    };
+    add('All', null, null);
+    for (const n of names) add(n, n, DET_COLORS[n] || DET_DEFAULT_COLOR);
+  }
+
+  const rows = shown === null ? events : events.filter(ev => ev.cat_name === shown);
+  document.getElementById('tracked-cat-th').hidden = shown !== null;
+  const tbody = document.getElementById('tracked-tbody');
+  const empty = document.getElementById('tracked-empty');
+  tbody.innerHTML = '';
+  empty.textContent = 'No visits';
+  empty.style.display = rows.length ? 'none' : 'block';
+  rows.forEach((ev, i) => {
+    const tr = document.createElement('tr');
+    if (i % 2 === 1) tr.style.background = 'rgba(255,255,255,0.03)';
+    const color = DET_COLORS[ev.cat_name] || DET_DEFAULT_COLOR;
+    tr.innerHTML =
+      (shown === null ? '<td style="padding:2px 4px;color:' + color + ';font-weight:700">' + trEsc(ev.cat_name) + '</td>' : '') +
+      '<td class="dim">' + formatTime(ev.start_time) + '</td>' +
+      (ev.in_progress
+        ? '<td class="dim">-</td><td class="dim">-</td>'
+        : '<td class="dim">' + formatTime(ev.end_time) + '</td><td class="dim">' + formatDuration(ev.duration_seconds) + '</td>');
+    tbody.appendChild(tr);
+  });
+}
+
 async function fetchTrackedEvents() {
   const card = document.getElementById('tracked-card');
   const totalsCard = document.getElementById('tracked-totals-card');
@@ -1126,28 +1192,8 @@ async function fetchTrackedEvents() {
     if (!r.ok) { card.style.display = 'none'; totalsCard.style.display = 'none'; return; }
     const data = await r.json();
     const events = data.events || [];
-
-    const tbody = document.getElementById('tracked-tbody');
-    const empty = document.getElementById('tracked-empty');
-    tbody.innerHTML = '';
-    if (events.length === 0) {
-      empty.style.display = 'block';
-    } else {
-      empty.style.display = 'none';
-      for (let i = 0; i < events.length; i++) {
-        const ev = events[i];
-        const tr = document.createElement('tr');
-        if (i % 2 === 1) tr.style.background = 'rgba(255,255,255,0.03)';
-        const color = DET_COLORS[ev.cat_name] || DET_DEFAULT_COLOR;
-        tr.innerHTML =
-          '<td style="padding:2px 4px;color:' + color + ';font-weight:700">' + ev.cat_name + '</td>' +
-          '<td class="dim">' + formatTime(ev.start_time) + '</td>' +
-          (ev.in_progress
-            ? '<td class="dim">-</td><td class="dim">-</td>'
-            : '<td class="dim">' + formatTime(ev.end_time) + '</td><td class="dim">' + formatDuration(ev.duration_seconds) + '</td>');
-        tbody.appendChild(tr);
-      }
-    }
+    trackedEvents = events;
+    renderTrackedVisits();
     card.style.display = 'block';
 
     // Compute per-cat totals
