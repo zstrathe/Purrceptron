@@ -252,7 +252,7 @@ scripts/worker.sh                       # GPU worker in Docker on port 5004; sho
 # Training tab: choose Local PC, enter the PC's address, the port (5004, or
 # 5005 through the WSL port forward) and the token, press Test connection,
 # then Save. Press Start training and wait for it to finish; then press
-# "Deploy newest model" at the top of the tab. Turn on "Identify cats" on the
+# "Use this model". Turn on "Identify cats" on the
 # Capture tab: the banner under the live view shows who is there.
 ```
 
@@ -416,15 +416,26 @@ Thumbnails are generated once and cached under `data/raw/.thumbnails/`.
 
 ### Training tab
 
-Starts with the **Identification Model** card: the deployed model and its
-accuracy per cat, and **Deploy newest model** when a newer trained model is waiting,
-with a side-by-side comparison. Older trained models are listed under it, and
-"Switch back to the previous model" swaps the deployed model with the one before.
-Next to it, **Train a New Model** shows the images per cat, Start training, and (folded)
-cross-validation. Below: the newest job's progress and log, where training runs
-(folded once set up), the training settings, each job's loss and accuracy curves
-(optionally against an earlier job), and the job history. See
-[Training from the Pi](#training-from-the-pi).
+Two cards answer the main questions, and everything else is folded below them.
+
+- **Model in use:** when it was trained, how accurate it is (on visits it never saw
+  while training), overall and per cat. When a newer trained model is ready, it is
+  offered with **Use this model** and a per-cat comparison. "Go back to the model used
+  before" undoes the last switch. Other trained models are listed under it.
+- **Train a new model:** how many labeled images were added since the model in use was
+  trained (none means a new model would come out about the same), the images per cat,
+  where training runs and how long it took last time, and **Start training**. While a
+  job runs, the same card shows its steps in plain words (preparing images, sending,
+  waiting for the trainer, training, fetching the model, checking it on the Pi) and
+  how far training is ("Phase 2 of 3 (fine-tuning), epoch 12 of 40"), with Cancel and
+  the log. When it finishes, the result and **Use this model** appear there.
+- **Folded below:** where training runs (opened by "Set up where training runs" the
+  first time), "Check how reliable training is" (trains several models, each checked
+  on different visits, and shows the spread), training settings, training curves
+  (accuracy on unseen visits, per cat, and loss; optionally against another training),
+  and the history (the last five jobs; Show all for the rest).
+
+See [Training from the Pi](#training-from-the-pi).
 
 ### Backup tab
 
@@ -462,18 +473,18 @@ flowchart LR
 3. **Check (on the Pi).** The returned model must load with the Pi's ExecuTorch
    runtime, embed the configured cat names and an energy threshold, and produce
    one output per cat. A model that fails is never offered for deployment.
-4. **Deploy.** The Identification Model card compares the newest model's
-   validation accuracy, overall and per cat, with the deployed one, and Deploy newest
-   model installs it. The current model is kept as `models/cat_classifier.prev.pte`;
-   "Switch back to the previous model" swaps the two (pressing it again swaps back).
+4. **Use it.** The finished job, and the Model in use card, compare the new model's
+   accuracy on unseen visits, overall and per cat, with the one in use, and "Use this
+   model" installs it. The current model is kept as `models/cat_classifier.prev.pte`;
+   "Go back to the model used before" swaps the two (pressing it again swaps back).
    The new model loads within seconds; the camera keeps running.
    Models are ExecuTorch `.pte` files; an older TorchScript `cat_classifier.pt` is
    not used, so after the switch there is nothing to roll back to until a second
    `.pte` has been deployed.
 
 The same path runs two other kinds of job: **cross-validation** (the Training tab's
-"Run cross-validation"; it sends the crops unsplit, trains one model per fold with
-`train/cross_validate.py`, and shows the per-fold table) and **auto-detect** (the
+"Check how reliable training is"; it sends the crops unsplit, trains one model per
+fold with `train/cross_validate.py`, and shows the per-model table and the spread) and **auto-detect** (the
 Label tab's "Auto-detect missing bounding boxes"; it sends the images that have no
 bounding box and writes the results into their sidecars).
 
@@ -1140,8 +1151,8 @@ images, and lighting very different from the training data raises energy scores.
 Add images from those conditions and retrain, raise
 `classifier.energy_ood_threshold`, or set `energy_ood_enabled: false`.
 
-Wrong cat identified: check per-cat accuracy in the Training tab's Result card and
-curves, and run cross-validation. Collect more images of the weak cat in varied lighting and retrain,
+Wrong cat identified: check per-cat accuracy in the Training tab's Model in use card
+and curves, and run "Check how reliable training is". Collect more images of the weak cat in varied lighting and retrain,
 lengthening phase 2 first.
 
 Images "without bounding box" on the Training tab: they cannot be cropped. Give them

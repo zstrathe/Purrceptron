@@ -399,6 +399,30 @@
   .tr-cv-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
   .tr-cv-row label { font-size: 13px; color: var(--muted); }
   .tr-cv-row input { width: 64px; }
+  .tr-percat { font-size: 13px; color: var(--muted); margin: -2px 0 12px; }
+  .tr-callout { border: 1px solid color-mix(in srgb, var(--success) 45%, transparent); background: var(--success-soft);
+    border-radius: var(--radius); padding: 10px 12px; margin: 4px 0 10px; }
+  .tr-callout-head { font-size: 13.5px; margin-bottom: 8px; }
+  .tr-callout .up, .tr-percat .up { color: var(--success); }
+  .tr-callout .down { color: var(--danger); }
+  .tr-callout details.tr-subfold { margin-top: 8px; padding-top: 8px; }
+  .tr-undo { font-size: 12.5px; margin: 4px 0 2px; }
+  .tr-undo a { color: var(--muted); }
+  .tr-undo a:hover { color: var(--text); }
+  .tr-undo a.disabled { pointer-events: none; opacity: .5; }
+  .tr-new { font-size: 13.5px; margin-bottom: 10px; }
+  .tr-new:empty { display: none; }
+  .tr-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .tr-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; }
+  .tr-chip b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tr-chip .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .tr-chip.low { border-color: var(--warn); }
+  .tr-warn { font-size: 12.5px; color: var(--warn); margin-bottom: 10px; }
+  .tr-warn:empty { display: none; }
+  .tr-arrow { color: var(--faint); align-self: center; }
+  .tr-bad { color: var(--danger); }
+  .tr-more { text-align: left !important; font-size: 12.5px; }
 
   @media (max-width: 1100px) {
     body { overflow: auto; height: auto; }
@@ -601,65 +625,58 @@
     </div>
 
     <!-- ════ TRAINING TAB ════ -->
+    <!-- In order: the model in use (and a better one, if any), training a new
+         one (start, progress, result), then the details, folded. -->
     <div class="tab-content" id="tab-training">
       <div class="tr-grid">
 
-        <!-- Model: what's deployed, and deploying a newer one -->
         <div class="card" id="tr-model-card">
-          <h3>Identification Model</h3>
+          <h3>Model in use</h3>
           <div id="tr-model"><div class="hint">Loading...</div></div>
           <div class="tr-result" id="tr-deploy-result"></div>
         </div>
 
-        <!-- Run: data check, start -->
+        <!-- Train: whether it's worth it, start; then progress and the result -->
         <div class="card" id="tr-run">
-          <h3>Train a New Model</h3>
-          <div class="tr-desc" id="tr-backend-line"></div>
-          <div id="tr-image-counts"></div>
-          <div class="hint" id="tr-image-hint" style="margin-bottom:10px"></div>
-          <div class="actionrow">
-            <button class="btn btn-sm btn-primary" id="tr-start-btn" onclick="startJob('train')">Start training</button>
-            <button class="btn btn-sm btn-danger" id="tr-cancel-btn" onclick="cancelTraining()" hidden>Cancel job</button>
-            <a id="tr-job-link" href="#" target="_blank" rel="noopener" hidden>Open job page</a>
+          <h3 id="tr-run-title">Train a new model</h3>
+          <div id="tr-idle">
+            <div class="tr-new" id="tr-new-images"></div>
+            <div class="tr-chips" id="tr-image-counts"></div>
+            <div class="tr-warn" id="tr-image-hint"></div>
+            <div class="tr-desc" id="tr-backend-line"></div>
+            <div class="actionrow">
+              <button class="btn btn-primary" id="tr-start-btn" onclick="startJob('train')">Start training</button>
+              <button class="btn btn-primary" id="tr-setup-btn" hidden onclick="openBackendSetup()">Set up where training runs</button>
+            </div>
+          </div>
+          <div id="tr-job" hidden>
+            <div class="tr-steps" id="tr-steps"></div>
+            <div class="tr-summary" id="tr-stage-msg"></div>
+            <div id="tr-job-result"></div>
+            <div class="actionrow">
+              <button class="btn btn-sm btn-danger" id="tr-cancel-btn" hidden onclick="cancelTraining()">Cancel</button>
+              <a id="tr-job-link" href="#" target="_blank" rel="noopener" hidden>Open job page</a>
+            </div>
+            <details class="tr-subfold" id="tr-log-fold">
+              <summary>Log</summary>
+              <div class="tr-log" id="tr-log"></div>
+            </details>
           </div>
           <div class="tr-result" id="tr-run-result"></div>
-          <details class="tr-subfold" id="tr-cv-fold">
-            <summary>Check how reliable training is (cross-validation)</summary>
-            <div class="hint" style="margin:6px 0 8px">Trains one model per fold, each validated on different capture
-              sessions, and reports how much accuracy varies. Takes about that many times as long as training and
-              produces no model to deploy.</div>
-            <div class="tr-cv-row">
-              <label for="tr-cv-folds">Folds</label>
-              <input type="number" id="tr-cv-folds" min="2" max="10" step="1" value="5">
-              <button class="btn btn-sm" id="tr-cv-btn" onclick="startJob('crossval')">Run cross-validation</button>
-            </div>
-          </details>
         </div>
 
-        <!-- Progress of the newest job -->
-        <div class="card tr-wide" id="tr-progress" hidden>
-          <h3 id="tr-progress-title">Current Job</h3>
-          <div class="tr-steps" id="tr-steps"></div>
-          <div id="tr-stage-msg" class="tr-summary"></div>
-          <div id="tr-job-result"></div>
-          <details class="tr-subfold" id="tr-log-fold">
-            <summary>Log</summary>
-            <div class="tr-log" id="tr-log"></div>
-          </details>
-        </div>
-
-        <!-- Where training runs (folded once set up) -->
+        <!-- Details, folded -->
         <div class="card tr-wide" id="tr-setup">
           <details class="tr-fold" id="tr-backend-fold">
-            <summary><h3>Where Training Runs</h3><span class="tr-fold-note" id="tr-backend-note"></span></summary>
+            <summary><h3>Where training runs</h3><span class="tr-fold-note" id="tr-backend-note"></span></summary>
             <div class="inference-row">
-              <label for="tr-backend">Train on:</label>
+              <label for="tr-backend">Train on</label>
               <select id="tr-backend" onchange="renderBackendForm(); trMarkDirty('tr')"></select>
             </div>
             <div class="tr-desc" id="tr-backend-desc"></div>
             <div id="tr-fields"></div>
             <div class="inference-row">
-              <label for="tr-min-images">Images needed per {{ w.animal }}:</label>
+              <label for="tr-min-images">Images needed per {{ w.animal }}</label>
               <input type="number" id="tr-min-images" min="1" step="1">
             </div>
             <div class="tr-help">Each {{ w.animal }} needs at least this many labeled images with a bounding box before training can start.</div>
@@ -669,45 +686,57 @@
               <span class="tr-dirty" id="tr-dirty" hidden>Not saved yet</span>
             </div>
             <div class="tr-result" id="tr-test-result"></div>
-            <div class="hint" style="margin-top:10px">On the Pi: torch <span class="mono" id="tr-pi-torch">--</span>,
-              ExecuTorch <span class="mono" id="tr-pi-executorch">--</span> (trained models are exported for this version).</div>
+            <div class="tr-result err" id="tr-pi-versions" hidden></div>
           </details>
         </div>
 
-        <!-- Training settings -->
+        <div class="card tr-wide">
+          <details class="tr-fold" id="tr-cv-fold">
+            <summary><h3>Check how reliable training is</h3><span class="tr-fold-note" id="tr-cv-note">Optional</span></summary>
+            <div class="hint" style="margin:0 0 10px">Trains several models, each checked on a different set of
+              visits, and shows how much the accuracy varies between them. Takes that many times as long as
+              training, and gives no model to use.</div>
+            <div class="tr-cv-row">
+              <label for="tr-cv-folds">Models</label>
+              <input type="number" id="tr-cv-folds" min="2" max="10" step="1" value="5">
+              <button class="btn btn-sm" id="tr-cv-btn" onclick="startJob('crossval')">Run the check</button>
+            </div>
+          </details>
+        </div>
+
         <div class="card tr-wide">
           <details class="tr-fold" id="tr-settings-fold">
-            <summary><h3>Training Settings</h3><span class="tr-fold-note">For fine-tuning; the defaults work well</span></summary>
+            <summary><h3>Training settings</h3><span class="tr-fold-note">For fine-tuning; the defaults work well</span></summary>
             <div class="tr-settings" id="tr-settings"></div>
             <div class="actionrow" style="margin-top:8px">
               <button class="btn btn-sm btn-primary" onclick="saveTrainingSettings()">Save settings</button>
-              <span class="hint">Used by the next job.</span>
+              <span class="hint">Used by the next training.</span>
             </div>
             <div class="tr-result" id="tr-settings-result"></div>
           </details>
         </div>
 
-        <!-- Training curves -->
         <div class="card tr-wide" id="tr-curves-card" hidden>
-          <h3>Training Curves</h3>
-          <div class="tr-chart-bar">
-            <label for="tr-curves-job">Job</label>
-            <select id="tr-curves-job" onchange="loadCurves()"></select>
-            <label for="tr-curves-cmp">Compare with</label>
-            <select id="tr-curves-cmp" onchange="loadCurves()"></select>
-            <div class="seg seg-sm" id="tr-curves-phase" role="group" aria-label="Training phase"></div>
-            <span class="hint" id="tr-curves-best"></span>
-          </div>
-          <div class="tr-charts">
-            <div class="tr-chart"><h4>Loss</h4><div class="tr-chart-wrap"><canvas id="tr-chart-loss"></canvas></div></div>
-            <div class="tr-chart"><h4>Accuracy</h4><div class="tr-chart-wrap"><canvas id="tr-chart-acc"></canvas></div></div>
-            <div class="tr-chart"><h4>Validation accuracy per {{ w.animal }}</h4><div class="tr-chart-wrap"><canvas id="tr-chart-cls"></canvas></div></div>
-          </div>
+          <details class="tr-fold" id="tr-curves-fold">
+            <summary><h3>Training curves</h3><span class="tr-fold-note">How accuracy developed while training</span></summary>
+            <div class="tr-chart-bar">
+              <label for="tr-curves-job">Training</label>
+              <select id="tr-curves-job" onchange="loadCurves()"></select>
+              <label for="tr-curves-cmp">Compare with</label>
+              <select id="tr-curves-cmp" onchange="loadCurves()"></select>
+              <div class="seg seg-sm" id="tr-curves-phase" role="group" aria-label="Training phase"></div>
+            </div>
+            <div class="hint" id="tr-curves-best" style="margin-bottom:10px"></div>
+            <div class="tr-charts">
+              <div class="tr-chart"><h4 title="Measured on images from visits the model never saw while training">Accuracy (on unseen visits)</h4><div class="tr-chart-wrap"><canvas id="tr-chart-acc"></canvas></div></div>
+              <div class="tr-chart"><h4>Accuracy per {{ w.animal }}</h4><div class="tr-chart-wrap"><canvas id="tr-chart-cls"></canvas></div></div>
+              <div class="tr-chart"><h4 title="Lower is better. Training loss is measured on augmented (blended and distorted) images, so it stays higher.">Loss</h4><div class="tr-chart-wrap"><canvas id="tr-chart-loss"></canvas></div></div>
+            </div>
+          </details>
         </div>
 
-        <!-- History -->
         <div class="card tr-wide">
-          <h3>Job History</h3>
+          <h3>History</h3>
           <table class="tr-metrics tr-jobs" id="tr-jobs"></table>
           <div id="tr-job-detail"></div>
         </div>
@@ -1844,7 +1873,28 @@ function trPost(url, body) {
                       body: JSON.stringify(body || {})});
 }
 
-const JOB_KINDS = {train: 'Training', crossval: 'Cross-validation', detect: 'Auto-detect'};
+const JOB_KINDS = {train: 'Training', crossval: 'Reliability check', detect: 'Auto-detect'};
+// The job's stages in plain words, per kind of job.
+const STAGE_WORDS = {
+  train: {packaging: 'Preparing images', uploading: 'Sending', queued: 'Waiting for the trainer',
+          training: 'Training', downloading: 'Fetching the model', validating: 'Checking it on the Pi'},
+  crossval: {packaging: 'Preparing images', uploading: 'Sending', queued: 'Waiting for the trainer',
+             training: 'Training the models', downloading: 'Fetching the results'},
+  detect: {packaging: 'Preparing images', uploading: 'Sending', queued: 'Waiting for the trainer',
+           training: `Finding ${W.animals}`, downloading: 'Fetching the results', applying: 'Saving bounding boxes'},
+};
+const PHASE_WORDS = {1: 'getting started', 2: 'fine-tuning', 3: 'preparing it for the Pi'};
+function trMinutes(sec) {
+  if (sec == null || isNaN(sec)) return '';
+  const m = Math.round(sec / 60);
+  return m < 1 ? 'under a minute' : m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+function trSince(iso) {
+  const t = Date.parse(iso);
+  return isNaN(t) ? null : (Date.now() - t) / 1000;
+}
+
+trEl('tr-curves-fold').addEventListener('toggle', e => { if (e.target.open) loadCurves(); });
 
 async function loadTrainingTab() {
   await loadTrainingConfig();
@@ -1883,8 +1933,12 @@ function trClearDirty(which) {
 async function loadTrainingConfig() {
   const cfg = await trJson('/api/training/config');
   trainCfg = cfg;
-  trEl('tr-pi-torch').textContent = cfg.pi_torch_version || 'not installed';
-  trEl('tr-pi-executorch').textContent = cfg.pi_executorch_version || 'not installed (needed to run trained models)';
+  // Only worth showing when something is missing.
+  const pv = trEl('tr-pi-versions');
+  pv.hidden = !!cfg.pi_executorch_version;
+  pv.textContent = cfg.pi_executorch_version ? '' :
+    'ExecuTorch is not installed on the Pi, so a trained model could not be checked or used. ' +
+    'See Software requirements in the README.';
   renderBackendLine();
   if (formDirty.tr) return;        // keep the user's unsaved edits
   const sel = trEl('tr-backend');
@@ -1917,11 +1971,13 @@ function renderBackendLine() {
   let where = '';
   if (b && b.name === 'local_pc') where = ` (${trEsc(b.values.host || '?')}:${trEsc(b.values.port || '5004')})`;
   else if (b && b.name === 'hf_jobs') where = ` (${trEsc(b.values.flavor || '')})`;
-  const change = `<a href="#" onclick="openBackendSetup();return false">${missing.length ? 'Set it up' : 'Change'}</a>`;
+  const last = trainStatus && trainStatus.last_duration ? ` About ${trMinutes(trainStatus.last_duration)} last time.` : '';
   trEl('tr-backend-line').innerHTML = missing.length
-    ? `<span style="color:var(--warn)">Choose where training runs first.</span> ${change}`
-    : `Trains on <b>${trEsc(b.label)}</b>${where}. ${change}`;
+    ? `Before the first training, choose where it runs: a PC with a graphics card, or Hugging Face.`
+    : `Runs on <b>${trEsc(b.label)}</b>${where}. <a href="#" onclick="openBackendSetup();return false">Change</a>.${last}`;
   trEl('tr-backend-note').textContent = missing.length ? 'Not set up yet' : `${b.label}${where.replace(/&#39;|&quot;/g, '')}`;
+  trEl('tr-start-btn').hidden = !!missing.length;
+  trEl('tr-setup-btn').hidden = !missing.length;
 }
 
 function openBackendSetup() {
@@ -1950,8 +2006,9 @@ function renderBackendForm() {
       input = `<input type="${f.type === 'number' ? 'number' : 'text'}" id="${id}" ` +
               `value="${trEsc(val)}" placeholder="${trEsc(f.placeholder)}">`;
     }
-    return `<div class="inference-row"><label for="${id}">${trEsc(f.label)}${f.required ? ' *' : ''}:</label>${input}</div>` +
-           (f.help ? `<div class="tr-help">${trEsc(f.help)}</div>` : '');
+    const help = (f.required ? 'Required. ' : '') + (f.help || '');
+    return `<div class="inference-row"><label for="${id}">${trEsc(f.label)}</label>${input}</div>` +
+           (help ? `<div class="tr-help">${trEsc(help)}</div>` : '');
   }).join('');
   trShow('tr-test-result');
 }
@@ -1984,40 +2041,65 @@ async function testTrainingConnection() {
   } finally { btn.disabled = false; }
 }
 
-// ── Run card ──
+// ── Train card: idle ──
+let trImages = null;          // /api/training/images
 async function loadTrainingImages() {
-  const data = await trJson('/api/training/images');
+  trImages = await trJson('/api/training/images');
+  renderIdle();
+}
+
+function renderIdle() {
+  const data = trImages;
+  if (!data || !data.counts) return;
   const min = data.min_images_per_cat;
-  const colors = {{ cat_colors|tojson }};
-  let short = 0;
+  const st = trainStatus || {};
+  const nw = st.new_images;
+  const fmt = n => n.toLocaleString();
+  // Whether training is worth it: what's new since the model in use was trained.
+  let newHtml = '';
+  if (nw) {
+    const total = Object.values(nw).reduce((a, b) => a + b, 0);
+    const per = Object.entries(nw).filter(([, n]) => n > 0)
+      .map(([c, n]) => `<span style="color:${TR_CAT_COLORS[c] || 'inherit'}">${trEsc(c)}</span> +${fmt(n)}`).join(', ');
+    newHtml = total
+      ? `Since the model in use was trained: <b>+${fmt(total)} labeled image${total === 1 ? '' : 's'}</b> (${per}).`
+      : `No new labeled images since the model in use was trained, so a new one would come out about the same.`;
+  } else if (!(st.deployed && st.deployed.exists)) {
+    newHtml = `Labeled images per ${W.animal}, with a bounding box:`;
+  }
+  trEl('tr-new-images').innerHTML = newHtml;
+  let short = [], noBox = 0;
   trEl('tr-image-counts').innerHTML = Object.entries(data.counts).map(([cat, c]) => {
     const n = c.with_bbox;
-    if (n < min) short++;
-    const pct = Math.min(100, Math.round(100 * n / Math.max(min, 1)));
-    const cls = n >= min ? 'bar-good' : (n >= min / 2 ? 'bar-mid' : 'bar-low');
-    const extra = c.images > n ? ` <span class="hint" title="Images without a bounding box can't be used; give them one on the Annotate tab">(+${c.images - n} without bounding box)</span>` : '';
-    return `<div class="cat-stat"><span class="name" style="color:${colors[cat] || 'inherit'}">${trEsc(cat)}</span>` +
-           `<div class="bar-bg"><div class="bar-fill ${cls}" style="width:${pct}%"></div></div>` +
-           `<span class="count">${n}${extra}</span></div>`;
+    if (n < min) short.push(cat);
+    noBox += Math.max(0, c.images - n);
+    return `<span class="tr-chip${n < min ? ' low' : ''}" title="${fmt(n)} labeled images with a bounding box">` +
+      `<span class="dot" style="background:${TR_CAT_COLORS[cat] || 'var(--muted)'}"></span>${trEsc(cat)} <b>${fmt(n)}</b></span>`;
   }).join('');
-  trEl('tr-image-hint').textContent = short
-    ? `${short} of your ${W.animals} ${short === 1 ? 'has' : 'have'} fewer than ${min} labeled images with a bounding box; training needs at least ${min} each.`
-    : `Labeled images with a bounding box per ${W.animal} (training needs at least ${min} each).`;
+  const warn = [];
+  if (short.length) warn.push(`${short.map(trEsc).join(', ')} ${short.length === 1 ? 'has' : 'have'} fewer than ${min} labeled images; training needs at least ${min} per ${W.animal}.`);
+  if (noBox) warn.push(`${fmt(noBox)} labeled image${noBox === 1 ? ' has' : 's have'} no bounding box yet, so ${noBox === 1 ? 'it' : 'they'} can't be used. <a href="#" onclick="switchTab('annotate');return false">Label tab</a>`);
+  trEl('tr-image-hint').innerHTML = warn.join(' ');
+  trShortCats = short.length;
+  trEl('tr-start-btn').disabled = !!short.length || !!(trainStatus && trainStatus.active);
+  trEl('tr-start-btn').title = short.length ? `Each ${W.animal} needs at least ${min} labeled images first` : '';
 }
+let trShortCats = 0;
 
 async function startJob(kind, extra) {
   if (!trainCfg) trainCfg = await trJson('/api/training/config');
   const b = savedBackend();
-  const label = b ? b.label : 'the configured backend';
+  const label = b ? b.label : 'the configured place';
   const body = {kind, ...(extra || {})};
   let msg;
   if (kind === 'crossval') {
     body.cv_folds = trEl('tr-cv-folds').value;
-    msg = `Run ${body.cv_folds}-fold cross-validation on ${label}?\n\nIt trains one model per fold to measure how stable accuracy is, so it takes about ${body.cv_folds} times as long as training. It produces no model to deploy.`;
+    msg = `Check how reliable training is, on ${label}?\n\nIt trains ${body.cv_folds} models, each checked on a different set of visits, so it takes about ${body.cv_folds} times as long as training. It gives no model to use.`;
   } else if (kind === 'detect') {
-    msg = `Auto-detect bounding boxes for ${extra && extra.count} images on ${label}?\n\nThe images are sent to the backend; bounding boxes come back and are saved as auto-detected. Images you annotate meanwhile are left alone.`;
+    msg = `Auto-detect bounding boxes for ${extra && extra.count} images on ${label}?\n\nThe images are sent there; bounding boxes come back and are saved as auto-detected. Images you annotate meanwhile are left alone.`;
   } else {
-    msg = `Start a training job on ${label}?\n\nThe Pi crops and packages your labeled images first; detection keeps running. When it finishes, deploy the new model in the Identification Model card.`;
+    const last = trainStatus && trainStatus.last_duration ? ` It took about ${trMinutes(trainStatus.last_duration)} last time.` : '';
+    msg = `Train a new model on ${label}?\n\nThe Pi prepares your labeled images first; the camera keeps running.${last} The model in use stays until you choose to use the new one.`;
   }
   if (trainCfg.backend === 'hf_jobs') {
     msg += kind === 'detect'
@@ -2030,7 +2112,10 @@ async function startJob(kind, extra) {
   trainLastLogLen = -1;
   if (activeTab === 'training') {
     trShow('tr-run-result', res.status === 'ok' ? '' : 'err', res.status === 'ok' ? '' : res.message);
-    if (res.status === 'ok') trEl('tr-log-fold').open = true;
+    if (res.status === 'ok') {
+      trDismissed = null; try { localStorage.removeItem('trDismissed'); } catch(e) {}
+      trEl('tr-run').scrollIntoView({behavior: 'smooth', block: 'nearest'});
+    }
     pollTraining();
   }
   return res;
@@ -2042,194 +2127,273 @@ async function cancelTraining() {
   if (res.status !== 'ok') trShow('tr-run-result', 'err', res.message);
 }
 
-// ── Progress ──
-let trainWasActive = null;
+// A finished job stays in the card until the user is done with it.
+let trDismissed = null;
+try { trDismissed = localStorage.getItem('trDismissed'); } catch(e) {}
+function dismissJob(jobId) {
+  trDismissed = jobId;
+  try { localStorage.setItem('trDismissed', jobId); } catch(e) {}
+  trJobResultHtml = null;
+  pollTraining();
+}
+
+// ── Train card: a job running or just finished ──
 async function pollTraining() {
   const st = await trJson('/api/training/status');
   trainStatus = st;
   const job = st.job;
-  trEl('tr-start-btn').disabled = st.active;
+  const kind = (job && job.kind) || 'train';
+  const usedIt = job && kind === 'train' && st.deployed.meta && st.deployed.meta.job_id === job.job_id;
+  const showJob = !!job && (st.active || (job.job_id !== trDismissed && !usedIt));
+  trEl('tr-idle').hidden = showJob;
+  trEl('tr-job').hidden = !showJob;
   trEl('tr-cv-btn').disabled = st.active;
-  trEl('tr-cancel-btn').hidden = !st.active;
-  const link = trEl('tr-job-link');
-  link.hidden = !(job && job.url && st.active);
-  if (job && job.url) link.href = job.url;
-  // The log is open while a job runs, and folds away when it finishes.
-  if (trainWasActive !== st.active) trEl('tr-log-fold').open = st.active;
-  trainWasActive = st.active;
-
-  trEl('tr-progress').hidden = !job;
-  if (job) {
-    const kindName = JOB_KINDS[job.kind || 'train'];
-    trEl('tr-progress-title').textContent = st.active
-      ? `${kindName} job running on ${job.backend_label}`
-      : `Last job: ${kindName.toLowerCase()} on ${job.backend_label}, ${trDate(job.job_id)}`;
-    const idx = st.stages.indexOf(job.stage);
-    const failed = job.stage === 'failed' || job.stage === 'cancelled';
-    const lastIdx = failed ? Math.max(...Object.keys(job.stage_times || {})
-        .map(s => st.stages.indexOf(s)).filter(i => i >= 0), 0) : idx;
-    trEl('tr-steps').innerHTML = st.stages.map((s, i) => {
-      let cls = '';
-      if (failed && i === lastIdx) cls = 'failed';
-      else if (i < lastIdx || (!failed && job.stage === 'ready')) cls = 'done';
-      else if (i === idx && !failed) cls = 'current';
-      return `<span class="tr-step ${cls}">${trEsc(s)}</span>`;
-    }).join('') + (failed ? `<span class="tr-step failed">${trEsc(job.stage)}</span>` : '');
-    renderJobSummary(st);
-    const logEl = trEl('tr-log');
-    if (st.log.length !== trainLastLogLen || st.active) {
-      const atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 20;
-      logEl.textContent = st.log.join('\n');
-      if (atBottom || trainLastLogLen < 0) logEl.scrollTop = logEl.scrollHeight;
-      trainLastLogLen = st.log.length;
-    }
-  }
-  renderModelCard(st);
+  trEl('tr-start-btn').disabled = st.active || trShortCats > 0;
+  if (showJob) renderJob(st);
+  else trEl('tr-run-title').textContent = 'Train a new model';
+  renderBackendLine();
+  renderIdle();
+  // A result shown in the Train card isn't offered a second time above.
+  renderModelCard(st, showJob && !st.active && kind === 'train' ? job.job_id : null);
   loadTrainingJobs(st);
 }
 
-// One line on how the newest job went, plus its result when it has no model.
-function renderJobSummary(st) {
+function renderJob(st) {
   const job = st.job;
   const kind = job.kind || 'train';
-  const el = trEl('tr-stage-msg');
+  const words = STAGE_WORDS[kind] || STAGE_WORDS.train;
   const failed = job.stage === 'failed' || job.stage === 'cancelled';
-  el.className = 'tr-summary' + (failed ? ' err' : '');
-  let text = job.message || '';
-  if (job.stage === 'ready' && kind === 'train' && job.metrics) {
-    const deployed = st.deployed.meta && st.deployed.meta.job_id === job.job_id;
-    text = `Finished: ${trPct(job.metrics.val_acc)} validation accuracy. ` +
-      (deployed ? 'This model is deployed.' : 'Deploy it in the Identification Model card above.');
+  const done = job.stage === 'ready';
+  const elapsed = trSince(job.created);
+  trEl('tr-run-title').textContent = st.active
+    ? `${JOB_KINDS[kind]} on ${job.backend_label}`
+    : `${JOB_KINDS[kind]}, ${trDate(job.job_id)}`;
+  // Steps: the ones done, the current one highlighted. Hidden once finished.
+  const steps = st.stages.filter(s => words[s]);
+  const reached = Object.keys(job.stage_times || {});
+  const curIdx = steps.indexOf(job.stage);
+  trEl('tr-steps').hidden = done;
+  trEl('tr-steps').innerHTML = steps.map((s, i) => {
+    let cls = '';
+    if (failed) cls = reached.includes(s) ? (s === steps.filter(x => reached.includes(x)).pop() ? 'failed' : 'done') : '';
+    else if (i < curIdx) cls = 'done';
+    else if (i === curIdx) cls = 'current';
+    return `<span class="tr-step ${cls}">${trEsc(words[s])}</span>`;
+  }).join('<span class="tr-arrow" aria-hidden="true">&rsaquo;</span>');
+
+  // One line: how far along, or how it ended.
+  const el = trEl('tr-stage-msg');
+  el.className = 'tr-summary' + (failed && job.stage === 'failed' ? ' err' : '');
+  let text = '', html = '';
+  if (st.active) {
+    const pr = st.progress;
+    if (job.stage === 'training' && pr && pr.epoch) {
+      text = (pr.fold ? `Model ${pr.fold} of ${pr.folds}: ` : '') +
+        `${pr.fold ? 'phase' : 'Phase'} ${pr.phase} of ${pr.phases} (${PHASE_WORDS[pr.phase] || ''}), epoch ${pr.epoch} of ${pr.epochs}.`;
+    } else {
+      text = (words[job.stage] || job.stage) + '...';
+    }
+    if (elapsed != null) text += ` ${trMinutes(elapsed)} so far` +
+      (kind === 'train' && st.last_duration ? `, about ${trMinutes(st.last_duration)} in all last time.` : '.');
+  } else if (job.stage === 'cancelled') {
+    text = 'Cancelled.';
+  } else if (job.stage === 'failed') {
+    text = `${JOB_KINDS[kind]} failed: ${job.message || 'see the log below.'}`;
+  } else if (done) {
+    const took = (() => { const t = job.stage_times || {}; const a = Date.parse(t.packaging), b = Date.parse(t.ready);
+                          return isNaN(a) || isNaN(b) ? '' : `Done in ${trMinutes((b - a) / 1000)}: `; })();
+    if (kind === 'train' && job.metrics) {
+      const cur = st.deployed.meta && st.deployed.meta.metrics;
+      const d = cur ? (job.metrics.val_acc - cur.val_acc) * 100 : null;
+      html = `${took}<b>${trPct(job.metrics.val_acc)} accurate</b>` +
+        (d != null ? ` (${d >= 0 ? '+' : ''}${d.toFixed(1)} compared with the model in use)` : '') + '.';
+    } else if (kind === 'crossval' && job.cv) {
+      html = `${took}<b>${trPct(job.cv.mean_acc)} ± ${(job.cv.std_acc * 100).toFixed(1)}</b> over ${(job.cv.folds || []).length} models.` +
+        ` A small spread means training gives about the same result every time.`;
+    } else {
+      text = took ? took.replace(/: $/, '.') : 'Done.';
+    }
   }
-  el.textContent = text;
-  let html = '';
-  if (job.stage === 'ready' && kind === 'crossval' && job.cv) {
-    html = `<details class="tr-subfold"><summary>Results per fold</summary>${renderCvTable(job.cv)}</details>`;
+  if (html) el.innerHTML = html; else el.textContent = text;
+
+  // Actions and details under the line.
+  let res = '<div class="actionrow">';
+  if (done && kind === 'train' && job.metrics && (st.candidates || []).some(c => c.job_id === job.job_id)) {
+    res += `<button class="btn btn-primary" onclick="deployModel('${trEsc(job.job_id)}')">Use this model</button>`;
   }
-  if (job.stage === 'ready' && kind === 'detect' && job.detect_result) {
+  if (!st.active) res += `<button class="btn btn-sm" onclick="dismissJob('${trEsc(job.job_id)}')">${done && kind === 'train' ? 'Not now' : 'OK'}</button>`;
+  res += '</div>';
+  if (done && kind === 'train' && job.metrics) res += trCompare(job.metrics, st.deployed.meta && st.deployed.meta.metrics, job.job_id);
+  if (done && kind === 'crossval' && job.cv) {
+    res += `<details class="tr-subfold"><summary>Results per model</summary>${renderCvTable(job.cv)}</details>`;
+  }
+  if (done && kind === 'detect' && job.detect_result) {
     const r = job.detect_result;
-    html = `<div class="hint" style="margin-bottom:10px"><b>${r.applied}</b> bounding boxes added, ${r.no_cat} images with no ${W.animal} found` +
+    res += `<div class="hint" style="margin-top:8px"><b>${r.applied}</b> bounding boxes added, ${r.no_cat} images with no ${W.animal} found` +
       (r.already_had_bbox ? `, ${r.already_had_bbox} skipped because they got a bounding box meanwhile` : '') +
-      (r.gone ? `, ${r.gone} images deleted meanwhile` : '') + '. Check them on the Annotate tab.</div>';
+      (r.gone ? `, ${r.gone} images deleted meanwhile` : '') + '. Check them on the Label tab.</div>';
   }
   // Only replace it when it changed, so an opened fold stays open.
-  if (html !== trJobResultHtml) { trEl('tr-job-result').innerHTML = html; trJobResultHtml = html; }
+  if (res !== trJobResultHtml) { trEl('tr-job-result').innerHTML = res; trJobResultHtml = res; }
+
+  trEl('tr-cancel-btn').hidden = !st.active;
+  const link = trEl('tr-job-link');
+  link.hidden = !(job.url && st.active);
+  if (job.url) link.href = job.url;
+  if (job.stage === 'failed' && trLogJob !== job.job_id) { trEl('tr-log-fold').open = true; }
+  trLogJob = job.job_id;
+  const logEl = trEl('tr-log');
+  if (st.log.length !== trainLastLogLen || st.active) {
+    const atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 20;
+    logEl.textContent = st.log.join('\n');
+    if (atBottom || trainLastLogLen < 0) logEl.scrollTop = logEl.scrollHeight;
+    trainLastLogLen = st.log.length;
+  }
 }
 let trJobResultHtml = null;
+let trLogJob = null;
 
 function renderCvTable(cv) {
   const cats = Object.keys(cv.per_class_mean || {});
-  let html = '<table class="tr-metrics"><tr><th>Fold</th><th>Overall</th>' +
+  let html = '<table class="tr-metrics"><tr><th>Model</th><th>Overall</th>' +
     cats.map(c => `<th>${trEsc(c)}</th>`).join('') + '</tr>';
   (cv.folds || []).forEach(f => {
     html += `<tr><td>${f.fold}</td><td>${trPct(f.best_val_acc)}</td>` +
       cats.map(c => `<td>${trPct(f.per_class[c])}</td>`).join('') + '</tr>';
   });
-  html += `<tr><td><b>Mean</b></td><td><b>${trPct(cv.mean_acc)}</b></td>` +
+  html += `<tr><td><b>Average</b></td><td><b>${trPct(cv.mean_acc)}</b></td>` +
     cats.map(c => `<td><b>${trPct(cv.per_class_mean[c])}</b></td>`).join('') + '</tr>';
-  html += `<tr><td class="hint">Std dev</td><td class="hint">±${trPct(cv.std_acc)}</td>` +
+  html += `<tr><td class="hint">Spread</td><td class="hint">±${trPct(cv.std_acc)}</td>` +
     cats.map(c => `<td class="hint">±${trPct(cv.per_class_std[c])}</td>`).join('') + '</tr></table>';
-  return html + '<div class="hint" style="margin-bottom:10px">Each fold holds out different capture sessions. A large spread means accuracy depends a lot on which sessions land in validation.</div>';
+  return html + '<div class="hint" style="margin-bottom:10px">Each model is checked on different visits. A large spread means the accuracy depends a lot on which visits it is checked on.</div>';
 }
 
-// ── Cat Identification Model card ──
+// ── Model in use card ──
 let trModelKey = '';
-function renderModelCard(st) {
+// A trained model against the one in use, per cat (folded).
+function trCompare(n, cur, jobId) {
+  if (!n || !cur) return '';
+  const cats = n.classes || cur.classes || [];
+  const delta = (a, b) => (a == null || b == null) ? '' :
+    `<span class="${a >= b ? 'up' : 'down'}">${a >= b ? '+' : ''}${((a - b) * 100).toFixed(1)}</span>`;
+  const row = (name, a, b) => `<tr><td>${name}</td><td>${trPct(a)}</td><td>${trPct(b)}</td><td>${delta(a, b)}</td></tr>`;
+  return '<details class="tr-subfold"><summary>Compare per ' + W.animal + '</summary><table class="tr-metrics">' +
+    `<tr><th></th><th>New (${trDate(jobId)})</th><th>In use</th><th>Change</th></tr>` +
+    row('<b>Overall</b>', n.val_acc, cur.val_acc) +
+    cats.map(c => row(trEsc(c), (n.per_class_acc || {})[c], cur.per_class_acc && cur.per_class_acc[c])).join('') +
+    '</table><div class="hint">Differences under about a point are normal: each training is checked on a different set of visits.</div></details>';
+}
+function trPerCat(metrics) {
+  if (!metrics || !metrics.per_class_acc) return '';
+  return Object.entries(metrics.per_class_acc).map(([c, a]) =>
+    `<span style="color:${TR_CAT_COLORS[c] || 'inherit'}">${trEsc(c)}</span> ${trPct(a)}`).join(' &middot; ');
+}
+function renderModelCard(st, offeredBelow) {
   const dep = st.deployed;
   const cands = st.candidates || [];
-  const key = JSON.stringify([dep, cands.map(c => c.job_id), st.active]);
+  const key = JSON.stringify([dep, cands.map(c => c.job_id), st.active, offeredBelow]);
   if (key === trModelKey) return;         // avoid re-rendering (and flicker) every poll
   trModelKey = key;
   const cur = dep.meta && dep.meta.metrics;
-  const neu = cands[0];
+  const depId = dep.meta && dep.meta.job_id;
+  const busy = st.active ? ' disabled title="Available when the running job finishes"' : '';
+  const accTitle = 'title="Measured on images from visits the model never saw while training"';
+  // The newest trained model, if it is newer than the one in use.
+  const neu = cands.find(c => !depId || c.job_id > depId);
   let html = '';
   if (dep.exists && dep.meta) {
-    html += `<div class="tr-model-head">Deployed: model from <b>${trDate(dep.meta.job_id)}</b>` +
-      (cur ? `, ${trPct(cur.val_acc)} validation accuracy` : '') + '.</div>';
+    html += `<div class="tr-model-head" title="Put in use ${trEsc(trDate(dep.meta.deployed_at))}">Trained <b>${trDate(depId)}</b>` +
+      (cur ? ` &middot; <b ${accTitle}>${trPct(cur.val_acc)} accurate</b>` : '') +
+      (cur && cur.train_images ? ` &middot; ${cur.train_images.toLocaleString()} training images` : '') + '</div>';
+    if (cur) html += `<div class="tr-percat">${trPerCat(cur)}</div>`;
   } else if (dep.exists) {
-    html += '<div class="tr-model-head">A model is deployed, but it was installed outside this tab, so its accuracy is unknown.</div>';
+    html += '<div class="tr-model-head">A model is in use, but it was installed by hand, so its accuracy is unknown.</div>';
   } else {
-    html += '<div class="tr-model-none">No model deployed yet. ' +
-      (neu ? `Deploy the trained model below so the Pi can tell your ${W.animals} apart.`
-           : 'Train one (right), then deploy it here.') + '</div>';
+    html += `<div class="tr-model-none">No model yet, so your ${W.animals} can't be told apart. ` +
+      (neu ? 'A trained one is ready below.' : 'Train one, then it appears here.') + '</div>';
   }
-  if (neu || cur) {
-    const n = neu && neu.metrics;
-    const cats = (n && n.classes) || (cur && cur.classes) || [];
-    const delta = (a, b) => (a == null || b == null) ? '' :
-      `<span class="${a >= b ? 'up' : 'down'}">${a >= b ? '+' : ''}${((a - b) * 100).toFixed(1)}</span>`;
-    const row = (name, a, b) => `<tr><td>${name}</td>` + (n ? `<td>${trPct(a)}</td>` : '') +
-      (cur ? `<td>${trPct(b)}</td>` : '') + (n && cur ? `<td>${delta(a, b)}</td>` : '') + '</tr>';
-    html += '<table class="tr-metrics"><tr><th>Validation accuracy</th>' +
-      (n ? `<th>Newest (${trDate(neu.job_id)})</th>` : '') + (cur ? '<th>Deployed</th>' : '') +
-      (n && cur ? '<th>Change (pts)</th>' : '') + '</tr>';
-    html += row('<b>Overall</b>', n && n.val_acc, cur && cur.val_acc);
-    cats.forEach(c => { html += row(trEsc(c), n && n.per_class_acc[c], cur && cur.per_class_acc && cur.per_class_acc[c]); });
-    html += '</table>';
-    if (n && cur) html += '<div class="hint" style="margin-bottom:10px">Each job validates on a different random set of capture sessions, so small differences are noise.</div>';
+  if (neu && neu.job_id !== offeredBelow) {
+    const n = neu.metrics;
+    const d = cur ? (n.val_acc - cur.val_acc) * 100 : null;
+    html += `<div class="tr-callout"><div class="tr-callout-head">${depId ? 'A newer model is ready' : 'A trained model is ready'}: ` +
+      `trained ${trDate(neu.job_id)} &middot; <b>${trPct(n.val_acc)}</b>` +
+      (d != null ? ` <span class="${d >= 0 ? 'up' : 'down'}">(${d >= 0 ? '+' : ''}${d.toFixed(1)})</span>` : '') + '</div>' +
+      `<div class="actionrow"><button class="btn btn-primary"${busy} onclick="deployModel('${trEsc(neu.job_id)}')">Use this model</button></div>`;
+    html += trCompare(n, cur, neu.job_id) + '</div>';
   }
-  html += '<div class="actionrow">';
-  if (neu) {
-    html += `<button class="btn btn-primary" ${st.active ? 'disabled title="Available when the running job finishes"' : ''} ` +
-      `onclick="deployModel('${trEsc(neu.job_id)}')">Deploy newest model (${trPct(neu.metrics.val_acc)})</button>`;
+  // Going back: only when it is a different model from the one offered above.
+  const prev = dep.prev_meta;
+  if (dep.has_previous && !(prev && neu && prev.job_id === neu.job_id)) {  // not the one offered
+    html += `<div class="tr-undo"><a href="#" onclick="${st.active ? '' : 'rollbackModel();'}return false"${st.active ? ' class="disabled"' : ''}>Go back to the model used before` +
+      (prev ? ` (trained ${trDate(prev.job_id)}, ${trPct((prev.metrics || {}).val_acc)})` : '') + '</a></div>';
   }
-  if (dep.has_previous) {
-    const p = dep.prev_meta;
-    html += `<button class="btn btn-sm" ${st.active ? 'disabled' : ''} onclick="rollbackModel()">Switch back to previous model` +
-      (p ? ` (${trDate(p.job_id)}, ${trPct((p.metrics || {}).val_acc)})` : '') + '</button>';
-  }
-  html += '</div>';
-  if (cands.length > 1) {
-    html += `<details class="tr-subfold"><summary>Other trained models (${cands.length - 1})</summary><div class="tr-cand-list">` +
-      cands.slice(1).map(c => `<div class="tr-cand-row"><span>${trDate(c.job_id)} on ${trEsc(c.backend || '')}</span>` +
-        `<span>${trPct(c.metrics.val_acc)}</span><button class="btn btn-sm" ${st.active ? 'disabled' : ''} ` +
-        `onclick="deployModel('${trEsc(c.job_id)}')">Deploy</button></div>`).join('') + '</div></details>';
+  const others = cands.filter(c => c !== neu);
+  if (others.length) {
+    html += `<details class="tr-subfold"><summary>Other trained models (${others.length})</summary><div class="tr-cand-list">` +
+      others.map(c => `<div class="tr-cand-row"><span>Trained ${trDate(c.job_id)}</span>` +
+        `<span>${trPct(c.metrics.val_acc)}</span><button class="btn btn-sm"${busy} ` +
+        `onclick="deployModel('${trEsc(c.job_id)}')">Use</button></div>`).join('') + '</div></details>';
   }
   trEl('tr-model').innerHTML = html;
 }
 
 async function deployModel(jobId) {
-  if (!jobId || !confirm(`Deploy the model trained ${trDate(jobId)}?\n\nThe current model is kept, so you can switch back.`)) return;
+  if (!jobId || !confirm(`Use the model trained ${trDate(jobId)}?\n\nThe one in use now is kept, so you can go back.`)) return;
   const res = await trPost('/api/training/deploy', {job_id: jobId});
   trShow('tr-deploy-result', res.status === 'ok' ? 'ok' : 'err', res.message);
-  trainLastJobsKey = ''; trModelKey = '';
+  trainLastJobsKey = ''; trModelKey = ''; trJobResultHtml = null;
   pollTraining();
 }
 
 async function rollbackModel() {
-  if (!confirm('Switch back to the previous model? (Pressing it again switches forward again.)')) return;
+  if (!confirm('Go back to the model used before?\n\nThe one in use now is kept, so you can switch again.')) return;
   const res = await trPost('/api/training/rollback');
   trShow('tr-deploy-result', res.status === 'ok' ? 'ok' : 'err', res.message);
-  trainLastJobsKey = ''; trModelKey = '';
+  trainLastJobsKey = ''; trModelKey = ''; trJobResultHtml = null;
   pollTraining();
 }
 
+// ── History ──
+let trHistoryAll = false;
+let trJobsCache = null;
 async function loadTrainingJobs(st) {
-  // Refresh history only when the current job or the deployed model changes
+  // Refresh only when the current job or the model in use changes
   const deployedId = st && st.deployed.meta ? st.deployed.meta.job_id : null;
   const key = (st && st.job ? st.job.job_id + st.job.stage : 'none') + (deployedId || '') + st.active;
-  if (key === trainLastJobsKey) return;
-  trainLastJobsKey = key;
-  const data = await trJson('/api/training/jobs');
-  const rows = data.jobs.map(j => {
-    const failed = j.stage === 'failed' || j.stage === 'cancelled';
+  if (key !== trainLastJobsKey) {
+    trainLastJobsKey = key;
+    trJobsCache = await trJson('/api/training/jobs');
+    updateCurveJobs(trJobsCache.jobs);
+  }
+  renderHistory(st, deployedId);
+}
+
+function renderHistory(st, deployedId) {
+  const jobs = (trJobsCache && trJobsCache.jobs) || [];
+  const shown = trHistoryAll ? jobs : jobs.slice(0, 5);
+  const rows = shown.map(j => {
+    let result;
+    if (j.stage === 'failed') result = `<span class="tr-bad" title="${trEsc(j.message || '')}">failed</span>`;
+    else if (j.stage === 'cancelled') result = '<span class="hint">cancelled</span>';
+    else if (j.stage !== 'ready') result = `<span class="hint">${trEsc((STAGE_WORDS[j.kind] || {})[j.stage] || j.stage)}...</span>`;
+    else if (j.kind === 'crossval') result = j.cv_mean != null
+      ? `${trPct(j.cv_mean)} <span class="hint">± ${((j.cv_std || 0) * 100).toFixed(1)}${j.cv_folds ? `, ${j.cv_folds} models` : ''}</span>` : 'done';
+    else if (j.kind === 'detect') result = 'done';
+    else result = trPct(j.val_acc) + (j.job_id === deployedId ? ' <span class="pill" style="--c:var(--success)">in use</span>' : '');
+    const links = [`<a href="/api/training/log/${encodeURIComponent(j.job_id)}" target="_blank">log</a>`];
+    if (j.kind === 'crossval' && j.cv_mean != null) links.push(`<a href="#" onclick="showCvJob('${trEsc(j.job_id)}');return false">per model</a>`);
+    if (j.has_curves) links.push(`<a href="#" onclick="showCurves('${trEsc(j.job_id)}');return false">curves</a>`);
+    const use = j.candidate && j.job_id !== deployedId && j.stage === 'ready'
+      ? ` <button class="btn btn-sm" style="margin-left:6px" ${st.active ? 'disabled' : ''} onclick="deployModel('${trEsc(j.job_id)}')">Use</button>` : '';
     return `<tr><td title="${trEsc(j.job_id)}">${trDate(j.job_id)}</td>` +
-      `<td>${trEsc(JOB_KINDS[j.kind] || j.kind)}</td><td>${trEsc(j.backend)}</td>` +
-      `<td>${trEsc(j.stage)}${j.job_id === deployedId ? ' <span class="pill" style="--c:var(--success)">deployed</span>' : ''}` +
-      (failed && j.message ? `<div class="hint" style="color:var(--danger)">${trEsc(j.message)}</div>` : '') + '</td>' +
-      `<td>${j.kind === 'crossval' ? (j.cv_mean != null ? trPct(j.cv_mean) + ' (mean)' : '--') : trPct(j.val_acc)}</td>` +
-      `<td><a href="/api/training/log/${encodeURIComponent(j.job_id)}" target="_blank">log</a>` +
-      (j.kind === 'crossval' && j.cv_mean != null
-        ? ` · <a href="#" onclick="showCvJob('${trEsc(j.job_id)}');return false">folds</a>` : '') +
-      (j.has_curves ? ` · <a href="#" onclick="showCurves('${trEsc(j.job_id)}');return false">curves</a>` : '') +
-      (j.candidate && j.job_id !== deployedId
-        ? ` <button class="btn btn-sm" style="margin-left:6px" ${st.active ? 'disabled' : ''} onclick="deployModel('${trEsc(j.job_id)}')">Deploy</button>` : '') +
-      `</td></tr>`;
+      `<td title="On ${trEsc(j.backend || '')}${j.duration ? ', took ' + trEsc(trMinutes(j.duration)) : ''}">${trEsc(JOB_KINDS[j.kind] || j.kind)}</td>` +
+      `<td>${result}</td><td>${links.join(' &middot; ')}${use}</td></tr>`;
   }).join('');
-  trEl('tr-jobs').innerHTML = data.jobs.length
-    ? '<tr><th>Started</th><th>Kind</th><th>Backend</th><th>Status</th><th>Val acc</th><th></th></tr>' + rows
-    : '<tr><td class="hint">No jobs yet.</td></tr>';
-  updateCurveJobs(data.jobs);
+  trEl('tr-jobs').innerHTML = jobs.length
+    ? '<tr><th>When</th><th>What</th><th>Result</th><th></th></tr>' + rows +
+      (jobs.length > 5 ? `<tr><td colspan="4" class="tr-more"><a href="#" onclick="trHistoryAll=!trHistoryAll;renderHistory(trainStatus, (trainStatus.deployed.meta||{}).job_id);return false">` +
+        `${trHistoryAll ? 'Show fewer' : `Show all ${jobs.length}`}</a></td></tr>` : '')
+    : '<tr><td class="hint">Nothing yet.</td></tr>';
 }
 
 // ── Training settings ──
@@ -2278,7 +2442,7 @@ async function saveTrainingSettings() {
 async function showCvJob(jobId) {
   const job = await trJson('/api/training/job/' + encodeURIComponent(jobId));
   if (!job.cv) return;
-  trEl('tr-job-detail').innerHTML = `<div class="hint" style="margin:12px 0 8px">Cross-validation, job ${trEsc(jobId)} ` +
+  trEl('tr-job-detail').innerHTML = `<div class="hint" style="margin:12px 0 8px">Reliability check, ${trEsc(trDate(jobId))} ` +
     `<a href="#" onclick="trEl('tr-job-detail').innerHTML='';return false">close</a></div>` + renderCvTable(job.cv);
 }
 
@@ -2304,11 +2468,12 @@ function updateCurveJobs(jobs) {
   const has = id => withCurves.some(j => j.job_id === id);
   sel.value = has(keep) ? keep : (withCurves[0] ? withCurves[0].job_id : '');
   cmp.value = has(keepCmp) ? keepCmp : '';
-  if (withCurves.length) loadCurves();
+  if (withCurves.length && trEl('tr-curves-fold').open) loadCurves();
 }
 
 function showCurves(jobId) {
   trEl('tr-curves-job').value = jobId;
+  trEl('tr-curves-fold').open = true;
   loadCurves();
   trEl('tr-curves-card').scrollIntoView({behavior: 'smooth', block: 'start'});
 }
@@ -2378,21 +2543,24 @@ function drawCurves() {
   const labels = Array.from({length: n}, (_, i) => i < a.x.length ? a.x[i] : (b ? b.x[i] : i + 1));
   const info = cssVar('--info'), ok = cssVar('--success'), warn = cssVar('--warn');
   const cmpSet = (label, data) => ({label, data, borderColor: warn, borderDash: [5, 4], borderWidth: 1.4});
-  const loss = [{label: 'train', data: a.train_loss, borderColor: info},
-                {label: 'val', data: a.val_loss, borderColor: ok}];
-  const acc = [{label: 'train', data: a.train_acc, borderColor: info},
-               {label: 'val', data: a.val_acc, borderColor: ok}];
+  const loss = [{label: 'training images', data: a.train_loss, borderColor: info},
+                {label: 'unseen visits', data: a.val_loss, borderColor: ok}];
+  // Accuracy on the training images is left out: they are blended and
+  // distorted (mixup and augmentation), so it sits far below the real figure.
+  const acc = [{label: trDate(trCurveData.id), data: a.val_acc, borderColor: ok}];
   if (b) {
-    loss.push(cmpSet('val, job ' + trCurveData.cmpId, b.val_loss));
-    acc.push(cmpSet('val, job ' + trCurveData.cmpId, b.val_acc));
+    loss.push(cmpSet('unseen visits, ' + trDate(trCurveData.cmpId), b.val_loss));
+    acc.push(cmpSet(trDate(trCurveData.cmpId), b.val_acc));
   }
   trLineChart('tr-chart-loss', labels, loss, false);
   trLineChart('tr-chart-acc', labels, acc, true);
   const cls = Object.entries(a.per_class || {}).map(([cat, data]) =>
     ({label: cat, data, borderColor: TR_CAT_COLORS[cat] || info}));
   trLineChart('tr-chart-cls', labels, cls, true);
-  let txt = `Best val accuracy ${trPct(a.best)} at epoch ${a.bestEpoch}`;
-  if (b) txt += `; job ${trCurveData.cmpId}: ${trPct(b.best)}`;
+  const job = ((trJobsCache && trJobsCache.jobs) || []).find(j => j.job_id === trCurveData.id);
+  let txt = `Best during training: ${trPct(a.best)} at epoch ${a.bestEpoch}.`;
+  if (job && job.val_acc != null) txt += ` The model that runs on the Pi scores ${trPct(job.val_acc)} after it is compressed to run fast.`;
+  if (b) txt += ` Compared training: best ${trPct(b.best)}.`;
   trEl('tr-curves-best').textContent = txt;
 }
 

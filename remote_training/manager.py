@@ -23,6 +23,7 @@ from __future__ import annotations
 import collections
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -61,6 +62,38 @@ _STATE_SAVE_INTERVAL = 60   # seconds between state.json saves while polling (st
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+_EPOCH_RE = re.compile(r"\[P(\d) +(\d+)/(\d+)\]")
+_FOLD_RE = re.compile(r"Fold (\d+)/(\d+)")
+TRAINING_PHASES = 3     # head warm-up, fine-tune, QAT (train/train_classifier.py)
+
+
+def parse_progress(lines: list[str]) -> dict | None:
+    """How far a job's training is, from its log: the newest "[P2  12/40]"
+    epoch line and "Fold 2/5" line (cross-validation). None before training
+    prints anything."""
+    out: dict = {}
+    for line in reversed(lines):
+        if "epoch" not in out:
+            m = _EPOCH_RE.search(line)
+            if m:
+                out.update(phase=int(m[1]), phases=TRAINING_PHASES,
+                           epoch=int(m[2]), epochs=int(m[3]))
+        if "fold" not in out:
+            m = _FOLD_RE.search(line)
+            if m:
+                out.update(fold=int(m[1]), folds=int(m[2]))
+        if "epoch" in out and "fold" in out:
+            break
+    return out or None
+
+
+def _seconds_between(a: str | None, b: str | None) -> float | None:
+    try:
+        return (datetime.fromisoformat(b) - datetime.fromisoformat(a)).total_seconds()
+    except (TypeError, ValueError):
+        return None
 
 
 class TrainingJobManager:
@@ -249,6 +282,43 @@ class TrainingJobManager:
 
     def image_counts(self) -> dict:
         return count_trainable_images(self.raw_dir(), self._read_config()["cats"])
+
+    _COUNTS_TTL = 30.0
+
+    def _cached_image_counts(self) -> dict:
+        """image_counts(), at most every 30 s (the status is polled every 2 s)."""
+        now = time.monotonic()
+        cached = getattr(self, "_counts_cache", None)
+        if cached and now - cached[0] < self._COUNTS_TTL:
+            return cached[1]
+        counts = self.image_counts()
+        self._counts_cache = (now, counts)
+        return counts
+
+    def new_images(self) -> dict | None:
+        """Labeled images (with a bounding box) per cat added since the model
+        in use was trained: {cat: n}. None when that isn't known (no model,
+        or one installed by hand)."""
+        meta = self.deployed_info().get("meta") or {}
+        job = self._read_json(self._job_dir(meta["job_id"]) / "state.json") \
+            if meta.get("job_id") and self._valid_job_id(meta["job_id"]) else None
+        then = (job or {}).get("counts")
+        if not then:
+            return None
+        now = self._cached_image_counts()
+        return {cat: max(0, (c.get("with_bbox") or 0) - ((then.get(cat) or {}).get("with_bbox") or 0))
+                for cat, c in now.items()}
+
+    def last_duration(self) -> float | None:
+        """Seconds the newest successful training job took, start to finish."""
+        if not self.jobs_dir.is_dir():
+            return None
+        for p in sorted(self.jobs_dir.glob("*/state.json"), reverse=True):
+            j = self._read_json(p) or {}
+            if j.get("kind", "train") == "train" and j.get("stage") == "ready":
+                t = j.get("stage_times") or {}
+                return _seconds_between(t.get("packaging"), t.get("ready"))
+        return None
 
     def missing_bbox_count(self) -> int:
         return len(images_missing_bbox(self.raw_dir(), self._read_config()["cats"]))
@@ -714,13 +784,19 @@ class TrainingJobManager:
             job.pop("handle", None)
             job.pop("detect_images", None)
         kind = (job or {}).get("kind", "train")
+        active = self.is_active()
+        with self._lock:
+            progress = parse_progress(list(self._log)) if active else None
         return {
-            "active": self.is_active(),
+            "active": active,
             "job": job,
             "log": log,
             "stages": STAGES[kind],
+            "progress": progress,
             "deployed": self.deployed_info(),
             "candidates": self.candidates(),
+            "new_images": self.new_images(),
+            "last_duration": self.last_duration(),
         }
 
     def job_metrics(self, job_id: str) -> dict:
@@ -762,6 +838,10 @@ class TrainingJobManager:
                 "created": j.get("created"), "deployed_at": j.get("deployed_at"),
                 "val_acc": (j.get("metrics") or {}).get("val_acc"),
                 "cv_mean": (j.get("cv") or {}).get("mean_acc"),
+                "cv_std": (j.get("cv") or {}).get("std_acc"),
+                "cv_folds": j.get("cv_folds"),
+                "duration": _seconds_between((j.get("stage_times") or {}).get("packaging"),
+                                             (j.get("stage_times") or {}).get("ready")),
                 "has_curves": (self._job_dir(j["job_id"]) / "results" / "training"
                                / "results.csv").is_file(),
                 "candidate": (self.candidates_dir / f"{j['job_id']}.pte").is_file(),

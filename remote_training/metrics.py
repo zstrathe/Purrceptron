@@ -59,7 +59,9 @@ def read_training_metrics(run_dir: Path) -> dict:
             prev_phase = ph
 
     # Build per-phase breakdown
-    phase_labels = {"phase1": "Head Warmup", "phase2": "Fine-tune", "phase3": "QAT"}
+    # The same words as the Training tab's progress line.
+    phase_labels = {"phase1": "Getting started", "phase2": "Fine-tuning",
+                    "phase3": "Preparing for the Pi"}
     phases_data: dict[str, dict] = {}
     for i, ph in enumerate(phases):
         if ph not in phases_data:
