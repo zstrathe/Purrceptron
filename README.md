@@ -1,7 +1,7 @@
 <h1>
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/purrceptron_logo_white_text.png">
-    <img src="docs/images/purrceptron_logo_black_text.png" alt="Purrceptron" width="420">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/purrceptron_logo_white.svg">
+    <img src="docs/images/purrceptron_logo_black.svg" alt="Purrceptron" width="420">
   </picture>
 </h1>
 
