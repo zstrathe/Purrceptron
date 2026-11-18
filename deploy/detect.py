@@ -45,7 +45,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from utils import PROJECT_ROOT, get_config_with_args, load_config, resolve_path, add_common_args, get_cat_colors_bgr
 from utils.display import print_info, print_error, print_success, print_warning
 from utils.runtime_paths import PREVIEW_DETECTIONS_JSON, PREVIEW_JPG, runtime_dir
-from deploy.visits import DetectionRecorder, VisitTracker, visit_gap_from  # noqa: E402
+from deploy.visits import (DetectionRecorder, VisitTracker, visit_gap_from,  # noqa: E402
+                           visit_hold_from)
 
 # Hailo imports — only available on the Raspberry Pi
 try:
@@ -133,6 +134,7 @@ class PreviewFrameWriter:
                             "track_id": det.get("track_id"),
                             "name": det.get("name"),
                             "duplicate": det.get("duplicate", False),
+                            "held": det.get("held", False),
                         })
                     draw_bounding_boxes(resized, pixel_dets)
                 ret, jpeg = cv2.imencode(
@@ -150,7 +152,7 @@ class PreviewFrameWriter:
                         {"label": d["label"], "confidence": d["confidence"],
                          "track_id": d.get("track_id"), "in_roi": d.get("in_roi", True),
                          "visit_id": d.get("visit_id"), "stable": d.get("stable", False),
-                         "duplicate": d.get("duplicate", False),
+                         "duplicate": d.get("duplicate", False), "held": d.get("held", False),
                          "name": d.get("name"), "named_by": d.get("named_by")}
                         for d in detections
                     ], f)
@@ -342,7 +344,8 @@ def draw_bounding_boxes(frame: np.ndarray, detections: list[dict]) -> np.ndarray
             if track_id is not None:
                 text += f" #{track_id}"
 
-        cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), color, 3)
+        # Thin while held: the detector lost the animal for a moment.
+        cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), color, 1 if det.get("held") else 3)
 
         (tw, th), baseline = cv2.getTextSize(text, font, 0.7, 2)
         tag_h = th + baseline + 4
@@ -457,6 +460,15 @@ def visit_display(visit, status: dict | None, human_names: dict,
     if rec.get("prediction") and not rec.get("unknown"):
         return f"{rec['prediction']}?", None
     return "?", None
+
+
+def held_detections(visits: list) -> list[dict]:
+    """Stand-in detections for stable visits not seen in this frame, at their
+    last position. Only for the live view: never cropped, recorded or counted."""
+    return [{"label": v.label, "confidence": v.confidence, "bbox_norm": v.bbox_norm,
+             "track_id": v.track_id, "visit_id": v.visit_id, "in_roi": True,
+             "duplicate": False, "held": True}
+            for v in visits if v.stable and not v.seen]
 
 
 def label_visits(detections: list[dict], visits: list, status: dict | None,
@@ -683,9 +695,12 @@ if HAILO_AVAILABLE:
         if frame is not None and needs_preview:
             # The dashboard reads in_roi, visit_id and name (set by the visit
             # tracker and label_visits) to follow each animal.
-            label_visits(frame_detections, visits, user_data._status, user_data.human_names,
+            # A stable visit the detector lost for a moment keeps its bounding
+            # box on the live view (drawn thin), so it doesn't vanish and return.
+            shown = frame_detections + held_detections(visits)
+            label_visits(shown, visits, user_data._status, user_data.human_names,
                          identifying=clf_gate is not None)
-            user_data.preview_writer.enqueue_frame(frame, frame_detections)
+            user_data.preview_writer.enqueue_frame(frame, shown)
 
         # Classifier crops (using shared frame), one per visit due
         if frame is not None:
@@ -1184,9 +1199,11 @@ def main():
         overlap_threshold=user_data.roi_overlap_threshold,
         stability_frames=user_data.stability_frames,
         gap_seconds=visit_gap_from(classifier_cfg, camera_cfg),
+        hold_seconds=visit_hold_from(classifier_cfg),
     )
     print_info(f"Visits: up to {user_data.visits.max_visits} at a time, end after "
-               f"{user_data.visits.gap_seconds:.1f} s out of the region")
+               f"{user_data.visits.gap_seconds:.1f} s out of the region, or "
+               f"{user_data.visits.hold_seconds:.1f} s for an animal back in the same place")
 
     # ── Classifier setup (BEFORE GStreamer init — fork safety) ───────────
     # Later switches (dashboard: identification on/off, a new model, a new

@@ -6,7 +6,7 @@
 """VisitTracker: visits follow positions, not the tracker's IDs."""
 import pytest
 
-from deploy.visits import VisitTracker, in_roi, visit_gap_from
+from deploy.visits import VisitTracker, in_roi, visit_gap_from, visit_hold_from
 
 W, H = 1000, 1000
 FPS = 30
@@ -26,9 +26,11 @@ class Clock:
         return self.t
 
 
-def make(max_visits=VisitTracker.MAX_VISITS, gap=0.5, roi=(0, 0, W, H), stability=5):
-    return VisitTracker(labels={"cat"}, roi=roi, frame_w=W, frame_h=H, overlap_threshold=0.0001,
-                        stability_frames=stability, gap_seconds=gap, max_visits=max_visits)
+def make(max_visits=VisitTracker.MAX_VISITS, gap=0.5, roi=(0, 0, W, H), stability=5, hold=0.0,
+         overlap=0.0001):
+    return VisitTracker(labels={"cat"}, roi=roi, frame_w=W, frame_h=H, overlap_threshold=overlap,
+                        stability_frames=stability, gap_seconds=gap, hold_seconds=hold,
+                        max_visits=max_visits)
 
 
 def run(tracker, clock, frames):
@@ -102,6 +104,34 @@ def test_no_track_ids():
     assert len(tr.visits()) == 1 and tr.visits()[0].frames == 30
 
 
+def test_a_visit_continues_while_touching_the_region():
+    tr, c = make(roi=(0, 0, 500, 500), overlap=0.1), Clock()
+    run(tr, c, [[det(0.2, 0.2)]] * 10)                       # well inside
+    d = det(0.43, 0.2, 0.3, 0.3)                             # sat back: 8% of the region
+    run(tr, c, [[d]] * 30)
+    (v,) = tr.visits()
+    assert v.frames == 40 and d["in_roi"] is True and d["visit_id"] == v.visit_id
+    gone = run(tr, c, [[det(0.6, 0.2)]] * 30)                # clear of the region: it ends
+    assert len(gone) == 1 and not tr.visits()
+
+
+def test_touching_the_region_does_not_start_a_visit():
+    tr, c = make(roi=(0, 0, 500, 500), overlap=0.1), Clock()
+    d = det(0.45, 0.2, 0.3, 0.3)
+    run(tr, c, [[d]] * 10)
+    assert not tr.visits() and d["in_roi"] is False
+
+
+def test_a_bounding_box_in_the_region_beats_a_more_confident_one_touching_it():
+    tr, c = make(roi=(0, 0, 500, 500), overlap=0.1, max_visits=8), Clock()
+    run(tr, c, [[det(0.3, 0.3, 0.2, 0.2)]] * 10)
+    ghost = det(0.45, 0.3, 0.1, 0.1, conf=0.9)               # mostly outside, inside the other
+    real = det(0.3, 0.3, 0.3, 0.3, conf=0.6)
+    run(tr, c, [[ghost, real]])
+    assert ghost["duplicate"] and not real["duplicate"]
+    assert real["visit_id"] == tr.visits()[0].visit_id and len(tr.visits()) == 1
+
+
 def test_outside_region_is_not_a_visit():
     tr, c = make(roi=(0, 0, 300, 300)), Clock()
     d = det(0.7, 0.7)
@@ -134,6 +164,61 @@ def test_stability_counts_frames_per_visit():
     assert not tr.visits()[0].stable
     run(tr, c, [[det(0.4, 0.4, tid=9)]])
     assert tr.visits()[0].stable
+
+
+# ── held through a detector dropout ───────────────────────────────────────
+
+def test_hold_continues_back_in_the_same_place():
+    tr, c = make(hold=2.5), Clock()
+    run(tr, c, [[det(0.4, 0.4)]] * 10)
+    vid = tr.visits()[0].visit_id
+    gone = run(tr, c, empty(2.0))
+    assert not gone and not tr.visits()[0].seen              # held, not ended
+    assert not run(tr, c, [[det(0.41, 0.4)]])
+    (v,) = tr.visits()
+    assert v.visit_id == vid and v.seen and v.resumes == 1 and v.frames == 11
+
+
+def test_hold_another_spot_is_a_new_visit_and_the_old_one_ends_on_time():
+    tr, c = make(hold=2.5, max_visits=8), Clock()
+    run(tr, c, [[det(0.4, 0.4)]] * 10)
+    last = c.t
+    run(tr, c, empty(1.0))
+    run(tr, c, [[det(0.75, 0.4)]] * 3)                       # walked in at the edge
+    assert len(tr.visits()) == 2
+    (gone,) = run(tr, c, [[det(0.75, 0.4)]] * 60)
+    assert gone.last_seen == pytest.approx(last) and gone.resumes == 0
+
+
+def test_hold_needs_a_close_overlap_and_never_doubles_a_visit():
+    tr, c = make(hold=2.5, max_visits=8), Clock()
+    run(tr, c, [[det(0.4, 0.4)]] * 10)
+    first = tr.visits()[0].visit_id
+    last = c.t
+    run(tr, c, empty(1.0))
+    (gone,) = run(tr, c, [[det(0.5, 0.4)]])                  # IoU about 0.33: a new visit,
+    (v,) = tr.visits()                                       # and the held one ends now
+    assert gone.visit_id == first and gone.last_seen == pytest.approx(last) and v.visit_id != first
+    run(tr, c, [[det(0.4, 0.4)]])                            # the old spot again: still one visit
+    assert [x.visit_id for x in tr.visits()] == [v.visit_id]
+
+
+def test_loose_matching_within_the_gap():
+    tr, c = make(hold=2.5), Clock()
+    run(tr, c, [[det(0.4, 0.4)]] * 10 + empty(0.3) + [[det(0.5, 0.4)]])
+    assert len(tr.visits()) == 1 and tr.visits()[0].resumes == 0
+
+
+def test_hold_ends_the_visit_after_the_hold():
+    tr, c = make(hold=2.5), Clock()
+    run(tr, c, [[det(0.4, 0.4)]] * 10)
+    assert len(run(tr, c, empty(3.0))) == 1 and not tr.visits()
+
+
+def test_no_hold_ends_after_the_gap():
+    tr, c = make(hold=0.0), Clock()
+    run(tr, c, [[det(0.4, 0.4)]] * 10)
+    assert len(run(tr, c, empty(1.0))) == 1
 
 
 # ── several at once ───────────────────────────────────────────────────────
@@ -203,6 +288,7 @@ def test_visit_gap_from_config():
     assert visit_gap_from({"visit_gap_seconds": 1.5}, {}) == 1.5
     assert visit_gap_from({"miss_tolerance": 15}, {"fps": 30}) == pytest.approx(0.5)
     assert visit_gap_from({}, {}) == pytest.approx(0.5)
+    assert visit_hold_from({}) == 2.5 and visit_hold_from({"visit_hold_seconds": 0}) == 0.0
 
 
 # ── recording and replay ──────────────────────────────────────────────────
@@ -249,8 +335,8 @@ def test_replay_script(tmp_path):
     t = 1000.0
     for i in range(40):                      # a visit with track IDs changing
         rec.add([det(0.4, 0.4, tid=i // 10)], now=t); t += DT
-    t += 2.0
-    for i in range(40):                      # a second visit after 2 s
+    t += 4.0
+    for i in range(40):                      # a second visit after 4 s (longer than the hold)
         rec.add([det(0.4, 0.4, tid=7)], now=t); t += DT
     rec.close()
     cfg = tmp_path / "project.yaml"

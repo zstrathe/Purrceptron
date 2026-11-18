@@ -8,7 +8,9 @@
 The detector's tracker gives every bounding box a track ID, but the IDs change
 constantly (in the visit logs only a third of visits kept one ID). So a visit
 follows where its animal is instead: a bounding box continues the visit it
-overlaps or is nearest to, and the track ID is only a hint.
+overlaps or is nearest to, and the track ID is only a hint. A visit the
+detector lost for longer than the gap is held for hold_seconds, continued only
+by a bounding box back in the same place.
 
 Pure Python (no numpy, OpenCV or Hailo), so it is unit-tested anywhere.
 
@@ -36,6 +38,12 @@ DUPLICATE_INSIDE = 0.8
 MATCH_IOU = 0.1
 # Added to the position score when the track ID is the same as last frame's.
 TRACK_ID_BONUS = 0.1
+# A visit unseen for longer than the gap is held for a while (hold_seconds):
+# only a bounding box overlapping its last one by at least this much (IoU) can
+# continue it. The detector often loses an eating cat for a second or two, and
+# it comes back in the same place (IoU 0.8 to 0.99 in recordings); a cat that
+# leaves is seen walking off, and one that arrives appears somewhere else first.
+HOLD_IOU = 0.5
 
 
 @dataclass
@@ -51,6 +59,7 @@ class Visit:
     seen: bool = True        # matched in the current frame
     stable: bool = False     # frames >= the tracker's stability_frames
     detection: dict | None = None   # this frame's detection dict, when seen
+    resumes: int = 0         # times it continued after a hold
     last_classify: float = 0.0      # used by detect.py: monotonic time of the last crop
 
 
@@ -117,6 +126,11 @@ def visit_gap_from(classifier_cfg: dict, camera_cfg: dict) -> float:
     return max(0.0, float(classifier_cfg.get("miss_tolerance", 15)) / fps)
 
 
+def visit_hold_from(classifier_cfg: dict) -> float:
+    """classifier.visit_hold_seconds (default 2.5; 0 turns the hold off)."""
+    return max(0.0, float(classifier_cfg.get("visit_hold_seconds", 2.5)))
+
+
 # ── The tracker ─────────────────────────────────────────────────────────────
 
 class VisitTracker:
@@ -126,7 +140,8 @@ class VisitTracker:
 
     def __init__(self, *, labels, roi, frame_w: int, frame_h: int,
                  overlap_threshold: float = 0.01, stability_frames: int = 5,
-                 gap_seconds: float = 0.5, max_visits: int = MAX_VISITS):
+                 gap_seconds: float = 0.5, hold_seconds: float = 0.0,
+                 max_visits: int = MAX_VISITS):
         self.labels = set(labels)
         self.roi = tuple(roi)
         self.frame_w = frame_w
@@ -134,6 +149,9 @@ class VisitTracker:
         self.overlap_threshold = overlap_threshold
         self.stability_frames = max(1, int(stability_frames))
         self.gap_seconds = gap_seconds
+        # A visit ends after the longer of the two; past the gap, only a
+        # bounding box in the same place continues it (see HOLD_IOU).
+        self.hold_seconds = hold_seconds
         self.max_visits = max(1, int(max_visits))
         self._visits: list[Visit] = []      # oldest first
         self._last_id = 0.0
@@ -164,28 +182,40 @@ class VisitTracker:
         mono = time.monotonic() if mono is None else mono
         W, H = self.frame_w, self.frame_h
 
-        # Departures first: a visit not seen for longer than the gap has ended,
-        # even if no frames came in meanwhile (so it can't be continued now).
+        # Departures first: a visit not seen for longer than the gap (or the
+        # hold) has ended, even if no frames came in meanwhile (so it can't be
+        # continued now).
         departed = []
+        ends_after = max(self.gap_seconds, self.hold_seconds)
         for v in list(self._visits):
-            if mono - v.last_seen_mono > self.gap_seconds:
+            if mono - v.last_seen_mono > ends_after:
                 self._visits.remove(v)
                 departed.append(v)
         for v in self._visits:
             v.seen = False
             v.detection = None
 
-        # 1. Animals in the region.
+        # 1. Animals in the region. A new visit needs the overlap threshold;
+        # one in progress continues while its animal touches the region at all
+        # (a cat sitting back from the bowl is often a smaller bounding box,
+        # mostly outside the region, while it is still there).
         cands = []
+        keep_only: set[int] = set()      # ids of detections that can't start a visit
         for d in detections:
             d["visit_id"] = None
             d["duplicate"] = False
             d["in_roi"] = in_roi(d["bbox_norm"], self.roi, W, H, self.overlap_threshold)
-            if d["in_roi"] and d.get("label") in self.labels:
+            if d.get("label") not in self.labels:
+                continue
+            if d["in_roi"]:
                 cands.append(d)
+            elif self._visits and in_roi(d["bbox_norm"], self.roi, W, H, 0.0):
+                cands.append(d)
+                keep_only.add(id(d))
 
-        # 2. Duplicates: keep the most confident of overlapping bounding boxes.
-        cands.sort(key=lambda d: d.get("confidence", 0.0), reverse=True)
+        # 2. Duplicates: keep the most confident of overlapping bounding boxes,
+        # preferring one in the region over one that only touches it.
+        cands.sort(key=lambda d: (id(d) not in keep_only, d.get("confidence", 0.0)), reverse=True)
         kept: list[tuple[dict, tuple]] = []
         for d in cands:
             r = _px(d["bbox_norm"], W, H)
@@ -200,7 +230,12 @@ class VisitTracker:
         free_c = list(kept)
         pairs: list[tuple[Visit, dict]] = []
 
-        def plausible(vr, cr) -> bool:
+        def held(v) -> bool:
+            return mono - v.last_seen_mono > self.gap_seconds
+
+        def plausible(v, vr, cr) -> bool:
+            if held(v):         # lost for a while: only the same place continues it
+                return iou(vr, cr) >= HOLD_IOU
             return iou(vr, cr) > MATCH_IOU or _centre_distance(vr, cr) <= _reach(vr, cr)
 
         def score(v, vr, c) -> float:
@@ -214,7 +249,7 @@ class VisitTracker:
         for v in free_v:
             vr = _px(v.bbox_norm, W, H)
             for c in free_c:
-                if plausible(vr, c[1]):
+                if plausible(v, vr, c[1]):
                     options.append((score(v, vr, c), v, c))
         options.sort(key=lambda o: o[0], reverse=True)
         for _, v, c in options:
@@ -225,6 +260,8 @@ class VisitTracker:
 
         # 4. Update matched visits.
         for v, d in pairs:
+            if held(v):
+                v.resumes += 1
             v.bbox_norm = tuple(d["bbox_norm"])
             v.confidence = float(d.get("confidence", 0.0))
             v.track_id = d.get("track_id")
@@ -235,9 +272,12 @@ class VisitTracker:
             v.stable = v.frames >= self.stability_frames
             v.detection = d
             d["visit_id"] = v.visit_id
+            d["in_roi"] = True
 
         # 5. New visits, while there is room.
         for d, _ in free_c:
+            if id(d) in keep_only:
+                continue
             if len(self._visits) >= self.max_visits:
                 break
             v = Visit(visit_id=self._new_id(now), label=d.get("label", ""),
@@ -247,6 +287,15 @@ class VisitTracker:
             v.detection = d
             d["visit_id"] = v.visit_id
             self._visits.append(v)
+            # An animal appearing where a held visit's animal was lost ends that
+            # visit now: it is another animal, or the same one looking different,
+            # and either way one animal never has two visits at once.
+            nr = _px(v.bbox_norm, W, H)
+            for hv in [h for h in self._visits if h is not v and not h.seen and held(h)]:
+                hr = _px(hv.bbox_norm, W, H)
+                if iou(hr, nr) > MATCH_IOU or _centre_distance(hr, nr) <= _reach(hr, nr):
+                    self._visits.remove(hv)
+                    departed.append(hv)
 
         return list(self._visits), departed
 

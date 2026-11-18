@@ -54,3 +54,24 @@ def test_preview_json_and_drawing(tmp_path):
     x, y = int(0.1 * 480), int(0.1 * 270) + 10
     assert img[y, x - 1:x + 2, 2].max() > 150          # Cat1's red bounding box edge
     w.shutdown()
+
+
+def test_held_visit_keeps_its_bounding_box_and_name():
+    tr = VisitTracker(labels={"cat"}, roi=(0, 0, 1920, 1080), frame_w=1920, frame_h=1080,
+                      stability_frames=1, hold_seconds=2.5)
+    tr.update([{"label": "cat", "confidence": 0.9, "bbox_norm": (0.4, 0.4, 0.2, 0.2),
+                "track_id": 3}], now=10.0, mono=10.0)
+    visits, _ = tr.update([], now=11.5, mono=11.5)            # lost for 1.5 s: held
+    (h,) = d.held_detections(visits)
+    assert h["held"] and h["visit_id"] == visits[0].visit_id and h["bbox_norm"] == (0.4, 0.4, 0.2, 0.2)
+    d.label_visits([h], visits, status({"visit_id": h["visit_id"], "visit_cat": "Cat1"}),
+                   {}, identifying=True)
+    assert h["name"] == "Cat1"
+    thin, thick = np.zeros((60, 60, 3), np.uint8), np.zeros((60, 60, 3), np.uint8)
+    box = {"label": "cat", "confidence": 0.9, "bbox": (5, 30, 55, 55), "name": None}
+    d.draw_bounding_boxes(thin, [dict(box, held=True)])
+    d.draw_bounding_boxes(thick, [box])
+    assert 0 < (thin > 0).sum() < (thick > 0).sum()
+    seen, _ = tr.update([{"label": "cat", "confidence": 0.9, "bbox_norm": (0.4, 0.4, 0.2, 0.2),
+                          "track_id": 3}], now=11.6, mono=11.6)
+    assert d.held_detections(seen) == []                     # back: drawn as a detection again

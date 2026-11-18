@@ -800,7 +800,15 @@ the more confident one is kept. A visit is stable, and is classified, captured a
 logged, after `classifier.stability_frames` frames (default 5). It ends once its
 animal has been out of the region for `classifier.visit_gap_seconds` (default 0.5; an
 older `miss_tolerance` in frames is used when it is missing), and the classifier is
-told the time it was last seen. The tracker runs on every frame, also with
+told the time it was last seen. A new visit needs `classifier.roi_overlap_threshold`
+of the region, but one in progress continues while its animal touches the region at
+all: an animal sitting back from the bowl is often a smaller bounding box, mostly
+outside it. The detector also often loses an eating animal for a second or two, so a
+visit is held a little longer (`classifier.visit_hold_seconds`, default 2.5): in that
+time only a bounding box back in the same place (IoU 0.5 or more with the last one)
+continues it, and the live view keeps its bounding box, drawn thin. Anything else that
+appears there ends the held visit at once, so one animal never has two visits, and an
+animal that walks off and another that walks in still make separate visits. The tracker runs on every frame, also with
 identification off.
 
 Several animals are followed at once (up to 8), each with its own name, log row,
@@ -961,9 +969,10 @@ a key is omitted, it is noted.
 | `classifier.enabled` | false | Run the identity classifier. |
 | `classifier.model_path` | `models/cat_classifier.pte` | ExecuTorch model the classifier runs. |
 | `classifier.bowl_roi` | `[760, 390, 1160, 790]` (code fallback: full frame) | Region of interest `[x_min, y_min, x_max, y_max]` in frame pixels (the key keeps its old name). Set it by dragging in the dashboard. |
-| `classifier.roi_overlap_threshold` | 0.01 | Fraction of the region of interest a bounding box must cover to count. |
+| `classifier.roi_overlap_threshold` | 0.01 | Fraction of the region of interest a bounding box must cover to start a visit (one in progress continues while it touches the region). |
 | `classifier.stability_frames` | 5 | Frames in the region before a visit is classified (also gates detection capture). |
 | `classifier.visit_gap_seconds` | 0.5 | Seconds out of the region that end a visit. |
+| `classifier.visit_hold_seconds` | 2.5 | Seconds a visit waits for its animal back in the same place (0: off). |
 | `classifier.miss_tolerance` | not in template | Older form of the same, in frames; used only when `visit_gap_seconds` is missing. |
 | `classifier.visit_rejoin_seconds` | 5 | A visit of an animal whose last visit ended this recently continues its log row (0: off). |
 | `classifier.classify_interval_seconds` | 1.0 | Minimum time between crops sent to the classifier. |
