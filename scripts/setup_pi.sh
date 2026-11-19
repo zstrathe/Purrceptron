@@ -64,6 +64,12 @@ pip install -r "$SAVE_PROJECT_ROOT/requirements-pi.txt"
 # ExecuTorch runtime for the classifier (see the note in requirements-pi.txt).
 # Must match executorch in requirements-training.txt.
 pip install --no-deps "executorch==1.1.0"
+# The cat detector (deployment.hef_path). hailo-apps only downloads yolov8m by
+# default; yolov11m missed about a third as many cat frames at nearly the same
+# speed. Skipped when the file is already there.
+echo "[INFO] Downloading the yolov11m detector (if missing)..."
+hailo-download-resources --group detection --resource-name yolov11m --resource-type model \
+    || echo "[WARN] yolov11m download failed; the detector falls back to hailo-apps' yolov8m"
 deactivate 2>/dev/null || true
 PROJECT_ROOT="$SAVE_PROJECT_ROOT"
 cd "$PROJECT_ROOT"

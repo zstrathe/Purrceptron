@@ -26,8 +26,10 @@ over SSH, and `scripts/sync_to_pi.sh` pushes code changes after that.
 
 Design points:
 
-- No detector is trained. hailo-apps ships with a COCO-trained YOLOv8m that detects
-  cats reliably, and its bounding box is saved alongside every capture. The only
+- No detector is trained. A stock COCO-trained YOLOv11m from the Hailo model zoo detects
+  cats reliably (in an overnight test it missed about a third as many cat frames as
+  hailo-apps' default YOLOv8m, at nearly the same speed), and its bounding box is
+  saved alongside every capture. The only
   trained model is the classifier that tells the individual cats apart.
 - Once a classifier is deployed, detection-triggered capture saves new images under
   the cat name the classifier confirmed, so each training round has more labeled
@@ -77,7 +79,7 @@ names, so the next round of training needs less manual labeling.
 ```mermaid
 flowchart TB
     subgraph PI["Raspberry Pi 5 + Hailo-10H"]
-        DET["Stage 1<br/>Every camera frame runs through a stock<br/>COCO-trained YOLOv8m on the Hailo NPU;<br/>only the 'cat' class is kept. Output per cat:<br/>a bounding box + a tracking ID that persists across frames"] --> GATE{"At the food bowl?"}
+        DET["Stage 1<br/>Every camera frame runs through a stock<br/>COCO-trained YOLOv11m on the Hailo NPU;<br/>only the 'cat' class is kept. Output per cat:<br/>a bounding box + a tracking ID that persists across frames"] --> GATE{"At the food bowl?"}
         GATE -- "yes: bounding box overlapped the bowl<br/>region of interest (ROI) for 5 frames" --> MODEL{"Classifier deployed<br/>and enabled?"}
         MODEL -- "not yet: save unlabeled images<br/>to build the first dataset" --> CAP["Training image saved<br/>frame + bounding-box JSON<br/>(at most one every 15 s)"]
         MODEL -- yes --> CLS["Stage 2<br/>Run the trained model (INT8 MobileNetV2, Pi CPU)<br/>on the bounding-box crop resized to 224x224.<br/>Output: a probability for each cat name, and an<br/>energy score (-logsumexp of the raw outputs: low when<br/>one output dominates, high when the model is unsure)"]
@@ -103,7 +105,7 @@ flowchart TB
     TRAIN -- "model + threshold sent back; the Pi checks<br/>it loads, then installs it on Deploy" --> CLS
 ```
 
-1. hailo-apps runs a GStreamer pipeline with YOLOv8m on the Hailo-10H, plus a
+1. hailo-apps runs a GStreamer pipeline with YOLOv11m on the Hailo-10H, plus a
    tracker that gives each detection a persistent ID. Detections whose label is not
    in `deployment.tracking_objects` (default `["cat"]`) are discarded.
 2. A detection is passed to the classifier only after it has overlapped the
@@ -959,7 +961,7 @@ a key is omitted, it is noted.
 | `web_ui.preview_width` / `height` | 960 / 540 | Preview frame size. |
 | **Deployment** | | |
 | `deployment.hailo_apps_dir` | `./hailo-apps` | hailo-apps checkout, relative to the project root. |
-| `deployment.hef_path` | `""` | Custom HEF model. Empty uses hailo-apps' default detector for the board. |
+| `deployment.hef_path` | yolov11m (`/usr/local/hailo/resources/models/hailo10h/yolov11m.hef`, downloaded by `setup_pi.sh`) | Detector HEF. Empty, or a missing file, uses hailo-apps' default detector for the board (yolov8m). |
 | `deployment.labels_json` | `""` | Label file for a custom HEF (hailo-apps format; see `deploy/coco_labels.json`). |
 | `deployment.track_all` | true | Track every class, not only class 0. |
 | `deployment.tracking_objects` | not in template; code default `[cat]` | Detector labels to keep. Everything else is dropped before the gate. |

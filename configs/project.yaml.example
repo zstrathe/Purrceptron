@@ -26,7 +26,7 @@ web_ui:
   preview_height: 540
 deployment:
   hailo_apps_dir: ./hailo-apps
-  hef_path: ""
+  hef_path: /usr/local/hailo/resources/models/hailo10h/yolov11m.hef   # setup_pi.sh downloads it; blank: hailo-apps' default (yolov8m)
   labels_json: ""
   detection_threshold: 0.5
   hw_arch: hailo10h
