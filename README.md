@@ -951,6 +951,7 @@ a key is omitted, it is noted.
 | **Camera** | | |
 | `camera.device` | `/dev/video0` | Passed to hailo-apps as `--input`. |
 | `camera.width` / `height` | 1920 / 1080 | The camera's frame size. Used to convert normalized bounding boxes to pixels for the bowl-region test, so it must match the real frame size. |
+| `camera.mirror` | false | Mirror the picture left to right. hailo-apps mirrors camera input by default; this project turns that off so the picture matches the room. The bowl region is in picture coordinates, so draw it again after changing this. |
 | **Collection** | | |
 | `collection.output_dir` | `data/raw` | Root of captured images on the Pi, used for review and counts. Required. |
 | `collection.min_images_per_cat` | 300 | Per-cat target shown by the dashboard's progress bars. |

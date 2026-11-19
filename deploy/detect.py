@@ -1080,6 +1080,18 @@ def _disable_video_window() -> None:
     print_info("No screen: video window off")
 
 
+def _set_camera_mirror(mirror: bool) -> None:
+    """hailo-apps mirrors camera input by default, like a selfie camera; a
+    feeder camera should show the room the way it is. Sets the source's
+    mirror_image to camera.mirror instead. Must run before
+    GStreamerDetectionApp is created, which builds the pipeline."""
+    import hailo_apps.python.pipeline_apps.detection.detection_pipeline as det_pipeline
+    source_pipeline = det_pipeline.SOURCE_PIPELINE
+    det_pipeline.SOURCE_PIPELINE = (
+        lambda *args, **kwargs: source_pipeline(*args, **{**kwargs, "mirror_image": mirror}))
+    print_info(f"Camera picture: {'mirrored' if mirror else 'not mirrored'}")
+
+
 def main():
     if not HAILO_AVAILABLE:
         print_error("Hailo libraries not available.")
@@ -1219,6 +1231,7 @@ def main():
     # second. Send the frames to a sink that drops them instead.
     if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
         _disable_video_window()
+    _set_camera_mirror(bool(camera_cfg.get("mirror", False)))
 
     # Create the detection app (Hailo parses sys.argv for --hef-path, --input, etc.)
     app = GStreamerDetectionApp(app_callback, user_data)
