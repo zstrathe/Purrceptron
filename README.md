@@ -431,6 +431,9 @@ Two cards answer the main questions, and everything else is folded below them.
   waiting for the trainer, training, fetching the model, checking it on the Pi) and
   how far training is ("Phase 2 of 3 (fine-tuning), epoch 12 of 40"), with Cancel and
   the log. When it finishes, the result and **Use this model** appear there.
+- **Automatic retraining** (folded): turn nightly retraining on, choose the time and how
+  many new confirmed images make a night worth training, and see the next check and
+  what the last one did. See [Automatic retraining](#automatic-retraining).
 - **Folded below:** where training runs (opened by "Set up where training runs" the
   first time), "Check how reliable training is" (trains several models, each checked
   on different visits, and shows the spread), training settings, training curves
@@ -462,7 +465,8 @@ flowchart LR
 1. **Package (on the Pi).** `train/crop_images.py` and
    `train/prepare_classifier_dataset.py` run on `data/raw/<cat>/` at low priority,
    kept off the classifier's CPU core. Only images with a bounding-box sidecar
-   count. The 224x224 crops, a copy of `train/` and `utils/`, and a manifest (cats,
+   count. Crops of [test-set](#the-test-set) images are set aside on the Pi and
+   never sent. The 224x224 crops, a copy of `train/` and `utils/`, and a manifest (cats,
    `classifier_training` settings, the Pi's torch and ExecuTorch versions) are
    packed into one tarball, typically a few MB to a few tens of MB. Crops are kept
    in `data/crop_cache/` and reused by later jobs while the image, its bounding box
@@ -474,7 +478,10 @@ flowchart LR
    `models/cat_classifier.pte`.
 3. **Check (on the Pi).** The returned model must load with the Pi's ExecuTorch
    runtime, embed the configured cat names and an energy threshold, and produce
-   one output per cat. A model that fails is never offered for deployment.
+   one output per cat. A model that fails is never offered for deployment. A model
+   that passes is then scored on the test set the way the live view uses it (a wrong
+   cat and an "unknown cat" rejection both count as wrong), along with the model in
+   use when that one was also trained without the test set.
 4. **Use it.** The finished job, and the Model in use card, compare the new model's
    accuracy on unseen visits, overall and per cat, with the one in use, and "Use this
    model" installs it. The current model is kept as `models/cat_classifier.prev.pte`;
@@ -503,6 +510,54 @@ curves.
 Job state is saved to `data/training_jobs/<job_id>/state.json`, so restarting the
 Pi dashboard while a job runs resumes watching it. Logs go to
 `logs/training_jobs/`. One job runs at a time.
+
+### The test set
+
+The accuracy on unseen visits that each training reports comes from its own
+validation split, drawn again every job; the same split also picks the best epoch.
+So two models' numbers are not measured on the same images and can't be compared
+exactly. For that, a share of capture sessions (`classifier_training.test_frac`,
+15%) is kept out of every training for good:
+
+- Sessions are assigned once, by a hash of their first image, and never move; the
+  assignment is saved in `data/raw/.test_set.json` (included in backups). An image
+  keeps its side when it is relabeled to another cat. New images that belong to an
+  already assigned session join its side.
+- Only images a person confirmed are scored, but every image of a test session is
+  left out of training, so near-identical frames of one visit can't leak.
+- A model deployed from a job before this existed was trained on everything, so its
+  test score would be inflated; it is never compared automatically. Every job since
+  records that it left the test set out (`excludes_test_set` in the job state and in
+  `models/cat_classifier.meta.json`).
+
+### Automatic retraining
+
+Off by default; turned on in the Training tab's Automatic retraining panel
+(`auto_retrain` in `runtime.yaml`). Every night at the set time it:
+
+1. Skips the night when fewer than `min_new_images` new **confirmed** images
+   (outside the test set) came in since the last training, or when any cat has
+   fewer than `training_backend.min_images_per_cat` of them.
+2. Checks that the backend answers before preparing anything; if not (the PC is
+   off, say), it tries again every hour until the next night.
+3. Trains on confirmed images only. Confirmed means a person chose or kept the
+   label: the Label tab (labeling, or keeping the label shown) or naming a visit
+   with "Who is this?". Images the classifier labeled itself (detection capture,
+   and captures named once the visit's vote settles) are left out until someone
+   confirms them on the Label tab; training on them would mostly teach the model to
+   agree with its own guesses, mistakes included. Skip on the Label tab doesn't
+   confirm an image (skips from before this was added were saved like confirmations
+   and still count).
+4. Scores the new model and the model in use on the test set, and deploys the new
+   one only if it gets at least as many test images right overall, no cat gets
+   fewer right, and every cat has at least `min_test_per_cat` confirmed test images.
+   Otherwise the model waits under Model in use with the reason. The model it
+   replaces stays available through "Go back to the model used before".
+
+The first automatic model after upgrading is never deployed automatically, because
+the model in use was trained on the test set too; deploy it once by hand. With the
+Hugging Face backend each nightly run is billed like any other job; nights without
+enough new confirmed images cost nothing.
 
 ### Backends
 
@@ -1019,7 +1074,8 @@ a key is omitted, it is noted.
 | `classifier_training.mixup_alpha` | 0.2 | Mixup strength (phase 2). |
 | `classifier_training.balance_method` | `oversample` | `oversample`, `loss_weights` or `off` (see How training works). Older configs without it use `balance_classes`: `false` means `off`, anything else `oversample`. |
 | `classifier_training.patience` | 15 | Early-stopping patience, per phase. |
-| `classifier_training.session_gap_minutes` | 5 | Gap that starts a new session for the train/val split and CV folds. |
+| `classifier_training.session_gap_minutes` | 5 | Gap that starts a new session for the train/val split, the test set and CV folds. |
+| `classifier_training.test_frac` | 0.15 | Share of capture sessions kept out of every training as the [test set](#the-test-set). Only sessions not assigned yet are affected by a change. |
 | `classifier_training.cv_folds` | 5 | Default folds for the Training tab's cross-validation. |
 | `classifier_training.energy_ood_percentile` | not in template; code default 0.99 | Validation-energy quantile used as the unknown-cat threshold. |
 | `classifier_training.augmentation.*` | see template | Switches and limits for each augmentation: `horizontal_flip`, `brightness_contrast`, `brightness_limit`, `contrast_limit`, `shift_scale_rotate`, `rotate_limit`, `gaussian_blur`, `gaussian_noise`, `coarse_dropout`, `hue_saturation`, `clahe`. |
@@ -1032,6 +1088,11 @@ a key is omitted, it is noted.
 | `training_backend.hf_jobs.timeout` | `2h` | Job time limit. |
 | `training_backend.hf_jobs.image` | `''` | Docker image; blank picks `pytorch/pytorch` with the Pi's torch version. Jobs install the Pi's ExecuTorch version into it. |
 | `training_backend.hf_jobs.bucket` | `''` | Private bucket for moving files; blank uses `<namespace>/cat-training`. |
+| **Automatic retraining** | | Set from the Training tab, which writes `runtime.yaml`. See [Automatic retraining](#automatic-retraining). |
+| `auto_retrain.enabled` | false | Retrain every night. |
+| `auto_retrain.time` | `02:00` | Local time of the nightly check. |
+| `auto_retrain.min_new_images` | 25 | New confirmed images (outside the test set) since the last training needed to train. |
+| `auto_retrain.min_test_per_cat` | 20 | Confirmed test images each cat needs before a model is deployed automatically. |
 | **Backups** | | Set from the Pi dashboard's Backup tab, which writes `runtime.yaml`. Tokens are kept in `configs/secrets.yaml`. |
 | `backup.destination` | `off` | `off`, `local_pc` or `hf`. |
 | `backup.time` | `03:00` | Local time of the nightly backup. |

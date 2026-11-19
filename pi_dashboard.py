@@ -52,7 +52,8 @@ from remote_training import settings as training_settings
 from remote_training.backends import BackendError
 from remote_training.backup.destinations import BackupError
 from remote_training.backup.manager import BackupManager
-from remote_training.bundle import _low_priority_prefix
+from remote_training.auto_retrain import AutoRetrainer
+from remote_training.bundle import low_priority_prefix
 from remote_training.manager import TrainingJobManager
 from utils import sidecars
 from utils.secrets import SecretsStore
@@ -561,6 +562,15 @@ class ConfigManager:
             with open(self.runtime_path, "w") as f:
                 yaml.dump(runtime, f, default_flow_style=False, sort_keys=False)
 
+    def update_auto_retrain(self, block: dict) -> None:
+        """Save the complete automatic retraining block to runtime.yaml."""
+        with self._lock:
+            runtime = self._read_runtime()
+            runtime["auto_retrain"] = block
+            self.runtime_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.runtime_path, "w") as f:
+                yaml.dump(runtime, f, default_flow_style=False, sort_keys=False)
+
     def update_training_settings(self, values: dict) -> None:
         """Save classifier training settings (already validated by
         remote_training.settings.parse) to runtime.yaml. classifier_training
@@ -606,6 +616,7 @@ def create_app(
     training_mgr: TrainingJobManager,
     secrets: SecretsStore,
     backup_mgr: BackupManager,
+    auto_retrain: AutoRetrainer | None = None,
 ) -> Flask:
     template_dir = Path(__file__).resolve().parent / "templates"
     flask_app = Flask(__name__, template_folder=str(template_dir))
@@ -1102,6 +1113,22 @@ def create_app(
         return jsonify({"status": "ok",
                         "values": training_settings.current_values(config_mgr.read())})
 
+    @flask_app.route("/api/training/auto", methods=["GET"])
+    def api_training_auto_get():
+        if auto_retrain is None:
+            return jsonify({"available": False})
+        return jsonify({"available": True, **auto_retrain.status()})
+
+    @flask_app.route("/api/training/auto", methods=["POST"])
+    def api_training_auto_post():
+        if auto_retrain is None:
+            return jsonify({"status": "error", "message": "Not available"}), 404
+        try:
+            st = auto_retrain.save_settings((request.get_json() or {}).get("values") or {})
+        except ValueError as exc:
+            return jsonify({"status": "error", "message": str(exc)}), 400
+        return jsonify({"status": "ok", "available": True, **st})
+
     @flask_app.route("/api/training/metrics/<job_id>")
     def api_training_metrics(job_id):
         return jsonify(training_mgr.job_metrics(job_id))
@@ -1357,8 +1384,12 @@ def main() -> None:
                                       on_model_installed=_on_model_installed)
     backup_mgr = BackupManager(PROJECT_ROOT, yaml_path, config_mgr.read,
                                config_mgr.update_backup, secrets, sys.executable,
-                               command_prefix=_low_priority_prefix)
+                               command_prefix=low_priority_prefix)
     backup_mgr.start()
+    # Nightly retraining on confirmed images (off until turned on)
+    auto_retrain = AutoRetrainer(PROJECT_ROOT, config_mgr.read, config_mgr.update_auto_retrain,
+                                 training_mgr)
+    auto_retrain.start()
 
     # Naming visits (who is in view), for collecting labeled images
     visits = VisitNamer(cats, float(collection_cfg.get("auto_capture_interval_sec", 3.0)), reviewer)
@@ -1409,6 +1440,7 @@ def main() -> None:
         training_mgr=training_mgr,
         secrets=secrets,
         backup_mgr=backup_mgr,
+        auto_retrain=auto_retrain,
     )
     flask_app.run(host=host, port=port, threaded=True, use_reloader=False)
 

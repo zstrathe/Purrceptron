@@ -34,12 +34,18 @@ from utils.thumbnails import ThumbnailCache
 # Review State Tracker
 # ═══════════════════════════════════════════════════════════════════════════
 
+SKIPPED = "skipped"     # .review_state.json value for an image passed over
+
+
 class ReviewStateTracker:
     """Tracks reviewed/unreviewed state per image in a JSON file.
 
     State file: data/raw/.review_state.json
     Format: {"relative/path/to/image.jpg": true, ...}
-    Only reviewed images are stored (absence = unreviewed).
+    Only reviewed images are stored (absence = unreviewed). true means a
+    person confirmed the label; "skipped" means it was passed over in Review
+    without a decision (reviewed, but not confirmed). Skips saved before
+    "skipped" existed were stored as true.
     """
 
     def __init__(self, data_dir: Path):
@@ -96,7 +102,21 @@ class ReviewStateTracker:
     def is_reviewed(self, path: Path) -> bool:
         rel = str(path.relative_to(self.data_dir))
         with self._lock:
-            return self._state.get(rel, False)
+            return bool(self._state.get(rel, False))
+
+    def is_confirmed(self, path: Path) -> bool:
+        """A person confirmed this image's label (not just skipped it)."""
+        rel = str(path.relative_to(self.data_dir))
+        with self._lock:
+            return self._state.get(rel) is True
+
+    def mark_skipped(self, path: Path) -> None:
+        """Reviewed without a decision. Never downgrades a confirmed image."""
+        rel = str(path.relative_to(self.data_dir))
+        with self._lock:
+            if self._state.get(rel) is not True:
+                self._state[rel] = SKIPPED
+                self._changed()
 
     def mark_reviewed(self, path: Path) -> None:
         rel = str(path.relative_to(self.data_dir))
@@ -342,9 +362,9 @@ class LabelReviewApp:
         return {"status": "ok", "action": "deleted"}
 
     def skip(self) -> dict:
-        """Advance to next image. Marks current as reviewed."""
+        """Advance to next image. Marks current as reviewed, not confirmed."""
         if self.index < len(self.images):
-            self._review_state.mark_reviewed(self.images[self.index])
+            self._review_state.mark_skipped(self.images[self.index])
             self.images.pop(self.index)
             if self.index >= len(self.images):
                 self.index = max(0, len(self.images) - 1)

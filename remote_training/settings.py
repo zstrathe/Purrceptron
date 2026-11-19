@@ -54,6 +54,9 @@ SETTINGS: list[dict] = [
         ("session_gap_minutes", "Session gap (min)", "float", 5, 0.0, 1440.0, "Data",
          "Captures closer than this belong to one session; a session is never "
          "split between train and val."),
+        ("test_frac", "Test set share", "float", 0.15, 0.0, 0.5, "Data",
+         "Share of capture sessions kept out of training for good, so models can be "
+         "compared fairly. Applies to sessions not assigned yet; assigned ones never move."),
         ("crop_padding", "Crop padding", "float", 0.20, 0.0, 1.0, "Data",
          "Extra margin around the bounding box when cropping (0.2 = 20%)."),
         ("energy_ood_percentile", "Unknown-cat percentile", "float", 0.99, 0.5, 1.0, "Data",

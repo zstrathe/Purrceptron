@@ -528,6 +528,78 @@ def visit_record(status: dict | None, visit_id: float | None) -> dict | None:
                  if isinstance(r, dict) and r.get("visit_id") == visit_id), None)
 
 
+class CatModel:
+    """A loaded classifier (.pte): its class order, the unknown-cat (energy)
+    threshold in use, and classify(). Shared by the live classifier and
+    remote_training/evaluate_model.py, so a test score means what the live
+    view does."""
+
+    def __init__(self, model_path: Path, cfg: dict, log=print):
+        import torch
+        import torch.nn.functional as F  # noqa: N812
+        from executorch.runtime import Runtime
+        self._torch, self._F = torch, F
+        # `program` must stay referenced for as long as `forward` is used.
+        self.program = Runtime.get().load_program(str(model_path))
+        self.forward = self.program.load_method("forward")
+
+        # Use class order from training (embedded in model) to avoid index mismatch
+        classes_json = self._constant("classes_json")
+        if classes_json:
+            self.cats: list[str] = json.loads(classes_json)
+            log(f"Loaded class order from model: {self.cats}")
+        else:
+            self.cats = cfg.get("cats", [])
+            log(f"WARNING: no class order in model, using config: {self.cats}")
+
+        # Energy-based OOD rejection
+        self.energy_ood_enabled = bool(cfg.get("energy_ood_enabled", True))
+        self.energy_threshold: float | None = None
+        energy_json = self._constant("energy_threshold_json")
+        if self.energy_ood_enabled:
+            # Config override takes priority over model-embedded threshold
+            cfg_threshold = cfg.get("energy_ood_threshold")
+            if cfg_threshold is not None:
+                self.energy_threshold = float(cfg_threshold)
+                log(f"Energy OOD threshold from config: {self.energy_threshold:.4f}")
+            elif energy_json:
+                et_data = json.loads(energy_json)
+                # Prefer explicit threshold key, fall back to p99/p95 for older models
+                if "threshold" in et_data:
+                    self.energy_threshold = float(et_data["threshold"])
+                    pct = et_data.get("percentile", "?")
+                    log(f"Energy OOD threshold from model (p{pct}): {self.energy_threshold:.4f}")
+                elif "p99" in et_data:
+                    self.energy_threshold = float(et_data["p99"])
+                    log(f"Energy OOD threshold from model (p99): {self.energy_threshold:.4f}")
+                else:
+                    self.energy_threshold = float(et_data["p95"])
+                    log(f"Energy OOD threshold from model (p95): {self.energy_threshold:.4f}")
+            else:
+                self.energy_ood_enabled = False
+                log("Energy OOD: no threshold available, disabled")
+        else:
+            log("Energy OOD: disabled by config")
+
+    def _constant(self, name: str) -> str:
+        """A string the exporter embedded as a constant method ('' if absent)."""
+        if name not in self.program.method_names:
+            return ""
+        return self.program.load_method(name).execute([])[0]
+
+    def classify(self, crop_bgr: np.ndarray) -> tuple[int, float, float, bool]:
+        """(class index, confidence, energy, rejected as an unknown cat) for a
+        224x224 BGR crop."""
+        torch = self._torch
+        logits = self.forward.execute([_preprocess(crop_bgr)])[0]
+        energy = float(-torch.logsumexp(logits, dim=1).item())
+        rejected = bool(self.energy_ood_enabled and self.energy_threshold is not None
+                        and energy > self.energy_threshold)
+        probs = self._F.softmax(logits, dim=1)[0]
+        class_idx = int(torch.argmax(probs).item())
+        return class_idx, float(probs[class_idx].item()), energy, rejected
+
+
 def classifier_worker(q, cfg: dict) -> None:
     """Entry point for the classifier subprocess.
 
@@ -549,7 +621,6 @@ def classifier_worker(q, cfg: dict) -> None:
 def _classifier_worker_inner(q, cfg: dict) -> None:
     """Actual classifier loop — called from classifier_worker with error handling."""
     import torch
-    import torch.nn.functional as F  # noqa: N812
 
     # Pin to dedicated CPU core to avoid competing with GStreamer threads
     try:
@@ -570,7 +641,6 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
         _write_status({"error": msg, "prediction": None})
         return
 
-    from executorch.runtime import Runtime
     try:
         # One inference thread: this process is pinned to a single core.
         from executorch.extension.pybindings.portable_lib import _unsafe_reset_threadpool
@@ -579,55 +649,8 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
         pass
     torch.set_num_threads(1)
 
-    # `program` must stay referenced for as long as `forward` is used.
-    program = Runtime.get().load_program(str(model_path))
-    forward = program.load_method("forward")
-
-    def _model_constant(name: str) -> str:
-        """A string the exporter embedded as a constant method ('' if absent)."""
-        if name not in program.method_names:
-            return ""
-        method = program.load_method(name)
-        return method.execute([])[0]
-
-    extra_files = {"classes.json": _model_constant("classes_json"),
-                   "energy_threshold": _model_constant("energy_threshold_json")}
-
-    # Use class order from training (embedded in model) to avoid index mismatch
-    if extra_files["classes.json"]:
-        cats: list[str] = json.loads(extra_files["classes.json"])
-        print(f"[classifier] Loaded class order from model: {cats}", flush=True)
-    else:
-        cats: list[str] = cfg.get("cats", [])
-        print(f"[classifier] WARNING: no class order in model, using config: {cats}", flush=True)
-
-    # Energy-based OOD rejection
-    energy_ood_enabled = cfg.get("energy_ood_enabled", True)
-    energy_threshold: float | None = None
-    if energy_ood_enabled:
-        # Config override takes priority over model-embedded threshold
-        cfg_threshold = cfg.get("energy_ood_threshold")
-        if cfg_threshold is not None:
-            energy_threshold = float(cfg_threshold)
-            print(f"[classifier] Energy OOD threshold from config: {energy_threshold:.4f}", flush=True)
-        elif extra_files["energy_threshold"]:
-            et_data = json.loads(extra_files["energy_threshold"])
-            # Prefer explicit threshold key, fall back to p99/p95 for older models
-            if "threshold" in et_data:
-                energy_threshold = float(et_data["threshold"])
-                pct = et_data.get("percentile", "?")
-                print(f"[classifier] Energy OOD threshold from model (p{pct}): {energy_threshold:.4f}", flush=True)
-            elif "p99" in et_data:
-                energy_threshold = float(et_data["p99"])
-                print(f"[classifier] Energy OOD threshold from model (p99): {energy_threshold:.4f}", flush=True)
-            else:
-                energy_threshold = float(et_data["p95"])
-                print(f"[classifier] Energy OOD threshold from model (p95): {energy_threshold:.4f}", flush=True)
-        else:
-            energy_ood_enabled = False
-            print("[classifier] Energy OOD: no threshold available, disabled", flush=True)
-    else:
-        print("[classifier] Energy OOD: disabled by config", flush=True)
+    model = CatModel(model_path, cfg, log=lambda m: print(f"[classifier] {m}", flush=True))
+    cats = model.cats
 
     logger = FeedingEventLogger(db_path=Path(cfg["db_path"]))
     window = int(cfg.get("vote_window_size", 10))
@@ -666,14 +689,8 @@ def _classifier_worker_inner(q, cfg: dict) -> None:
             ident.on_departed(item[1], item[2])
         elif kind == "crop":
             _, visit_id, seen_at, crop = item
-            logits = forward.execute([_preprocess(crop)])[0]
-            # Energy-based OOD rejection (before voting)
-            energy = float(-torch.logsumexp(logits, dim=1).item())
-            rejected = bool(energy_ood_enabled and energy_threshold is not None
-                            and energy > energy_threshold)
-            probs = F.softmax(logits, dim=1)[0]
-            class_idx = int(torch.argmax(probs).item())
-            ident.on_crop(visit_id, seen_at, class_idx, float(probs[class_idx].item()),
+            class_idx, confidence, energy, rejected = model.classify(crop)
+            ident.on_crop(visit_id, seen_at, class_idx, confidence,
                           energy=energy, rejected=rejected)
         else:
             continue

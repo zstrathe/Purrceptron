@@ -9,8 +9,9 @@ package -> submit to backend -> poll -> fetch results -> finish -> ready.
 
 Three kinds of job share that lifecycle:
 
-    train     finish = validate the model with the Pi's torch; the user then
-              deploys it (or rolls back)
+    train     finish = validate the model with the Pi's torch and score it on
+              the test set; the user then deploys it (or rolls back), or for
+              an automatic job remote_training/auto_retrain.py decides
     crossval  finish = keep the k-fold summary
     detect    finish = write the auto-detected bounding boxes into sidecars
 
@@ -37,7 +38,7 @@ from remote_training.backends import BACKENDS, BackendError, get_backend_class
 from remote_training.backends import base as B
 from remote_training.bundle import (
     TASKS, PackagingError, build_bundle, count_trainable_images, images_missing_bbox,
-    pi_executorch_version, pi_torch_version, safe_extract,
+    low_priority_prefix, pi_executorch_version, pi_torch_version, safe_extract,
 )
 from remote_training.metrics import read_training_metrics
 from utils.config import resolve_path
@@ -89,6 +90,14 @@ def parse_progress(lines: list[str]) -> dict | None:
     return out or None
 
 
+def _test_summary(job: dict) -> dict | None:
+    """{correct, total, acc} of a job's model on the test set, or None."""
+    o = ((job.get("test_eval") or {}).get("candidate") or {}).get("overall") or {}
+    if not o.get("total"):
+        return None
+    return {"correct": o["correct"], "total": o["total"], "acc": o["correct"] / o["total"]}
+
+
 def _seconds_between(a: str | None, b: str | None) -> float | None:
     try:
         return (datetime.fromisoformat(b) - datetime.fromisoformat(a)).total_seconds()
@@ -122,6 +131,9 @@ class TrainingJobManager:
         self._thread: threading.Thread | None = None
         self._torch_version = pi_torch_version()
         self._executorch_version = pi_executorch_version()
+        # Called with the job's state when a training job's model is ready
+        # (set by AutoRetrainer).
+        self.on_train_ready: Callable[[dict], None] | None = None
 
         self._resume_latest()
 
@@ -281,9 +293,38 @@ class TrainingJobManager:
                             self.project_root)
 
     def image_counts(self) -> dict:
-        return count_trainable_images(self.raw_dir(), self._read_config()["cats"])
+        cfg = self._read_config()
+        return count_trainable_images(self.raw_dir(), cfg["cats"], cfg)
 
     _COUNTS_TTL = 30.0
+
+    def cached_image_counts(self) -> dict:
+        return self._cached_image_counts()
+
+    def last_trained_counts(self) -> dict | None:
+        """Image counts at the start of the newest training job that produced
+        a model (whatever happened to it after)."""
+        if not self.jobs_dir.is_dir():
+            return None
+        for p in sorted(self.jobs_dir.glob("*/state.json"), reverse=True):
+            j = self._read_json(p) or {}
+            if j.get("kind", "train") == "train" and j.get("stage") == "ready":
+                return j.get("counts")
+        return None
+
+    def record_auto_decision(self, job_id: str, *, deployed: bool, reason: str) -> None:
+        """Save what automatic retraining did with a job's model."""
+        decision = {"deployed": deployed, "reason": reason, "at": _now()}
+        with self._lock:
+            if self._job and self._job["job_id"] == job_id:
+                self._job["auto_decision"] = decision
+                self._save()
+                return
+        path = self._job_dir(job_id) / "state.json"
+        job = self._read_json(path)
+        if job is not None:
+            job["auto_decision"] = decision
+            path.write_text(json.dumps(job, indent=2))
 
     def _cached_image_counts(self) -> dict:
         """image_counts(), at most every 30 s (the status is polled every 2 s)."""
@@ -323,7 +364,9 @@ class TrainingJobManager:
     def missing_bbox_count(self) -> int:
         return len(images_missing_bbox(self.raw_dir(), self._read_config()["cats"]))
 
-    def start(self, kind: str = "train", cv_folds: int | None = None) -> dict:
+    def start(self, kind: str = "train", cv_folds: int | None = None,
+              trigger: str = "manual") -> dict:
+        """trigger "auto" (automatic retraining): train on confirmed images only."""
         if kind not in TASKS:
             return {"status": "error", "message": f"Unknown job kind {kind!r}"}
         if cv_folds is not None and not 2 <= cv_folds <= 10:
@@ -348,8 +391,9 @@ class TrainingJobManager:
                                    "check or run the trained model. Install it first (see "
                                    "Software requirements in the README)."}
             counts = self.image_counts()
-            short = [f"{c} ({v['with_bbox']})" for c, v in counts.items()
-                     if v["with_bbox"] < s["min_images_per_cat"]]
+            have = "confirmed" if trigger == "auto" else "with_bbox"
+            short = [f"{c} ({v[have]})" for c, v in counts.items()
+                     if v[have] < s["min_images_per_cat"]]
             if short and kind != "detect":
                 return {"status": "error",
                         "message": f"Need at least {s['min_images_per_cat']} images with "
@@ -372,6 +416,8 @@ class TrainingJobManager:
                 "metrics": None,
                 "validation": None,
                 "deployed_at": None,
+                "trigger": trigger,
+                "confirmed_only": trigger == "auto" and kind == "train",
             }
             self._log.clear()
             self._cancel.clear()
@@ -410,9 +456,11 @@ class TrainingJobManager:
                     config=self._read_config(), python_exe=self.python_exe,
                     log=self._logline, should_stop=self._cancel.is_set,
                     task=job.get("kind", "train"), cv_folds=job.get("cv_folds"),
+                    confirmed_only=bool(job.get("confirmed_only")),
                 )
                 with self._lock:
-                    for key in ("split_counts", "crop_counts", "cv_folds"):
+                    for key in ("split_counts", "crop_counts", "cv_folds", "excludes_test_set",
+                                "test_counts"):
                         if key in manifest:
                             job[key] = manifest[key]
                     if "images" in manifest:
@@ -448,6 +496,11 @@ class TrainingJobManager:
             if kind == "train":
                 self._set_stage("validating")
                 self._validate(results_dir)
+                if self.on_train_ready:
+                    try:
+                        self.on_train_ready(json.loads(json.dumps(job)))
+                    except Exception as exc:
+                        self._logline(f"After-training step failed: {type(exc).__name__}: {exc}")
             elif kind == "crossval":
                 self._finish_crossval(results_dir)
             else:
@@ -465,6 +518,7 @@ class TrainingJobManager:
         finally:
             shutil.rmtree(job_dir / "cropped", ignore_errors=True)
             shutil.rmtree(job_dir / "dataset", ignore_errors=True)
+            shutil.rmtree(job_dir / "test", ignore_errors=True)
             if bundle_tar is not None:
                 bundle_tar.unlink(missing_ok=True)
             (job_dir / "bundle.tar.gz").unlink(missing_ok=True)
@@ -554,8 +608,57 @@ class TrainingJobManager:
             raise BackendError("Model failed validation on the Pi: " + "; ".join(res["errors"]))
         self.candidates_dir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(model, self.candidates_dir / f"{job['job_id']}.pte")
+        test_eval = self._score_on_test_set(model, self._job_dir(job["job_id"]) / "test")
+        with self._lock:
+            job["test_eval"] = test_eval
         acc = (job.get("metrics") or {}).get("val_acc")
-        self._set_stage("ready", f"val accuracy {acc:.1%}" if acc is not None else "")
+        parts = [f"val accuracy {acc:.1%}"] if acc is not None else []
+        cand = test_eval.get("candidate") or {}
+        total = (cand.get("overall") or {}).get("total")
+        if total:
+            parts.append(f"test {cand['overall']['correct'] / total:.1%} of {total}")
+        self._set_stage("ready", ", ".join(parts))
+
+    def _score_on_test_set(self, model: Path, test_dir: Path) -> dict:
+        """Score the new model, and the deployed one if it was also trained
+        without the test set, on this job's test crops. Never raises: a
+        scoring problem is recorded and the model stays usable by hand."""
+        deployed_model, _, _, _ = self._model_paths()
+        meta = self.deployed_info().get("meta") or {}
+        out: dict = {"model_in_use": deployed_model.is_file(),
+                     "comparable": bool(meta.get("excludes_test_set")),
+                     "deployed_job_id": meta.get("job_id")}
+        if not test_dir.is_dir() or not any(test_dir.rglob("*.jpg")):
+            out["error"] = "no confirmed test images yet"
+            return out
+        models = [model] + ([deployed_model] if out["model_in_use"] and out["comparable"] else [])
+        # Low priority and off the classifier's core, like packaging, so live
+        # detection doesn't slow down.
+        cmd = low_priority_prefix(self._read_config()) + [
+               self.python_exe, "-m", "remote_training.evaluate_model",
+               "--test-dir", str(test_dir), "--config", str(self.config_path)]
+        for m in models:
+            cmd += ["--model", str(m)]
+        self._logline(f"Scoring on the test set ({len(models)} model{'s' if len(models) > 1 else ''})")
+        try:
+            proc = subprocess.run(cmd, cwd=str(self.project_root), capture_output=True,
+                                  text=True, timeout=1800)
+            res = json.loads(proc.stdout.strip().splitlines()[-1])
+        except (IndexError, json.JSONDecodeError, subprocess.TimeoutExpired, OSError) as exc:
+            out["error"] = f"scoring failed: {exc}"
+            return out
+        if "error" in res:
+            out["error"] = res["error"]
+            return out
+        out["candidate"] = res.get(str(model))
+        if len(models) > 1:
+            out["deployed"] = res.get(str(deployed_model))
+        for name, ev in (("New model", out.get("candidate")), ("Model in use", out.get("deployed"))):
+            if ev and ev["overall"]["total"]:
+                o = ev["overall"]
+                self._logline(f"{name}: {o['correct']} of {o['total']} test images right "
+                              f"({o['correct'] / o['total']:.1%})")
+        return out
 
     def _read_remote_status(self, results_dir: Path) -> None:
         status_path = results_dir / "status.json"
@@ -693,7 +796,10 @@ class TrainingJobManager:
             if not job.get("metrics"):
                 continue
             out.append({"job_id": job_id, "created": job.get("created"),
-                        "backend": job.get("backend_label"), "metrics": job["metrics"]})
+                        "backend": job.get("backend_label"), "metrics": job["metrics"],
+                        "trigger": job.get("trigger", "manual"),
+                        "test": _test_summary(job),
+                        "auto_decision": job.get("auto_decision")})
         return out
 
     @staticmethod
@@ -728,6 +834,9 @@ class TrainingJobManager:
         meta.write_text(json.dumps({
             "job_id": job_id, "backend": job.get("backend_label"),
             "deployed_at": _now(), "metrics": job.get("metrics"),
+            # Trained without the test set: a later model's test score can be
+            # compared with this one's.
+            "excludes_test_set": bool(job.get("excludes_test_set")),
         }, indent=2))
         self._install(candidate, model)
         job["deployed_at"] = _now()
@@ -837,6 +946,9 @@ class TrainingJobManager:
                 "stage": j.get("stage"), "message": j.get("message"),
                 "created": j.get("created"), "deployed_at": j.get("deployed_at"),
                 "val_acc": (j.get("metrics") or {}).get("val_acc"),
+                "test": _test_summary(j),
+                "trigger": j.get("trigger", "manual"),
+                "auto_decision": j.get("auto_decision"),
                 "cv_mean": (j.get("cv") or {}).get("mean_acc"),
                 "cv_std": (j.get("cv") or {}).get("std_acc"),
                 "cv_folds": j.get("cv_folds"),

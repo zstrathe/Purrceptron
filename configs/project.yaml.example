@@ -89,6 +89,7 @@ classifier_training:
   patience: 15
   optimizer: AdamW
   session_gap_minutes: 5
+  test_frac: 0.15            # share of sessions never trained on (data/raw/.test_set.json)
   mixup_alpha: 0.2
   balance_method: oversample     # oversample | loss_weights | off
   cv_folds: 5
@@ -118,6 +119,13 @@ training_backend:
     timeout: 2h
     image: ''                # blank: pytorch/pytorch image matching the Pi's torch
     bucket: ''               # blank: <namespace>/cat-training
+# Automatic retraining (Training tab). Trains on images a person confirmed and
+# deploys the model only if it does at least as well on the test set.
+auto_retrain:
+  enabled: false
+  time: "02:00"              # local time
+  min_new_images: 25         # new confirmed images since the last training, or skip the night
+  min_test_per_cat: 20       # confirmed test images per cat needed to deploy automatically
 # Nightly backups (Backup tab). The tab saves changes to configs/runtime.yaml.
 backup:
   destination: "off"         # off | local_pc | hf

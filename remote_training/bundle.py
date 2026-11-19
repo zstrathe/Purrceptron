@@ -9,7 +9,9 @@ Packs the job's input, a copy of train/ and utils/, and a manifest into one
 .tar.gz. The input depends on the task (see train/run_job.py for the layout
 the remote side expects):
 
-    train     crops of the labeled images in data/raw/<cat>/, split by session
+    train     crops of the labeled images in data/raw/<cat>/, split by session;
+              test-set images (remote_training/test_set.py) are left out and
+              kept on the Pi in <job_dir>/test/ for scoring the model
     crossval  the same crops, not split
     detect    full images in data/raw/ that have no bounding box yet
 """
@@ -26,6 +28,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import Callable
 
+from remote_training.test_set import confirmed_relpaths, load_assigned, settings_from
 from utils.config import resolve_path
 from utils.runtime_paths import ram_dir_with_room
 from utils.sidecars import has_bbox
@@ -59,14 +62,53 @@ def _images(d: Path) -> list[Path]:
     return sorted(p for p in d.iterdir() if p.suffix.lower() in _IMG_EXT) if d.is_dir() else []
 
 
-def count_trainable_images(raw_dir: Path, cats: list[str]) -> dict[str, dict[str, int]]:
-    """Per cat: labeled images, and how many have a bounding box (only those
-    can be cropped and used for training)."""
+def count_trainable_images(raw_dir: Path, cats: list[str],
+                           config: dict | None = None) -> dict[str, dict[str, int]]:
+    """Per cat: labeled images; how many have a bounding box (only those can
+    be cropped and used for training); of those, how many a person confirmed
+    outside the test set (what automatic retraining trains on), and how many
+    confirmed ones are in the test set (what models are scored on)."""
+    gap, frac = settings_from(config or {})
+    test_set = load_assigned(raw_dir, cats, gap, frac, save=False)
+    confirmed = confirmed_relpaths(raw_dir)
     counts = {}
     for cat in cats:
         imgs = _images(raw_dir / cat)
-        counts[cat] = {"images": len(imgs), "with_bbox": sum(1 for p in imgs if has_bbox(p))}
+        boxed = [p for p in imgs if has_bbox(p)]
+        ok = [p for p in boxed if f"{cat}/{p.name}" in confirmed]
+        test = sum(1 for p in ok if test_set.is_test(p))
+        counts[cat] = {"images": len(imgs), "with_bbox": len(boxed),
+                       "confirmed": len(ok) - test, "test": test}
     return counts
+
+
+def set_aside_test(crop_dir: Path, test_dir: Path, raw_dir: Path, cats: list[str],
+                   config: dict, confirmed_only: bool = False) -> dict:
+    """Before the train/val split: move the crops of test-set images out of
+    crop_dir (the confirmed ones into test_dir/<cat>/, for scoring; the rest
+    are dropped), and with confirmed_only also drop crops of images no person
+    confirmed. Saves the test set's new assignments.
+    Returns {"test": {cat: n}, "unconfirmed_dropped": n}."""
+    gap, frac = settings_from(config)
+    test_set = load_assigned(raw_dir, cats, gap, frac)
+    confirmed = confirmed_relpaths(raw_dir)
+    test_counts = {}
+    dropped = 0
+    for cat in cats:
+        test_counts[cat] = 0
+        for crop in _images(crop_dir / cat):
+            is_confirmed = f"{cat}/{crop.name}" in confirmed
+            if test_set.is_test(crop):
+                if is_confirmed:
+                    dst = test_dir / cat / crop.name
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(crop, dst)      # the real bytes, not the cache link
+                    test_counts[cat] += 1
+                crop.unlink()
+            elif confirmed_only and not is_confirmed:
+                crop.unlink()
+                dropped += 1
+    return {"test": test_counts, "unconfirmed_dropped": dropped}
 
 
 def images_missing_bbox(raw_dir: Path, cats: list[str]) -> list[Path]:
@@ -75,7 +117,7 @@ def images_missing_bbox(raw_dir: Path, cats: list[str]) -> list[Path]:
             if not has_bbox(p)]
 
 
-def _low_priority_prefix(config: dict) -> list[str]:
+def low_priority_prefix(config: dict) -> list[str]:
     """nice, and keep off the classifier's dedicated core, so packaging does
     not slow live detection."""
     prefix = []
@@ -138,8 +180,11 @@ def build_bundle(
     should_stop: Callable[[], bool] = lambda: False,
     task: str = "train",
     cv_folds: int | None = None,
+    confirmed_only: bool = False,
 ) -> tuple[Path, dict]:
     """Prepare the task's input and pack it. Returns (bundle_tar, manifest).
+
+    confirmed_only (train): train only on images a person confirmed.
 
     The bundle is written to RAM (/dev/shm) when it fits, so it never touches
     the SD card; the caller deletes it after uploading.
@@ -153,7 +198,7 @@ def build_bundle(
     crop_dir = job_dir / "cropped"
     dataset_dir = job_dir / "dataset"
     padding = config.get("classifier", {}).get("crop_padding", 0.20)
-    prefix = _low_priority_prefix(config)
+    prefix = low_priority_prefix(config)
     manifest = {
         "job_id": job_id,
         "task": task,
@@ -177,6 +222,14 @@ def build_bundle(
              project_root, log, should_stop)
 
     if task == "train":
+        aside = set_aside_test(crop_dir, job_dir / "test", raw_dir, cats, config,
+                               confirmed_only=confirmed_only)
+        manifest["excludes_test_set"] = True
+        manifest["confirmed_only"] = confirmed_only
+        manifest["test_counts"] = aside["test"]
+        log(f"Test set (never trained on): {sum(aside['test'].values())} confirmed images"
+            + (f"; {aside['unconfirmed_dropped']} unconfirmed images left out"
+               if confirmed_only else ""))
         log("Splitting into train/val by capture session")
         _run("prepare_classifier_dataset.py", prefix + [python_exe, "-u", "train/prepare_classifier_dataset.py",
                        "--source-dir", str(crop_dir), "--output-dir", str(dataset_dir),
