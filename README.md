@@ -154,20 +154,6 @@ flowchart TB
   (2MP, IR LEDs, automatic IR-cut switching), which lets detection run in the dark.
   Other USB cameras should work.
 
-**SD card wear.** The Pi writes continuously, and an SD card wears out from
-writes (an endurance-rated card failed after about two years). The project keeps
-writes low:
-
-- The live preview frame, its detections and the classifier status, rewritten
-  many times a second, live in RAM (`/dev/shm/cat_detection/`).
-- The dashboard doesn't log its polling requests; `logs/pi_dashboard.out` is
-  rotated at 10 MB, and detection logs older than `logging.keep_days` (90) are
-  deleted. All other logs are kept.
-- Training jobs reuse cached crops and build their bundle in RAM.
-- `scripts/setup_pi.sh` turns off the swap file on the card (compressed RAM swap
-  only), keeps the system journal across reboots but capped at 200 MB, and checks
-  that `/tmp` is in RAM.
-
 **Training side**
 
 - A Linux or WSL2 machine. An NVIDIA GPU with CUDA is recommended but not
@@ -1021,7 +1007,7 @@ a key is omitted, it is noted.
 | `deployment.labels_json` | `""` | Label file for a custom HEF (hailo-apps format; see `deploy/coco_labels.json`). |
 | `deployment.track_all` | true | Track every class, not only class 0. |
 | `deployment.tracking_objects` | not in template; code default `[cat]` | Detector labels to keep. Everything else is dropped before the gate. |
-| `deployment.preview_fps` | 15 (code fallback 10) | Preview write rate. Frames go to `/dev/shm/cat_detection/` (RAM), not the SD card. |
+| `deployment.preview_fps` | 15 (code fallback 10) | Preview write rate. Frames go to `/dev/shm/cat_detection/` (RAM). |
 | `deployment.preview_jpeg_quality` | not in template; code default 70 | Preview JPEG quality. |
 | **Classifier (Stage 2)** | | |
 | `classifier.enabled` | false | Run the identity classifier. |
@@ -1156,7 +1142,7 @@ Purrceptron/
 ├── scripts/
 │   ├── install_pi.sh               # Set up a freshly flashed Pi (runs on the PC, over SSH)
 │   ├── update_pi.sh                # Push code changes to a set-up Pi and restart the dashboard
-│   ├── setup_pi.sh                 # Pi setup: hailo-apps, Python deps, SD card write settings
+│   ├── setup_pi.sh                 # Pi setup: hailo-apps, Python deps, system settings
 │   ├── install_service.sh          # Start the dashboard at boot, on port 80 too (on the Pi)
 │   ├── publish_local_name.sh       # Announces web_ui.local_name (run by its service)
 │   ├── restore_backup.py           # Restore a backup snapshot into a new folder
